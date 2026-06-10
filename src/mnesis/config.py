@@ -62,6 +62,44 @@ def _read_stub_flag() -> bool:
 WIKI_LLM_STUB: bool = _read_stub_flag()
 
 
+# --- Phase 2: confidence model constants (all env-overridable) --------------
+# The confidence formula lives in confidence.py; these are its tunable inputs.
+# Tuning needs no code change — override via the env vars named below.
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    return float(raw) if raw is not None else default
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    return int(raw) if raw is not None else default
+
+
+#: Ebbinghaus stability S (days) per decay class — how slowly retention falls.
+#: architecture/decisions decay slowly; bugs/transients fast.
+STABILITY_DAYS: dict[str, int] = {
+    "decision": _env_int("WIKI_STABILITY_DECISION", 365),
+    "architecture": _env_int("WIKI_STABILITY_ARCHITECTURE", 365),
+    "fact": _env_int("WIKI_STABILITY_FACT", 180),
+    "note": _env_int("WIKI_STABILITY_NOTE", 60),
+    "transient": _env_int("WIKI_STABILITY_TRANSIENT", 21),
+    "bug": _env_int("WIKI_STABILITY_BUG", 21),
+}
+
+#: Relative weights of the support and retention terms in the raw blend.
+W_SUPPORT: float = _env_float("WIKI_W_SUPPORT", 1.0)
+W_RETENTION: float = _env_float("WIKI_W_RETENTION", 1.0)
+
+#: Hard ceiling on a stale page's confidence.
+STALE_CAP: float = _env_float("WIKI_STALE_CAP", 0.40)
+
+#: Access boost = min(ACCESS_BOOST_CAP, ACCESS_BOOST_PER * recent_access_count).
+ACCESS_BOOST_CAP: float = _env_float("WIKI_ACCESS_BOOST_CAP", 0.10)
+ACCESS_BOOST_PER: float = _env_float("WIKI_ACCESS_BOOST_PER", 0.02)
+
+
 def ensure_dirs() -> None:
     """Create the wiki directory tree on demand. Safe to call repeatedly."""
     for d in (WIKI_ROOT, PAGES_DIR, SOURCES_DIR, INDEX_DIR):

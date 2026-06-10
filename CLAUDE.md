@@ -22,7 +22,7 @@ These hold across every module and every change. Treat a violation as a defect.
 
 1. **Markdown is canonical; the search index is a rebuildable cache.** The Markdown pages under `wiki/pages/` are the single source of truth. The SQLite search index is a projection of them and must be fully reconstructable from Markdown alone. Never persist anything *in the search index* that is not derivable from a page. (The **durable state store** — access events + review queue — is the deliberate exception: it holds state that is *not* derivable from Markdown and is never cleared by rebuild. See §8, "Search index vs state store".)
 2. **Filter sensitive data before any write.** Secrets and PII are redacted at the ingestion boundary, *before* a source is persisted or sent to the LLM. A raw secret value must never reach disk, logs, an LLM prompt, or a findings report.
-3. **Record derived-state inputs; do not compute decay yet.** Confidence inputs (`source_count`, `last_confirmed`) are stored now as a seam. Confidence scoring and time decay are Phase 2 — do not implement them in the PoC.
+3. **Confidence is derived, never hand-set.** It is computed (Phase 2, `confidence.py`) from Markdown inputs (`source_count`, `last_confirmed`, `contradicts`, decay class) plus an optional access boost from the durable state store — never written into frontmatter. The decay/lifecycle job that flips `status` on aged, low-confidence pages is the next Phase-2 step; until it lands, `status` changes only via `supersede()`.
 4. **The git history is the audit trail.** Every page mutation is a commit. Do not batch unrelated writes into one commit, and do not rewrite history.
 5. **Keep this file in sync** (see Prime rule above).
 
@@ -153,6 +153,25 @@ Phase 2 introduces a second store under `wiki/.index/`. The two have different d
 - **State store** (`wiki/.index/state.db`) — **durable, auxiliary state** that is *not* derivable from Markdown: access events (how often/recently a page was read) and the contradiction review queue. It is created on demand and **`search.rebuild()` must never clear or touch it.** Losing it is survivable but lossy.
 
 Refined rule: **confidence degrades gracefully to its Markdown-only value if the state store is lost.** Confidence is computed from canonical inputs (`source_count`, `last_confirmed`, `contradicts`, decay class) *enriched* by durable state (access recency/frequency). With the state store gone, confidence still computes from Markdown alone — just without the access-based enrichment. So `state.db` is in `wiki/.index/` (gitignored, regenerable location) for convenience, but it is **conceptually separate from the cache**: deleting the *search index* is routine; deleting the *state store* loses access history and open reviews, which cannot be rebuilt from Markdown.
+
+### Confidence model
+
+Confidence is a value in `[0, 1]`, **computed, never hand-set** (`confidence.py`). The formula is illustrative — its constants live in `config.py` and are env-overridable, so tune freely but keep the shape:
+
+```
+support   = 1 - 0.5 ** source_count                      # 1 src .50, 2 .75, 3 .875 (saturating)
+retention = exp(-days_since(last_confirmed) / S)         # Ebbinghaus decay, S = stability per decay_class
+contradiction_factor = 0.6 ** unresolved_contradictions  # len(page.contradicts)
+access_boost = min(0.10, 0.02 * recent_access_count)     # from the state store; 0 if state lost
+
+raw  = (W_SUPPORT * support + W_RETENTION * retention) / (W_SUPPORT + W_RETENTION)   # weights default 1, 1
+conf = clamp(raw * contradiction_factor + access_boost, 0, 1)
+if status == "stale":  conf = min(conf, STALE_CAP)       # STALE_CAP default 0.40
+```
+
+**Stability `S` (days) by decay class:** `decision`/`architecture` = 365 · `fact` = 180 · `note` = 60 · `transient`/`bug` = 21. The class is resolved by `resolve_decay_class`: an explicit `decay_class` override wins, else a `decision:`/`architecture:` tag (slow) or `bug:`/`transient:` tag (fast), else the page's `kind` (`digest` falls back to `fact`).
+
+**Two clocks, kept separate:** *retention* anchors on `last_confirmed` (a new confirming source resets it to now); *staleness inactivity* (the upcoming decay job) anchors on the most recent access **or** reinforcement. Confidence is derived state — it lives in the index/state layers, **never** in Markdown frontmatter.
 
 ---
 
