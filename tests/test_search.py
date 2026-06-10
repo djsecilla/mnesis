@@ -1,0 +1,105 @@
+"""Tests for the FTS5 keyword index, including the rebuildable-cache invariant."""
+
+from __future__ import annotations
+
+import subprocess
+
+import pytest
+
+from mnesis import config, search, store
+from mnesis.store import Page
+
+
+@pytest.fixture()
+def wiki(tmp_path, monkeypatch):
+    root = tmp_path / "wiki"
+    (root / "pages").mkdir(parents=True)
+    monkeypatch.setattr(config, "WIKI_ROOT", root)
+    monkeypatch.setattr(config, "PAGES_DIR", root / "pages")
+    monkeypatch.setattr(config, "INDEX_DIR", root / ".index")
+
+    subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "config", "user.name", "Test"], check=True)
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "config", "user.email", "test@localhost"], check=True
+    )
+    return tmp_path
+
+
+def _seed_three_pages():
+    store.write_page(
+        Page(
+            id="atlas-redis-cache",
+            title="Project Atlas uses Redis for caching",
+            body="Project Atlas uses Redis as its primary caching layer for hot data.",
+            tags=["project:atlas", "library:redis", "concept:caching"],
+        )
+    )
+    store.write_page(
+        Page(
+            id="billing-postgres",
+            title="Billing service uses PostgreSQL",
+            body="The billing service stores invoices in a PostgreSQL database.",
+            tags=["project:billing", "library:postgresql"],
+        )
+    )
+    store.write_page(
+        Page(
+            id="sarah-auth-migration",
+            title="Sarah owns the auth migration",
+            body="Sarah leads the authentication migration workstream.",
+            tags=["person:sarah", "decision:auth-migration"],
+        )
+    )
+
+
+def test_rebuild_and_search_top_hit(wiki):
+    _seed_three_pages()
+    assert search.rebuild() == 3
+
+    hits = search.search("redis caching")
+    assert hits, "expected at least one hit"
+    assert hits[0].id == "atlas-redis-cache"
+    assert hits[0].snippet  # non-empty snippet
+
+
+def test_index_is_rebuildable_identically(wiki):
+    _seed_three_pages()
+    search.rebuild()
+    before = [(h.id, h.score, h.snippet) for h in search.search("redis caching")]
+
+    # Blow away the cache entirely, then rebuild from Markdown alone.
+    (config.INDEX_DIR / "wiki.db").unlink()
+    count = search.rebuild()
+    assert count == 3
+    after = [(h.id, h.score, h.snippet) for h in search.search("redis caching")]
+
+    assert before == after  # identical: id, BM25 score, and snippet
+
+
+def test_search_empty_query_returns_nothing(wiki):
+    _seed_three_pages()
+    search.rebuild()
+    assert search.search("") == []
+    assert search.search("   !?@  ") == []
+
+
+def test_upsert_indexes_single_page(wiki):
+    search.rebuild()  # empty index
+    assert search.search("postgresql") == []
+
+    page = Page(
+        id="billing-postgres",
+        title="Billing service uses PostgreSQL",
+        body="The billing service stores invoices in a PostgreSQL database.",
+        tags=["library:postgresql"],
+    )
+    store.write_page(page)
+    search.upsert(page)
+
+    hits = search.search("postgresql")
+    assert [h.id for h in hits] == ["billing-postgres"]
+
+    # Upserting again must not duplicate the row.
+    search.upsert(page)
+    assert len(search.search("postgresql")) == 1
