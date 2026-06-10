@@ -22,7 +22,7 @@ These hold across every module and every change. Treat a violation as a defect.
 
 1. **Markdown is canonical; the search index is a rebuildable cache.** The Markdown pages under `wiki/pages/` are the single source of truth. The SQLite search index is a projection of them and must be fully reconstructable from Markdown alone. Never persist anything *in the search index* that is not derivable from a page. (The **durable state store** — access events + review queue — is the deliberate exception: it holds state that is *not* derivable from Markdown and is never cleared by rebuild. See §8, "Search index vs state store".)
 2. **Filter sensitive data before any write.** Secrets and PII are redacted at the ingestion boundary, *before* a source is persisted or sent to the LLM. A raw secret value must never reach disk, logs, an LLM prompt, or a findings report.
-3. **Confidence is derived, never hand-set.** It is computed (Phase 2, `confidence.py`) from Markdown inputs (`source_count`, `last_confirmed`, `contradicts`, decay class) plus an optional access boost from the durable state store — never written into frontmatter. The decay/lifecycle job that flips `status` on aged, low-confidence pages is the next Phase-2 step; until it lands, `status` changes only via `supersede()`.
+3. **Confidence is derived, never hand-set.** It is computed (Phase 2, `confidence.py`) from Markdown inputs (`source_count`, `last_confirmed`, `contradicts`, decay class) plus an optional access boost from the durable state store — never written into frontmatter. `status` is changed only through the store (so every transition is committed): by `supersede()` and by the decay/lifecycle job (`lifecycle.recompute_all` / `mnesis decay`).
 4. **The git history is the audit trail.** Every page mutation is a commit. Do not batch unrelated writes into one commit, and do not rewrite history.
 5. **Keep this file in sync** (see Prime rule above).
 
@@ -178,7 +178,13 @@ if status == "stale":  conf = min(conf, STALE_CAP)       # STALE_CAP default 0.4
 
 **Stability `S` (days) by decay class:** `decision`/`architecture` = 365 · `fact` = 180 · `note` = 60 · `transient`/`bug` = 21. The class is resolved by `resolve_decay_class`: an explicit `decay_class` override wins, else a `decision:`/`architecture:` tag (slow) or `bug:`/`transient:` tag (fast), else the page's `kind` (`digest` falls back to `fact`).
 
-**Two clocks, kept separate:** *retention* anchors on `last_confirmed` (a new confirming source resets it to now); *staleness inactivity* (the upcoming decay job) anchors on the most recent access **or** reinforcement. Confidence is derived state — it lives in the index/state layers, **never** in Markdown frontmatter.
+**Two clocks, kept separate:** *retention* anchors on `last_confirmed` (a new confirming source resets it to now); *staleness inactivity* anchors on the most recent access **or** reinforcement. Confidence is derived state — it lives in the index/state layers, **never** in Markdown frontmatter.
+
+**Decay & lifecycle (`lifecycle.recompute_all`, `mnesis decay`).** A periodic pass recomputes every page's confidence (refreshing the cached value) and transitions status, always through the store so each change is one commit (`mnesis: <id> -> stale|active`):
+- **active → stale** when *intrinsic* confidence (the stale cap is ignored for this decision) is below `STALE_THRESHOLD` **and** inactivity — `now` minus the most recent of `last_confirmed` or `last_accessed` — exceeds the decay class's `INACTIVITY_DAYS` window. A recently read or freshly confirmed page therefore stays active.
+- **stale → active** only on recent **reinforcement** (`last_confirmed` within the window), never on a read alone, and never for a page explicitly `superseded_by` another. Access boosts confidence but cannot by itself revive a stale page.
+
+The pass is **idempotent**: with no time change it makes no transitions and no commits. The scheduler that fires it automatically is Phase 4; for now it is the `mnesis decay` command (MCP `wiki_decay`).
 
 ---
 

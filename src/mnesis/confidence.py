@@ -61,12 +61,17 @@ def compute_confidence(
     page: Page,
     access: dict | None = None,
     now: datetime | None = None,
+    apply_stale_cap: bool = True,
 ) -> tuple[float, dict]:
     """Compute ``(score, breakdown)`` for ``page``.
 
     ``access`` is the state-store record ``{"count", "last_accessed"}`` or
     ``None``. ``now`` is injectable for deterministic tests (defaults to UTC now).
     The ``breakdown`` exposes every term for explainability.
+
+    ``apply_stale_cap`` (default True) clamps a ``stale`` page to ``STALE_CAP``.
+    The lifecycle pass sets it False to read a page's *intrinsic* confidence when
+    deciding whether to revive it — otherwise the cap would deadlock reactivation.
     """
     if now is None:
         now = datetime.now(timezone.utc)
@@ -90,7 +95,7 @@ def compute_confidence(
     conf = max(0.0, min(1.0, conf))
 
     stale_capped = False
-    if page.status == "stale" and conf > config.STALE_CAP:
+    if apply_stale_cap and page.status == "stale" and conf > config.STALE_CAP:
         conf = config.STALE_CAP
         stale_capped = True
 

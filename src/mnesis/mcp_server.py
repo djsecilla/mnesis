@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from mcp.server.fastmcp import FastMCP
 
-from . import config, confidence, ingest, search, state, store
+from . import config, confidence, ingest, lifecycle, search, state, store
 from .filters import scrub
 from .store import Page
 
@@ -166,6 +166,18 @@ def wiki_rebuild() -> str:
     """Rebuild the search index from the Markdown pages (cache projection)."""
     n = search.rebuild()
     return f"rebuilt index from {n} page(s)"
+
+
+@mcp.tool()
+def wiki_decay() -> str:
+    """Run the decay/lifecycle pass: recompute confidence corpus-wide and
+    transition pages between active and stale (aged, unread, low-confidence pages
+    go stale; reinforced ones revive). Idempotent. Returns the transition counts."""
+    s = lifecycle.recompute_all()
+    return (
+        f"decay: scanned {s['scanned']}, restaled {s['restaled']}, "
+        f"reactivated {s['reactivated']}, unchanged {s['unchanged']}"
+    )
 
 
 @mcp.tool()

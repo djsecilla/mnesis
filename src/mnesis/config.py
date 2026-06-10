@@ -108,6 +108,23 @@ AUTO_RESOLVE_MARGIN: float = _env_float("WIKI_AUTO_RESOLVE_MARGIN", 0.25)
 #: How many top search hits to consider as candidate existing pages on ingest.
 CANDIDATE_TOP_N: int = _env_int("WIKI_CANDIDATE_TOP_N", 5)
 
+# --- Phase 2: decay / lifecycle ---------------------------------------------
+
+#: An active page goes stale only when confidence drops below this AND it has
+#: been inactive (no access, no reinforcement) past its decay class's window.
+STALE_THRESHOLD: float = _env_float("WIKI_STALE_THRESHOLD", 0.25)
+
+#: Inactivity window (days) per decay class before a low-confidence page may go
+#: stale. Slow classes tolerate longer silence; transients/bugs go quiet fast.
+INACTIVITY_DAYS: dict[str, int] = {
+    "decision": _env_int("WIKI_INACTIVITY_DECISION", 180),
+    "architecture": _env_int("WIKI_INACTIVITY_ARCHITECTURE", 180),
+    "fact": _env_int("WIKI_INACTIVITY_FACT", 90),
+    "note": _env_int("WIKI_INACTIVITY_NOTE", 30),
+    "transient": _env_int("WIKI_INACTIVITY_TRANSIENT", 14),
+    "bug": _env_int("WIKI_INACTIVITY_BUG", 14),
+}
+
 
 def ensure_dirs() -> None:
     """Create the wiki directory tree on demand. Safe to call repeatedly."""
