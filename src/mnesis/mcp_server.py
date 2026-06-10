@@ -17,11 +17,24 @@ from __future__ import annotations
 
 from mcp.server.fastmcp import FastMCP
 
-from . import config, ingest, search, store
+from . import config, confidence, ingest, search, state, store
 from .filters import scrub
 from .store import Page
 
 mcp = FastMCP("mnesis")
+
+
+def _open_contradiction_ids() -> set[str]:
+    """Page ids that appear in an open contradiction review."""
+    ids: set[str] = set()
+    for r in state.list_open_reviews():
+        ids.add(r["page_a"])
+        ids.add(r["page_b"])
+    return ids
+
+
+def _page_confidence(page: Page) -> float:
+    return confidence.compute_confidence(page, access=state.get_access(page.id))[0]
 
 
 def _heuristic_quality(answer: str) -> float:
@@ -71,9 +84,12 @@ def wiki_query(query: str, limit: int = 10, include_stale: bool = False) -> str:
     hits = search.search(query, limit, include_stale=include_stale)
     if not hits:
         return f'no results for "{query}"'
+    contradicted = _open_contradiction_ids()
     lines = []
     for i, h in enumerate(hits, 1):
         mark = "" if h.status == "active" else f" [{h.status}]"
+        if h.id in contradicted:
+            mark += " ⚠ contradiction under review"
         lines.append(
             f"{i}. {h.id} — {h.title}{mark} (conf {h.confidence:.2f}, score {h.final_score:.3f})"
         )
@@ -98,6 +114,8 @@ def wiki_get(page_id: str) -> str:
     if not path.exists():
         return f"no such page: {page_id}"
     md = path.read_text(encoding="utf-8")
+    if page_id in _open_contradiction_ids():
+        md += "\n\n> ⚠ This page has an open contradiction under review (see `wiki_review`)."
     search.record_and_reindex(page_id)  # reinforcement on read
     return md
 
@@ -148,6 +166,51 @@ def wiki_rebuild() -> str:
     """Rebuild the search index from the Markdown pages (cache projection)."""
     n = search.rebuild()
     return f"rebuilt index from {n} page(s)"
+
+
+@mcp.tool()
+def wiki_review() -> str:
+    """List open contradiction reviews: queue id, both pages (with current
+    confidence and title), and the conflict detail."""
+    reviews = state.list_open_reviews()
+    if not reviews:
+        return "(no open contradictions)"
+    lines = []
+    for r in reviews:
+        parts = []
+        for pid in (r["page_a"], r["page_b"]):
+            try:
+                page = store.read_page(pid)
+                parts.append(f"{pid} (conf {_page_confidence(page):.2f}) \"{page.title}\"")
+            except FileNotFoundError:
+                parts.append(f"{pid} (missing)")
+        lines.append(f"#{r['id']}: {parts[0]}  <->  {parts[1]}")
+        lines.append(f"   detail: {r['detail']}")
+        lines.append(f"   resolve with: mnesis resolve {r['id']} --keep <page_id>")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def wiki_resolve(review_id: int, keep_id: str) -> str:
+    """Resolve an open contradiction by keeping ``keep_id`` and superseding the
+    other page (→ stale). Clears the mutual ``contradicts`` link (lifting the
+    kept page's confidence) and closes the review. Goes through
+    ``store.supersede`` — no ad hoc edits; the loser stays as stale history.
+    """
+    review = next((r for r in state.list_open_reviews() if r["id"] == review_id), None)
+    if review is None:
+        return f"no open review with id {review_id}"
+    pair = (review["page_a"], review["page_b"])
+    if keep_id not in pair:
+        return f"keep id {keep_id} is not part of review {review_id} ({pair[0]} / {pair[1]})"
+    other_id = pair[1] if keep_id == pair[0] else pair[0]
+
+    kept = store.read_page(keep_id)
+    store.supersede(other_id, kept)  # other -> stale, mutual contradicts cleared, one commit
+    search.upsert(kept)
+    search.upsert(store.read_page(other_id))
+    state.resolve_review(review_id)
+    return f"resolved review {review_id}: kept {keep_id}, superseded {other_id}"
 
 
 if __name__ == "__main__":

@@ -200,7 +200,9 @@ A page is acceptable when it: states a clear, declarative claim in the `title`; 
 
 ## 11. Contradiction handling
 
-**Phase 2 — confidence-margin auto-resolution.** When ingest classifies new info as `contradicts` an existing page, both pages' confidence is compared. If the winner leads by ≥ `AUTO_RESOLVE_MARGIN` (default 0.25), the loser is auto-superseded (→ `stale`, links set). Otherwise — no clear winner — both pages coexist as `active`, each records the other's id in its `contradicts` list (which feeds the `contradiction_factor` penalty, sinking both in search), and `state.enqueue_contradiction` files a review-queue entry for human/agent resolution. A contradicted page is never deleted. (Resolving queued reviews via `mnesis review` / `resolve` is the next Phase-2 step; LLM-as-judge adjudication remains Phase 5.)
+**Phase 2 — confidence-margin auto-resolution.** When ingest classifies new info as `contradicts` an existing page, both pages' confidence is compared. If the winner leads by ≥ `AUTO_RESOLVE_MARGIN` (default 0.25), the loser is auto-superseded (→ `stale`, links set). Otherwise — no clear winner — both pages coexist as `active`, each records the other's id in its `contradicts` list (which feeds the `contradiction_factor` penalty, sinking both in search), and `state.enqueue_contradiction` files a review-queue entry.
+
+**Resolving the queue.** `mnesis review` (MCP `wiki_review`) lists open contradictions with each page's current confidence; `mnesis resolve <review_id> --keep <page_id>` (MCP `wiki_resolve`) keeps one page and supersedes the other through `store.supersede` — which clears the mutual `contradicts` link, lifting the kept page's `contradiction_factor` back to 1.0 — then calls `state.resolve_review`. Resolution is always via supersede/status change (no ad hoc edits); the loser stays as `stale` history, never deleted; a resolved review never reappears. `wiki_query`/`wiki_get` flag a returned page that has an open contradiction. LLM-as-judge adjudication remains Phase 5.
 
 ---
 

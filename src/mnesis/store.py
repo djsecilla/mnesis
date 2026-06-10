@@ -252,11 +252,17 @@ def supersede(old_id: str, new_page: Page) -> Path:
     Links both directions — the new page ``supersedes`` the old, the old page is
     flipped to ``status: stale`` with ``superseded_by`` set — and records the pair
     in a single commit. Stale pages are deprioritised, never deleted (CLAUDE.md §12).
+
+    Superseding also **resolves any mutual contradiction** between the two pages:
+    each is removed from the other's ``contradicts`` list (one page replacing the
+    other ends their conflict, lifting the kept page's ``contradiction_factor``).
     """
     old = read_page(old_id)
     new_page.supersedes = old_id
     old.status = "stale"
     old.superseded_by = new_page.id
+    new_page.contradicts = [c for c in new_page.contradicts if c != old_id]
+    old.contradicts = [c for c in old.contradicts if c != new_page.id]
 
     new_path = _write_file(new_page)
     old_path = _write_file(old)

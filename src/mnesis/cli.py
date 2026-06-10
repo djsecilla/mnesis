@@ -61,6 +61,13 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("list", help="list all pages")
     sub.add_parser("rebuild", help="rebuild the search index from Markdown")
+    sub.add_parser("review", help="list open contradiction reviews")
+
+    p_resolve = sub.add_parser("resolve", help="resolve a contradiction review")
+    p_resolve.add_argument("review_id", type=int, help="the review queue id")
+    p_resolve.add_argument(
+        "--keep", required=True, dest="keep_id", help="id of the page to keep (authoritative)"
+    )
     return parser
 
 
@@ -82,6 +89,10 @@ def main(argv: list[str] | None = None) -> int:
         print(mcp_server.wiki_list())
     elif args.command == "rebuild":
         print(mcp_server.wiki_rebuild())
+    elif args.command == "review":
+        print(mcp_server.wiki_review())
+    elif args.command == "resolve":
+        print(mcp_server.wiki_resolve(args.review_id, args.keep_id))
     return 0
 
 
