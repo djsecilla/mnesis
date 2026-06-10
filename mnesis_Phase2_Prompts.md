@@ -164,7 +164,7 @@ OBJECTIVE: Upgrade ingest.py so a new source is classified against existing page
 BUILD:
 - After scrubbing and extraction, before writing: find candidate existing pages via search.search on the extracted title/key terms (top N, active pages). For each strong candidate, ask the LLM (stubbable) to classify the new info vs the candidate as one of: reinforces (same claim, new support), supersedes (updates/replaces the claim), contradicts (conflicts, no clear winner), unrelated.
 - Route:
-    * reinforces -> reinforce(existing): append the new source, source_count += 1, last_confirmed = now; optionally enrich the body; single commit "wiki: reinforce <id>". No new page.
+    * reinforces -> reinforce(existing): append the new source, source_count += 1, last_confirmed = now; optionally enrich the body; single commit "mnesis: reinforce <id>". No new page.
     * supersedes -> write the new page, then store.supersede(old_id, new_page) (old -> stale, links both ways).
     * contradicts -> compute both pages' confidence; if the winner's confidence exceeds the loser's by AUTO_RESOLVE_MARGIN (config), auto-supersede the loser; otherwise write the new page, add each other's id to both pages' `contradicts` lists, and state.enqueue_contradiction(...). 
     * unrelated -> create a new page (Phase-1 behaviour).
@@ -193,7 +193,7 @@ OBJECTIVE: Implement a decay/lifecycle pass that recomputes confidence corpus-wi
 
 BUILD:
 - src/mnesis/lifecycle.py:
-    * recompute_all() -> summary: for every page, recompute confidence (refresh the cached value in the index). Transition active -> stale when confidence < STALE_THRESHOLD (config, default 0.25) AND inactivity (no access, no reinforcement) exceeds the decay-class inactivity window. Reactivate stale -> active only on reinforcement/supersession-clear, not on a read alone. Each status change is one commit ("wiki: <id> -> stale|active"). Idempotent: a second run with no time change makes no commits.
+    * recompute_all() -> summary: for every page, recompute confidence (refresh the cached value in the index). Transition active -> stale when confidence < STALE_THRESHOLD (config, default 0.25) AND inactivity (no access, no reinforcement) exceeds the decay-class inactivity window. Reactivate stale -> active only on reinforcement/supersession-clear, not on a read alone. Each status change is one commit ("mnesis: <id> -> stale|active"). Idempotent: a second run with no time change makes no commits.
     * Return counts: scanned, restaled, reactivated, unchanged.
 - CLI: `mnesis decay` runs recompute_all and prints the summary.
 - MCP: wiki_decay() tool exposing the same.

@@ -115,7 +115,7 @@ OBJECTIVE: Implement src/mnesis/store.py with create/read/update/list/supersede 
 
 BUILD:
 - A Page model (dataclass) with the exact frontmatter fields defined in CLAUDE.md: id, title, body, created, updated, sources (list), source_count (int), last_confirmed (iso), tags (list), kind, status, supersedes, superseded_by.
-- write_page(page) -> path: serialize to wiki/pages/<id>.md via python-frontmatter; set/refresh updated; then git add + commit "wiki: write <id>".
+- write_page(page) -> path: serialize to wiki/pages/<id>.md via python-frontmatter; set/refresh updated; then git add + commit "mnesis: write <id>".
 - read_page(id) -> Page; list_pages(status=None, kind=None) -> [Page]; page_exists(id).
 - supersede(old_id, new_page): write the new page with supersedes=old_id; flip the old page to status=stale and superseded_by=new_id; commit once. (Minimal — this is a seam for the Phase-2 lifecycle.)
 - slugify(title) for ids, collision-safe (append -2, -3, ...).

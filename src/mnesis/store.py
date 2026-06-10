@@ -195,13 +195,13 @@ def _write_file(page: Page) -> Path:
 
 
 def write_page(page: Page) -> Path:
-    """Persist ``page`` and commit it as ``wiki: write <id>``. Returns the path.
+    """Persist ``page`` and commit it as ``mnesis: write <id>``. Returns the path.
 
     ``updated`` is refreshed in place, so the passed object matches what is on
     disk after the call.
     """
     path = _write_file(page)
-    _commit([path], f"wiki: write {page.id}")
+    _commit([path], f"mnesis: write {page.id}")
     return path
 
 
@@ -239,5 +239,5 @@ def supersede(old_id: str, new_page: Page) -> Path:
 
     new_path = _write_file(new_page)
     old_path = _write_file(old)
-    _commit([new_path, old_path], f"wiki: supersede {old_id} -> {new_page.id}")
+    _commit([new_path, old_path], f"mnesis: supersede {old_id} -> {new_page.id}")
     return new_path
