@@ -33,10 +33,11 @@ def _stub_complete(system: str, user: str) -> str:
     input, so tests and the demo are reproducible.
     """
     text = user.strip()
-    first_line = next((ln.strip() for ln in text.splitlines() if ln.strip()), "Untitled source")
-    title = first_line[:80]
-    summary = " ".join(text.split())[:300]
     sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+    # Title from the first sentence (declarative-ish), not the whole blob.
+    first = sentences[0] if sentences else "Untitled source"
+    title = first[:80].rstrip()
+    summary = " ".join(text.split())[:300]
     key_facts = sentences[:3] or [title]
     payload = {
         "title": title,
