@@ -99,6 +99,15 @@ STALE_CAP: float = _env_float("WIKI_STALE_CAP", 0.40)
 ACCESS_BOOST_CAP: float = _env_float("WIKI_ACCESS_BOOST_CAP", 0.10)
 ACCESS_BOOST_PER: float = _env_float("WIKI_ACCESS_BOOST_PER", 0.02)
 
+# --- Phase 2: relation-aware ingest -----------------------------------------
+
+#: A contradiction auto-resolves when the winner's confidence exceeds the
+#: loser's by at least this margin; otherwise both pages coexist and are queued.
+AUTO_RESOLVE_MARGIN: float = _env_float("WIKI_AUTO_RESOLVE_MARGIN", 0.25)
+
+#: How many top search hits to consider as candidate existing pages on ingest.
+CANDIDATE_TOP_N: int = _env_int("WIKI_CANDIDATE_TOP_N", 5)
+
 
 def ensure_dirs() -> None:
     """Create the wiki directory tree on demand. Safe to call repeatedly."""

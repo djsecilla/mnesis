@@ -24,6 +24,7 @@ def wiki(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "WIKI_ROOT", root)
     monkeypatch.setattr(config, "PAGES_DIR", root / "pages")
     monkeypatch.setattr(config, "SOURCES_DIR", root / "sources")
+    monkeypatch.setattr(config, "INDEX_DIR", root / ".index")
     monkeypatch.setattr(config, "WIKI_LLM_STUB", True)
 
     subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True)

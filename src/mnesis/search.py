@@ -65,12 +65,25 @@ def _assert_fts5(conn: sqlite3.Connection) -> None:
         raise RuntimeError(_FTS5_REMEDIATION) from exc
 
 
+_EXPECTED_COLUMNS = ["id", "title", "tags", "body", "status", "confidence", "computed_at"]
+
+
 def _connect() -> sqlite3.Connection:
-    """Open the index DB, verifying FTS5 and ensuring the schema exists."""
+    """Open the index DB, verifying FTS5 and ensuring the (current) schema exists.
+
+    If an existing ``pages`` table predates the current schema, it is dropped and
+    recreated — safe, because the index is a rebuildable cache (a later
+    ``rebuild()``/``upsert`` repopulates it).
+    """
     config.INDEX_DIR.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(_db_path())
     _assert_fts5(conn)
     conn.execute(f"CREATE VIRTUAL TABLE IF NOT EXISTS pages USING {_SCHEMA}")
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(pages)").fetchall()]
+    if cols != _EXPECTED_COLUMNS:
+        conn.execute("DROP TABLE IF EXISTS pages")
+        conn.execute(f"CREATE VIRTUAL TABLE pages USING {_SCHEMA}")
+        conn.commit()
     return conn
 
 

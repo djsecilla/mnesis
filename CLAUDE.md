@@ -126,7 +126,7 @@ The pipeline contract (`ingest.py`), in order:
 1. **Scrub first.** Run `filters.scrub` on the raw text. Proceed with the redacted text only.
 2. **Persist the source.** Save the redacted source via `store.write_source`, which writes `wiki/sources/<source_ref>.md` and commits it as `mnesis: source <source_ref>` for provenance.
 3. **Extract.** Call the LLM with the disciplined extraction prompt to produce JSON `{title, summary_markdown, key_facts, tags}`. Parse robustly: strip code fences; on failure, retry once with a stricter instruction; then fall back to a minimal page built directly from the source.
-4. **Write.** Build a `fact` page (`source_count: 1`, `last_confirmed: now`, `sources: [source_ref]`) and write it through `store.write_page`, which commits it as `mnesis: write <id>`. (Indexing into the search cache via `search.upsert` is done by the calling interface — CLI/MCP — not by the store.)
+4. **Classify & route (Phase 2).** Build the candidate `fact` page, find top-`CANDIDATE_TOP_N` active existing pages via `search.search`, and classify the new info against each (conservative LLM classifier, defaults to `unrelated`). Route to the lifecycle action below. Ingest upserts every page it touches into the search cache.
 
 **Extraction discipline** (these go in the extraction system prompt):
 - Cite the source. State only what the source supports.
@@ -134,7 +134,13 @@ The pipeline contract (`ingest.py`), in order:
 - Write a declarative `title` that states the claim (e.g. "Project Atlas uses Redis for caching"), not a topic label.
 - Prefer one coherent claim per page. Group tightly related facts; split unrelated ones.
 
-**Create-new vs. update-existing (PoC simplification):** In this PoC, **every ingested source creates a new `fact` page.** Detecting that a new source *reinforces* an existing page (incrementing `source_count`, refreshing `last_confirmed`), *contradicts* it, or should *supersede* it is **Phase 2** — leave the seam (`supersede()` exists in `store.py`) but do not wire automatic reinforcement now.
+**Lifecycle routing (Phase 2)** — the classifier label decides the action:
+- **`reinforces`** → no new page: append the source, `source_count += 1`, reset `last_confirmed` to now (the retention clock), commit `mnesis: reinforce <id>`.
+- **`supersedes`** → write the new page and `store.supersede(old_id, new_page)`: the old page goes `stale` with both links set.
+- **`contradicts`** → compute both pages' confidence; if the winner leads the loser by ≥ `AUTO_RESOLVE_MARGIN`, auto-supersede the loser; otherwise both pages coexist, each other's id is added to their `contradicts` list, and `state.enqueue_contradiction` files a review.
+- **`unrelated`** → create a new `fact` page (`source_count: 1`, `last_confirmed: now`, `sources: [source_ref]`), the Phase-1 behaviour.
+
+A contradicted page is **never silently deleted** — it is superseded (→ `stale`) or queued for review. Reinforcement resets the retention clock; a mere read (access) does not.
 
 ---
 
@@ -194,7 +200,7 @@ A page is acceptable when it: states a clear, declarative claim in the `title`; 
 
 ## 11. Contradiction handling
 
-PoC behaviour is **flag, don't resolve**: if ingestion notices a direct conflict with an existing page, note it in the body and tag both pages for review. Automatic resolution — proposing which claim wins by source recency, authority, and support count, with high-confidence cases applied automatically and low-confidence cases routed to a human — is **Phase 2/5**.
+**Phase 2 — confidence-margin auto-resolution.** When ingest classifies new info as `contradicts` an existing page, both pages' confidence is compared. If the winner leads by ≥ `AUTO_RESOLVE_MARGIN` (default 0.25), the loser is auto-superseded (→ `stale`, links set). Otherwise — no clear winner — both pages coexist as `active`, each records the other's id in its `contradicts` list (which feeds the `contradiction_factor` penalty, sinking both in search), and `state.enqueue_contradiction` files a review-queue entry for human/agent resolution. A contradicted page is never deleted. (Resolving queued reviews via `mnesis review` / `resolve` is the next Phase-2 step; LLM-as-judge adjudication remains Phase 5.)
 
 ---
 

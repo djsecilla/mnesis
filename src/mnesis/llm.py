@@ -25,13 +25,28 @@ MAX_TOKENS = 1024
 _client = None  # lazily constructed real SDK client (never in stub mode)
 
 
-def _stub_complete(system: str, user: str) -> str:
-    """Deterministic canned extraction JSON derived from ``user`` text.
+_RELATION_LABELS = ("reinforces", "supersedes", "contradicts", "unrelated")
 
-    Produces the exact shape ``ingest`` expects — ``{title, summary_markdown,
-    key_facts, tags}`` — without any network call. Deterministic for a given
-    input, so tests and the demo are reproducible.
+
+def _stub_complete(system: str, user: str) -> str:
+    """Deterministic canned JSON without any network call.
+
+    Two request shapes are recognized by their system prompt:
+
+    - **Relation classification** (the prompt names all four relation labels):
+      return ``{"label", "justification"}``, the label read from a
+      ``relation:<label>`` marker in the user text (default ``unrelated``). This
+      lets tests drive every ingest branch deterministically.
+    - **Extraction** (default): return ``{title, summary_markdown, key_facts,
+      tags}`` derived from the user text.
     """
+    if all(label in system for label in _RELATION_LABELS):
+        match = re.search(r"relation:(reinforces|supersedes|contradicts|unrelated)", user)
+        label = match.group(1) if match else "unrelated"
+        return json.dumps(
+            {"label": label, "justification": "stub: deterministic from fixture marker"}
+        )
+
     text = user.strip()
     sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
     # Title from the first sentence (declarative-ish), not the whole blob.

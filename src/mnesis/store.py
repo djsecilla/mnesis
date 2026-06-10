@@ -198,14 +198,16 @@ def _write_file(page: Page) -> Path:
 # --- Public API ------------------------------------------------------------
 
 
-def write_page(page: Page) -> Path:
-    """Persist ``page`` and commit it as ``mnesis: write <id>``. Returns the path.
+def write_page(page: Page, message: str | None = None) -> Path:
+    """Persist ``page`` and commit it. Returns the path.
 
+    The commit message defaults to ``mnesis: write <id>``; callers performing a
+    lifecycle update (reinforce, contradiction cross-link) pass their own.
     ``updated`` is refreshed in place, so the passed object matches what is on
     disk after the call.
     """
     path = _write_file(page)
-    _commit([path], f"mnesis: write {page.id}")
+    _commit([path], message or f"mnesis: write {page.id}")
     return path
 
 
