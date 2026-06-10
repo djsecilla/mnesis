@@ -94,7 +94,8 @@ def test_get_and_list_and_rebuild(wiki):
     pid = store.list_pages()[0].id
 
     md = mcp_server.wiki_get(pid)
-    assert md.startswith("---")  # full frontmatter Markdown
+    assert "status:" in md and "confidence:" in md  # derived header
+    assert "---" in md  # full frontmatter Markdown follows
     assert "no such page" not in mcp_server.wiki_get(pid)
     assert "no such page" in mcp_server.wiki_get("does-not-exist")
 

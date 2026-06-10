@@ -69,15 +69,37 @@ mnesis get project-atlas-uses-redis-for-caching
 mnesis file-back "What caches Atlas?" "Atlas uses Redis for caching." --score 0.9
 ```
 
-Two utilities round it out: `mnesis list` (all pages) and `mnesis rebuild`
+Utilities round it out: `mnesis list` (all pages) and `mnesis rebuild`
 (reconstruct the search index from Markdown). Run any command under
 `uv run mnesis ...` if you have not activated the venv.
+
+### Phase-2 lifecycle commands
+
+Pages carry a derived **confidence** and a **status** (`active`/`stale`); `query`
+and `get` display both, and search blends confidence into ranking (stale pages
+are hidden unless `--include-stale`). Three commands drive the lifecycle:
+
+```bash
+# Recompute confidence corpus-wide; age unread, low-confidence pages to stale.
+mnesis decay
+
+# List open contradiction reviews (low-margin conflicts ingest couldn't auto-resolve).
+mnesis review
+
+# Resolve one: keep a page, supersede the other (-> stale), lift the kept confidence.
+mnesis resolve <review_id> --keep <page_id>
+```
+
+Ingest is relation-aware: a new source can **reinforce** an existing page (more
+support, no new page), **supersede** it (old → stale), **contradict** it
+(auto-resolved by confidence margin, else queued for `review`), or create a new
+page. See [`CLAUDE.md`](CLAUDE.md) §7/§8/§11 for the model.
 
 ## Connect the MCP server to Claude Code
 
 mnesis exposes its tools over the [Model Context Protocol](https://modelcontextprotocol.io):
 `wiki_ingest`, `wiki_query`, `wiki_get`, `wiki_file_back`, `wiki_list`,
-`wiki_rebuild`.
+`wiki_rebuild`, `wiki_decay`, `wiki_review`, `wiki_resolve`.
 
 **Run the server standalone** (stdio transport): `make run-mcp` (i.e.
 `uv run python -m mnesis.mcp_server`).
@@ -100,7 +122,7 @@ Set `ANTHROPIC_API_KEY` for real extraction, or `WIKI_LLM_STUB=1` to run offline
 Run top to bottom on a fresh clone; each step states what you should see.
 
 1. **Install** — `make setup` completes without error and the `mnesis` command
-   is available (`uv run mnesis --help` lists the six subcommands).
+   is available (`uv run mnesis --help` lists the subcommands).
 2. **Tests pass** — `make test` reports all tests passing, fully offline.
 3. **The loop compounds** — `make demo` prints six steps. Confirm:
    - **Step 2** shows `redactions: 1` and the saved source on disk reads
@@ -132,6 +154,31 @@ Run top to bottom on a fresh clone; each step states what you should see.
    deleting the index and rebuilding reproduces identical search results (this
    is also asserted by the test suite).
 
-If every item holds, the Phase-1 PoC is working as designed. See
-[`CLAUDE.md` §13](CLAUDE.md) for what is deliberately **out of scope** here and
-which later phase each deferred capability lands in.
+If every item holds, the Phase-1 PoC is working as designed.
+
+## Verify Phase 2 (confidence & lifecycle)
+
+Phase 2 adds confidence, decay, supersession, and the contradiction review queue.
+
+1. **Lifecycle demo** — `make demo-phase2` (i.e. `uv run python scripts/demo_phase2.py`)
+   prints the full lifecycle in six steps. Confirm:
+   - **Step 2** — an agreeing source *reinforces* page A: `source_count` becomes
+     2 and confidence rises, with **still one page** (no duplicate).
+   - **Step 3** — an updating source creates page B that *supersedes* A; A goes
+     **stale**.
+   - **Step 4** — `query "redis caching"` returns B by default; A reappears
+     **demoted** only with `include_stale`.
+   - **Step 5** — a low-margin conflicting source is **queued**; `mnesis resolve`
+     keeps B, supersedes the conflicter, and empties the queue.
+   - **Step 6** — `mnesis decay` transitions an aged, unread page to **stale**.
+2. **Confidence & status are surfaced** — `make demo-phase2` output (and
+   `mnesis query` / `mnesis get`) show a rounded confidence and status on every
+   page; stale pages are marked.
+3. **Durable state survives a cache rebuild** — deleting the search index
+   (`wiki/.index/wiki.db`) and running `mnesis rebuild` reproduces ranking and
+   confidences **without** clearing the durable state store
+   (`wiki/.index/state.db`: access counts + review queue). Asserted by
+   `tests/test_phase2_e2e.py`.
+
+See [`CLAUDE.md` §13](CLAUDE.md) for the scope map: Phases 1–2 are in scope and
+implemented; Phases 3–6 are deferred, with each capability mapped to its phase.

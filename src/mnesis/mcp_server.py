@@ -103,21 +103,25 @@ def wiki_query(query: str, limit: int = 10, include_stale: bool = False) -> str:
 
 @mcp.tool()
 def wiki_get(page_id: str) -> str:
-    """Return the full Markdown (frontmatter + body) of a page by id.
+    """Return a page's full Markdown (frontmatter + body), prefixed with its
+    current derived confidence and status.
 
-    Reading a page records an access (reinforcement) and refreshes its cached
-    confidence.
+    Confidence is derived (not stored in Markdown), so it is shown in a header
+    line, not the frontmatter. Reading a page records an access (reinforcement)
+    and refreshes its cached confidence.
     """
     if "/" in page_id or "\\" in page_id:
         return f"invalid page id: {page_id}"
     path = config.PAGES_DIR / f"{page_id}.md"
     if not path.exists():
         return f"no such page: {page_id}"
-    md = path.read_text(encoding="utf-8")
+    page = store.read_page(page_id)
+    header = f"[{page_id}] status: {page.status} | confidence: {_page_confidence(page):.2f}"
     if page_id in _open_contradiction_ids():
-        md += "\n\n> ⚠ This page has an open contradiction under review (see `wiki_review`)."
+        header += " | ⚠ contradiction under review (see `wiki_review`)"
+    md = path.read_text(encoding="utf-8")
     search.record_and_reindex(page_id)  # reinforcement on read
-    return md
+    return f"{header}\n\n{md}"
 
 
 @mcp.tool()

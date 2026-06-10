@@ -225,7 +225,7 @@ A page is acceptable when it: states a clear, declarative claim in the `title`; 
 
 **In scope (Phase 1 — implemented):** filtered ingest · Markdown + git canonical store · FTS5 keyword search (rebuildable) · MCP interface with `wiki_ingest` / `wiki_query` / `wiki_file_back` (+ `wiki_get`, `wiki_list`, `wiki_rebuild`) · `mnesis` CLI · end-to-end demo and test. All present and exercised by the test suite.
 
-**In scope (Phase 2 — in progress):** confidence scoring & Ebbinghaus-style decay; the supersession/stale lifecycle; contradiction review queue. *Foundations landed:* the `contradicts` and `decay_class` frontmatter fields, and the durable **state store** (`state.py`: access events + review queue). *Still to come:* the actual confidence computation, decay-driven `active`↔`stale` transitions, and reinforcement-on-reingest. No scoring or behaviour change has shipped yet.
+**In scope (Phase 2 — implemented):** confidence scoring (`confidence.py`) & Ebbinghaus-style decay with the active↔stale lifecycle (`lifecycle.py`, `mnesis decay`); relation-aware ingest — reinforce / supersede / contradict / create (`ingest.py`); the durable **state store** (`state.py`: access events + review queue); confidence-blended retrieval with access-on-read reinforcement (`search.py`); and the contradiction review queue (`mnesis review` / `resolve`). The `contradicts` and `decay_class` frontmatter fields back this. All exercised by the test suite and the `scripts/demo_phase2.py` regression demo.
 
 **Out of scope for now — map of where each deferred capability lands:**
 
