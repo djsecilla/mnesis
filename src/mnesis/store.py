@@ -205,6 +205,21 @@ def write_page(page: Page) -> Path:
     return path
 
 
+def write_source(source_ref: str, text: str) -> Path:
+    """Persist a (already-redacted) raw source to ``wiki/sources/<ref>.md`` for
+    provenance and commit it as ``mnesis: source <ref>``. Returns the path.
+
+    Callers must scrub ``text`` first — this writes verbatim (CLAUDE.md §2.2/§7).
+    """
+    if "/" in source_ref or "\\" in source_ref or source_ref in {"", ".", ".."}:
+        raise ValueError(f"unsafe source ref: {source_ref!r}")
+    config.SOURCES_DIR.mkdir(parents=True, exist_ok=True)
+    path = config.SOURCES_DIR / f"{source_ref}.md"
+    path.write_text(text.rstrip() + "\n", encoding="utf-8")
+    _commit([path], f"mnesis: source {source_ref}")
+    return path
+
+
 def read_page(page_id: str) -> Page:
     """Load a page from disk."""
     path = _page_path(page_id)
