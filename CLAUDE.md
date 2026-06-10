@@ -140,9 +140,10 @@ The pipeline contract (`ingest.py`), in order:
 
 ## 8. Retrieval contract
 
-- Search is **BM25 keyword only** over `(id, title, tags, body)` via SQLite FTS5. Vector similarity, graph traversal, and reciprocal rank fusion are **out of scope** for the PoC.
-- `search(query, limit)` returns ranked hits with `id`, `title`, `score`, and a `snippet`.
-- The index is rebuilt from Markdown by `rebuild()`. `mnesis rebuild` after deleting `wiki/.index/` must reproduce identical results — this is the canonical-vs-cache invariant, and there is a test that asserts it.
+- Matching is **BM25 keyword** over `(id, title, tags, body)` via SQLite FTS5, **blended with confidence** (Phase 2): `final_score = bm25_norm * (0.5 + 0.5 * confidence)`. Vector similarity, graph traversal, and reciprocal rank fusion remain out of scope (Phase 5 / Phase 3).
+- `search(query, limit=10, include_stale=False)` returns hits with `id`, `title`, `snippet`, `bm25_score`, `confidence`, `final_score`, and `status`, ordered by `final_score`. **Stale pages are excluded unless `include_stale=True`**, and (capped at `STALE_CAP`) never outrank an active page of comparable match.
+- Each indexed row **caches** the page's `confidence` (and `computed_at`) in UNINDEXED columns — derived state that lives in the index, never in Markdown. The Markdown-derived part is reproducible by `rebuild()`; the access-boost part comes from the durable state store. So after deleting `wiki/.index/`, `rebuild()` reproduces the deterministic parts (bm25, snippets) and the ranking *order*; exact confidence floats may differ only by the wall-clock delta in retention. A test asserts this.
+- **Reads reinforce.** `wiki_get`, and the top hits of `wiki_query`, call `state.record_access` and refresh that page's cached confidence — cheaply and never blocking or failing the query.
 
 ### Search index vs state store (refined invariant)
 

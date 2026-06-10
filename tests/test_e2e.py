@@ -96,8 +96,8 @@ def test_full_compounding_loop(wiki):
     assert sum(m.startswith("mnesis: write ") for m in msgs) == 3  # 2 facts + 1 digest
 
     # --- a fresh rebuild reproduces the search results ---
-    before = [(h.id, h.score, h.snippet) for h in search.search("caching")]
+    before = [(h.id, h.bm25_score, h.snippet) for h in search.search("caching")]
     (config.INDEX_DIR / "wiki.db").unlink()
     search.rebuild()
-    after = [(h.id, h.score, h.snippet) for h in search.search("caching")]
+    after = [(h.id, h.bm25_score, h.snippet) for h in search.search("caching")]
     assert before == after

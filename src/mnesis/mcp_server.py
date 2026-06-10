@@ -61,27 +61,45 @@ def wiki_ingest(text: str, source_ref: str) -> str:
 
 
 @mcp.tool()
-def wiki_query(query: str, limit: int = 10) -> str:
-    """Keyword-search the wiki (BM25). Returns ranked hits with snippets."""
-    hits = search.search(query, limit)
+def wiki_query(query: str, limit: int = 10, include_stale: bool = False) -> str:
+    """Keyword-search the wiki, ranked by BM25 blended with confidence.
+
+    Hits show confidence and status; results are ordered by the blended score so
+    well-supported, fresh, often-read pages rise. Stale pages are excluded unless
+    ``include_stale=True``. Reading the top hits records access (reinforcement).
+    """
+    hits = search.search(query, limit, include_stale=include_stale)
     if not hits:
         return f'no results for "{query}"'
     lines = []
     for i, h in enumerate(hits, 1):
-        lines.append(f"{i}. {h.id} — {h.title} (score {h.score:.3f})")
+        mark = "" if h.status == "active" else f" [{h.status}]"
+        lines.append(
+            f"{i}. {h.id} — {h.title}{mark} (conf {h.confidence:.2f}, score {h.final_score:.3f})"
+        )
         lines.append(f"   {h.snippet}")
-    return "\n".join(lines)
+    out = "\n".join(lines)
+    # Reinforcement: record access for the surfaced top hits (cheap, never fails).
+    for h in hits[:search._ACCESS_TOP_N]:
+        search.record_and_reindex(h.id)
+    return out
 
 
 @mcp.tool()
 def wiki_get(page_id: str) -> str:
-    """Return the full Markdown (frontmatter + body) of a page by id."""
+    """Return the full Markdown (frontmatter + body) of a page by id.
+
+    Reading a page records an access (reinforcement) and refreshes its cached
+    confidence.
+    """
     if "/" in page_id or "\\" in page_id:
         return f"invalid page id: {page_id}"
     path = config.PAGES_DIR / f"{page_id}.md"
     if not path.exists():
         return f"no such page: {page_id}"
-    return path.read_text(encoding="utf-8")
+    md = path.read_text(encoding="utf-8")
+    search.record_and_reindex(page_id)  # reinforcement on read
+    return md
 
 
 @mcp.tool()

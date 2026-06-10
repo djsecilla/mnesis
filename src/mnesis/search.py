@@ -1,12 +1,16 @@
-"""SQLite FTS5 keyword search — a rebuildable projection of the Markdown pages.
+"""SQLite FTS5 keyword search, blended with Phase-2 confidence.
 
-Honors the canonical-vs-cache invariant (CLAUDE.md §2.1, §8): the Markdown
-pages are the single source of truth and this index stores **nothing** that is
-not derivable from them. The DB at ``wiki/.index/wiki.db`` is gitignored and is
-fully reconstructable by :func:`rebuild` from ``store.list_pages()`` alone.
+Honors the canonical-vs-cache invariant (CLAUDE.md §2.1, §8): the Markdown pages
+are the single source of truth and the search index (``wiki/.index/wiki.db``) is
+a rebuildable projection. Each indexed row caches the page's **confidence** (and
+``computed_at``) in UNINDEXED columns — derived state that lives here, never in
+Markdown. The confidence's Markdown-derived part is reproducible; its access
+boost comes from the durable state store (`state.py`), which ``rebuild()`` never
+clears.
 
-Ranking is plain BM25 via FTS5's ``bm25()``. Vector similarity, embeddings, and
-graph traversal are explicitly out of scope for the PoC (Phase 5 / Phase 3).
+Ranking blends normalized BM25 with confidence so well-supported, fresh, often-
+read pages rise and stale ones sink. Component scores are returned on every hit
+for explainability. Vectors/RRF remain out of scope (Phase 5).
 """
 
 from __future__ import annotations
@@ -16,11 +20,19 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import config, store
+from . import config, confidence, state, store
 
-# Column layout of the FTS5 table; body is index 3 (used for snippets).
-_COLUMNS = ("id", "title", "tags", "body")
+# Indexed text columns, then UNINDEXED cached derived state. body is index 3.
 _BODY_COL = 3
+
+# How many surfaced hits get their access recorded + confidence reindexed.
+_ACCESS_TOP_N = 3
+
+_SCHEMA = (
+    "fts5(id, title, tags, body, "
+    "status UNINDEXED, confidence UNINDEXED, computed_at UNINDEXED, "
+    "tokenize='porter unicode61')"
+)
 
 _FTS5_REMEDIATION = (
     "SQLite FTS5 is not available in this Python's sqlite3 build. "
@@ -34,8 +46,11 @@ _FTS5_REMEDIATION = (
 class SearchHit:
     id: str
     title: str
-    score: float  # BM25: lower is a better match (FTS5 convention)
     snippet: str
+    bm25_score: float  # raw FTS5 bm25 (lower = better match)
+    confidence: float  # cached [0,1] confidence
+    final_score: float  # blended rank score (higher = better)
+    status: str  # active | stale
 
 
 def _db_path() -> Path:
@@ -55,37 +70,47 @@ def _connect() -> sqlite3.Connection:
     config.INDEX_DIR.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(_db_path())
     _assert_fts5(conn)
-    conn.execute(
-        "CREATE VIRTUAL TABLE IF NOT EXISTS pages "
-        "USING fts5(id, title, tags, body, tokenize='porter unicode61')"
-    )
+    conn.execute(f"CREATE VIRTUAL TABLE IF NOT EXISTS pages USING {_SCHEMA}")
     return conn
 
 
-def _row_for(page: store.Page) -> tuple[str, str, str, str]:
-    return (page.id, page.title, " ".join(page.tags), page.body)
+def _cached_confidence(page: store.Page) -> float:
+    """Confidence for the cached column: Markdown inputs + durable access state."""
+    score, _ = confidence.compute_confidence(page, access=state.get_access(page.id))
+    return score
+
+
+def _index_row(page: store.Page) -> tuple:
+    return (
+        page.id,
+        page.title,
+        " ".join(page.tags),
+        page.body,
+        page.status,
+        _cached_confidence(page),
+        store.now_iso(),
+    )
+
+
+_INSERT_SQL = (
+    "INSERT INTO pages (id, title, tags, body, status, confidence, computed_at) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?)"
+)
 
 
 def rebuild() -> int:
     """Drop and repopulate the index from every Markdown page. Returns the count.
 
-    This is the source-of-truth -> cache projection. Pages are inserted in
-    ``store.list_pages()`` order (sorted by id), so the resulting index — and
-    therefore BM25 scores and snippets — is deterministic and identical across
-    rebuilds.
+    Reproducible in its Markdown-derived parts (bm25, snippets); the cached
+    confidence additionally reflects the durable state store, which this function
+    reads but never clears.
     """
     conn = _connect()
     try:
         conn.execute("DROP TABLE IF EXISTS pages")
-        conn.execute(
-            "CREATE VIRTUAL TABLE pages "
-            "USING fts5(id, title, tags, body, tokenize='porter unicode61')"
-        )
+        conn.execute(f"CREATE VIRTUAL TABLE pages USING {_SCHEMA}")
         pages = store.list_pages()
-        conn.executemany(
-            "INSERT INTO pages (id, title, tags, body) VALUES (?, ?, ?, ?)",
-            [_row_for(p) for p in pages],
-        )
+        conn.executemany(_INSERT_SQL, [_index_row(p) for p in pages])
         conn.commit()
         return len(pages)
     finally:
@@ -93,17 +118,27 @@ def rebuild() -> int:
 
 
 def upsert(page: store.Page) -> None:
-    """Incrementally (re)index a single page — call after a write."""
+    """Incrementally (re)index a single page, recomputing its cached confidence."""
     conn = _connect()
     try:
         conn.execute("DELETE FROM pages WHERE id = ?", (page.id,))
-        conn.execute(
-            "INSERT INTO pages (id, title, tags, body) VALUES (?, ?, ?, ?)",
-            _row_for(page),
-        )
+        conn.execute(_INSERT_SQL, _index_row(page))
         conn.commit()
     finally:
         conn.close()
+
+
+def record_and_reindex(page_id: str) -> None:
+    """Record one access to ``page_id`` and refresh its cached confidence.
+
+    Reinforcement on read (CLAUDE.md §8). Best-effort: access tracking must be
+    cheap and must never block or fail a query, so all errors are swallowed.
+    """
+    try:
+        state.record_access(page_id)
+        upsert(store.read_page(page_id))
+    except Exception:
+        pass
 
 
 def _to_match_query(query: str) -> str | None:
@@ -114,26 +149,52 @@ def _to_match_query(query: str) -> str | None:
     return " ".join(f'"{t}"' for t in tokens)
 
 
-def search(query: str, limit: int = 10) -> list[SearchHit]:
-    """Return up to ``limit`` BM25-ranked hits for ``query`` (best first)."""
+def search(query: str, limit: int = 10, include_stale: bool = False) -> list[SearchHit]:
+    """Confidence-blended keyword search.
+
+    Returns up to ``limit`` hits ordered by ``final_score`` (higher = better),
+    which blends normalized BM25 relevance with cached confidence:
+    ``final = bm25_norm * (0.5 + 0.5 * confidence)``. Stale pages are excluded
+    unless ``include_stale=True``, and (being capped at ``STALE_CAP``) never
+    outrank an active page of comparable match.
+    """
     match = _to_match_query(query)
     if match is None:
         return []
+    sql = (
+        f"SELECT id, title, snippet(pages, {_BODY_COL}, '[', ']', '…', 12) AS snip, "
+        "bm25(pages) AS bm25, status, confidence "
+        "FROM pages WHERE pages MATCH ?"
+    )
+    if not include_stale:
+        sql += " AND status != 'stale'"
     conn = _connect()
     try:
-        rows = conn.execute(
-            f"""
-            SELECT id,
-                   title,
-                   bm25(pages) AS score,
-                   snippet(pages, {_BODY_COL}, '[', ']', '…', 12) AS snip
-            FROM pages
-            WHERE pages MATCH ?
-            ORDER BY bm25(pages)
-            LIMIT ?
-            """,
-            (match, limit),
-        ).fetchall()
+        rows = conn.execute(sql, (match,)).fetchall()
     finally:
         conn.close()
-    return [SearchHit(id=r[0], title=r[1], score=r[2], snippet=r[3]) for r in rows]
+    if not rows:
+        return []
+
+    # Normalize BM25 to [0,1] relevance (FTS5 bm25 is <= 0; more negative = better).
+    relevances = [-row[3] for row in rows]
+    max_rel = max(relevances)
+    hits: list[SearchHit] = []
+    for row, rel in zip(rows, relevances):
+        conf = float(row[5]) if row[5] is not None else 0.0
+        bm25_norm = (rel / max_rel) if max_rel > 0 else 1.0
+        final = bm25_norm * (0.5 + 0.5 * conf)
+        hits.append(
+            SearchHit(
+                id=row[0],
+                title=row[1],
+                snippet=row[2],
+                bm25_score=row[3],
+                confidence=conf,
+                final_score=final,
+                status=row[4],
+            )
+        )
+    # Best first; deterministic tie-breaks on relevance then id.
+    hits.sort(key=lambda h: (-h.final_score, h.bm25_score, h.id))
+    return hits[:limit]

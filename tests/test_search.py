@@ -66,13 +66,13 @@ def test_rebuild_and_search_top_hit(wiki):
 def test_index_is_rebuildable_identically(wiki):
     _seed_three_pages()
     search.rebuild()
-    before = [(h.id, h.score, h.snippet) for h in search.search("redis caching")]
+    before = [(h.id, h.bm25_score, h.snippet) for h in search.search("redis caching")]
 
     # Blow away the cache entirely, then rebuild from Markdown alone.
     (config.INDEX_DIR / "wiki.db").unlink()
     count = search.rebuild()
     assert count == 3
-    after = [(h.id, h.score, h.snippet) for h in search.search("redis caching")]
+    after = [(h.id, h.bm25_score, h.snippet) for h in search.search("redis caching")]
 
     assert before == after  # identical: id, BM25 score, and snippet
 

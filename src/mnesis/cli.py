@@ -43,6 +43,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p_query = sub.add_parser("query", help="keyword-search the wiki")
     p_query.add_argument("text", help="the search query")
     p_query.add_argument("--limit", type=int, default=10, help="max hits (default 10)")
+    p_query.add_argument(
+        "--include-stale",
+        action="store_true",
+        help="include stale pages (demoted) in results",
+    )
 
     p_get = sub.add_parser("get", help="print a page's full Markdown by id")
     p_get.add_argument("id", help="the page id")
@@ -68,7 +73,7 @@ def main(argv: list[str] | None = None) -> int:
         source_ref = args.source_ref or ("stdin" if args.file == "-" else Path(args.file).stem)
         print(mcp_server.wiki_ingest(text, source_ref))
     elif args.command == "query":
-        print(mcp_server.wiki_query(args.text, args.limit))
+        print(mcp_server.wiki_query(args.text, args.limit, include_stale=args.include_stale))
     elif args.command == "get":
         print(mcp_server.wiki_get(args.id))
     elif args.command == "file-back":
