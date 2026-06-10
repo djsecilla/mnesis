@@ -1,10 +1,10 @@
-# mnesis — Docker Deployment Playbook
+# Mnesis — Docker Deployment Playbook
 
 **Containerize and spin up the whole system with Docker Compose. A sequenced prompt set for Claude Code (Opus 4.6).**
 
-This playbook packages the wiki — the Python app, the MCP server, the canonical git store, and the SQLite/Kùzu indexes — into a Compose deployment you can bring up with one command. It is **orthogonal to the feature phases**: run it after any phase. The prompts adapt to whatever is built; they assume only that the `mnesis` package and its `mnesis` CLI exist.
+This playbook packages the wiki — the Python app, the MCP server, the canonical git store, and the SQLite indexes — into a Compose deployment you can bring up with one command. It is **orthogonal to the feature phases**: run it after any phase. The prompts adapt to whatever is built; they assume only that the `mnesis` package and its `mnesis` CLI exist.
 
-It matches the **current Tier-A architecture**: a single application container with embedded SQLite and Kùzu, and a persistent volume. It is *not* the full Tier-B topology (Postgres + pgvector + AGE, Qdrant, Redis, Temporal) — those services arrive with Phases 5–6, and D3 leaves a clearly-marked seam for them.
+It matches the **current Tier-A architecture**: a single application container with embedded SQLite (search, state, and the default graph backend), and a persistent volume. It is *not* the full Tier-B topology (Postgres + pgvector + AGE, Qdrant, Redis, Temporal) — those services arrive with Phases 5–6, and D3 leaves a clearly-marked seam for them.
 
 ---
 
@@ -19,7 +19,7 @@ It matches the **current Tier-A architecture**: a single application container w
 | `pages/`, `sources/`, `.git/` | Canonical knowledge + audit trail | **Durable — must persist and be backed up.** |
 | `.index/state.db` | Access events + contradiction review queue | **Durable — not regenerable from Markdown.** |
 | `.index/wiki.db` | FTS5 search index | Regenerable via `mnesis rebuild`. |
-| `.index/graph` | Kùzu graph | Regenerable via `mnesis rebuild`. |
+| `.index/graph` | Graph (default SQLite backend) | Regenerable via `mnesis rebuild`. |
 
 So: `git` must be installed in the image; the volume holds the whole wiki root; backups need only the git tree plus `state.db`; a fresh container can regenerate the rest with `mnesis rebuild`.
 
@@ -27,7 +27,7 @@ So: `git` must be installed in the image; the volume holds the whole wiki root; 
 
 ## Reusing the standard template & rules
 
-Same six-part template — **CONTEXT / OBJECTIVE / BUILD / CONSTRAINTS / ACCEPTANCE / ON DONE** — and the standing rules: things run offline with `WIKI_LLM_STUB=1` where inference would otherwise be needed; conventional commits; self-checking acceptance; keep `README` and `CLAUDE.md` in sync. Deployment prompts are prefixed **D**.
+Same six-part template — **CONTEXT / OBJECTIVE / BUILD / CONSTRAINTS / ACCEPTANCE / ON DONE** — and the standing rules: things run offline with `MNESIS_LLM_STUB=1` where inference would otherwise be needed; conventional commits; self-checking acceptance; keep `README` and `CLAUDE.md` in sync. Deployment prompts are prefixed **D**.
 
 ---
 
@@ -44,13 +44,13 @@ OBJECTIVE: Add a multi-stage Dockerfile, a .dockerignore, and an entrypoint that
 
 BUILD:
 - Dockerfile (multi-stage, python:3.12-slim base):
-    * Builder stage installs the package and its deps (prefer wheels; include any build deps Kùzu needs, falling back to the SQLite graph backend if a wheel is unavailable).
-    * Runtime stage installs git and ca-certificates, creates a non-root user, copies the installed package, sets WIKI_ROOT=/data/wiki, and declares VOLUME /data/wiki.
+    * Builder stage installs the package and its deps (prefer wheels). The default SQLite graph backend needs no extra system libraries; only add build deps if a heavier optional backend is later selected.
+    * Runtime stage installs git and ca-certificates, creates a non-root user, copies the installed package, sets MNESIS_ROOT=/data/mnesis, and declares VOLUME /data/mnesis.
 - docker/entrypoint.sh:
-    * Ensure /data/wiki and its subdirs exist; if it is not yet a git repo, `git init` and set a local user.name/user.email so commits never fail.
+    * Ensure /data/mnesis and its subdirs exist; if it is not yet a git repo, `git init` and set a local user.name/user.email so commits never fail.
     * If the search index/graph are missing, run `mnesis rebuild` to regenerate them (cache warm-up); never clear state.db.
     * Dispatch: first arg `serve` -> launch the MCP server; first arg `cli` -> exec `mnesis` with the remaining args; otherwise exec the given command.
-- .dockerignore excluding wiki/.index, .git of the source repo build context noise, __pycache__, .venv, tests artifacts.
+- .dockerignore excluding mnesis/.index, .git of the source repo build context noise, __pycache__, .venv, tests artifacts.
 
 CONSTRAINTS:
 - Run as a non-root user. Never bake secrets (ANTHROPIC_API_KEY, MCP token) into the image — they come from env at run time.
@@ -58,7 +58,7 @@ CONSTRAINTS:
 - The image must build and a stub-mode smoke command must run with no network.
 
 ACCEPTANCE:
-- `docker build -t mnesis .` succeeds. `docker run --rm mnesis cli --help` prints CLI help. `docker run --rm -e WIKI_LLM_STUB=1 mnesis cli rebuild` runs and exits 0 on an empty volume. The image runs as non-root (`docker run --rm mnesis id` shows a non-zero uid).
+- `docker build -t mnesis .` succeeds. `docker run --rm mnesis cli --help` prints CLI help. `docker run --rm -e MNESIS_LLM_STUB=1 mnesis cli rebuild` runs and exits 0 on an empty volume. The image runs as non-root (`docker run --rm mnesis id` shows a non-zero uid).
 
 ON DONE: build the image, commit ("build: containerize mnesis with git-aware entrypoint"), report the final image size and the entrypoint dispatch options.
 ```
@@ -74,12 +74,12 @@ OBJECTIVE: Make src/mnesis/mcp_server.py support a networked HTTP transport with
 
 BUILD:
 - Verify the installed mcp SDK's transport API first, then add support for streamable HTTP (and/or SSE) alongside the existing stdio mode.
-- Config (config.py): WIKI_MCP_TRANSPORT (stdio|http, default stdio), WIKI_MCP_HOST (default 0.0.0.0 in http mode), WIKI_MCP_PORT (default 8080), WIKI_MCP_TOKEN (optional bearer token; if set, all tool calls require it).
+- Config (config.py): MNESIS_MCP_TRANSPORT (stdio|http, default stdio), MNESIS_MCP_HOST (default 0.0.0.0 in http mode), MNESIS_MCP_PORT (default 8080), MNESIS_MCP_TOKEN (optional bearer token; if set, all tool calls require it).
 - A GET /health endpoint (http mode) returning status plus quick stats (page count, index present, graph present) — cheap, no LLM call.
 - A module entrypoint so `python -m mnesis.mcp_server` honours the transport env; the entrypoint `serve` command (D1) uses it.
 
 CONSTRAINTS:
-- stdio behaviour is unchanged when WIKI_MCP_TRANSPORT is unset — no regression for local Claude Code.
+- stdio behaviour is unchanged when MNESIS_MCP_TRANSPORT is unset — no regression for local Claude Code.
 - In http mode, if no token is configured, log a clear warning and do not bind beyond what the operator opts into; treat the endpoint as privileged (it can ingest and modify knowledge).
 - Reuse the existing tool functions; this is transport only, no new tools.
 
@@ -100,10 +100,10 @@ OBJECTIVE: Add docker-compose.yml bringing up the wiki MCP server with a persist
 
 BUILD:
 - docker-compose.yml:
-    * service `mnesis`: build ., command runs the MCP server in http mode (`serve`), env_file .env, environment defaults (WIKI_MCP_TRANSPORT=http, WIKI_ROOT=/data/wiki), ports "${WIKI_MCP_PORT:-8080}:8080", healthcheck hitting /health, restart: unless-stopped.
-    * named volume `mnesis-data` mounted at /data/wiki (holds pages, sources, .git, and .index).
+    * service `mnesis`: build ., command runs the MCP server in http mode (`serve`), env_file .env, environment defaults (MNESIS_MCP_TRANSPORT=http, MNESIS_ROOT=/data/mnesis), ports "${MNESIS_MCP_PORT:-8080}:8080", healthcheck hitting /health, restart: unless-stopped.
+    * named volume `mnesis-data` mounted at /data/mnesis (holds pages, sources, .git, and .index).
     * A clearly-commented placeholder block noting where Tier-B services (Postgres+pgvector+AGE, Qdrant, Redis, Temporal) attach at Phases 5-6 — commented out, not active.
-- .env.example: ANTHROPIC_API_KEY (blank), WIKI_LLM_MODEL, WIKI_LLM_STUB (1 for a no-network demo), WIKI_FILEBACK_THRESHOLD, WIKI_MCP_PORT, WIKI_MCP_TOKEN. Document that .env is gitignored.
+- .env.example: ANTHROPIC_API_KEY (blank), MNESIS_LLM_MODEL, MNESIS_LLM_STUB (1 for a no-network demo), MNESIS_FILEBACK_THRESHOLD, MNESIS_MCP_PORT, MNESIS_MCP_TOKEN. Document that .env is gitignored.
 - Enable SQLite WAL mode for the index and state DBs so the running server and an exec'd CLI can read concurrently (single-writer awareness; note heavy concurrent writes are a Tier-B concern).
 - Makefile targets: docker-build, docker-up, docker-down, docker-logs, docker-cli (wraps `docker compose exec mnesis mnesis ...`).
 
@@ -113,7 +113,7 @@ CONSTRAINTS:
 - Core stack stays single-service — do not activate Tier-B services.
 
 ACCEPTANCE:
-- `docker compose up -d` -> the mnesis service becomes healthy. `make docker-cli ARGS="rebuild"` works. Ingest a stub source and query it via `make docker-cli`. `docker compose down && docker compose up -d` -> the ingested page is still there (volume persisted). `docker compose down -v` clears it.
+- `docker compose up -d` -> the `mnesis` service becomes healthy. `make docker-cli ARGS="rebuild"` works. Ingest a stub source and query it via `make docker-cli`. `docker compose down && docker compose up -d` -> the ingested page is still there (volume persisted). `docker compose down -v` clears it.
 
 ON DONE: bring it up, commit ("feat: docker-compose core stack with persistent volume"), report the up/seed/query/persist sequence you verified.
 ```
@@ -131,7 +131,7 @@ BUILD:
 - Compose profile `local-llm`:
     * service `ollama` (or an equivalent local model server) with its own named volume for model weights, and a one-shot init that pulls the configured model.
     * wire the `mnesis` service, under this profile, to point llm.py at the local endpoint.
-- Extend llm.py: a provider switch (env WIKI_LLM_PROVIDER=anthropic|local, default anthropic) with a local provider that calls the Ollama/OpenAI-compatible endpoint (WIKI_LLM_BASE_URL, WIKI_LLM_MODEL). The Anthropic path and the stub remain unchanged and default.
+- Extend llm.py: a provider switch (env MNESIS_LLM_PROVIDER=anthropic|local, default anthropic) with a local provider that calls the Ollama/OpenAI-compatible endpoint (MNESIS_LLM_BASE_URL, MNESIS_LLM_MODEL). The Anthropic path and the stub remain unchanged and default.
 - Document in README that with this profile, ingestion and extraction run with no external inference calls.
 
 CONSTRAINTS:
@@ -140,7 +140,7 @@ CONSTRAINTS:
 - Keep model choice configurable; do not hardcode a large model that won't fit modest hardware — default to a small one and note how to change it.
 
 ACCEPTANCE:
-- `docker compose --profile local-llm up -d` starts the model service and pulls the model; `make docker-cli ARGS="ingest <sample>"` with WIKI_LLM_PROVIDER=local produces a page using local inference (verify no Anthropic call). Without the profile, the model service is absent.
+- `docker compose --profile local-llm up -d` starts the model service and pulls the model; `make docker-cli ARGS="ingest <sample>"` with MNESIS_LLM_PROVIDER=local produces a page using local inference (verify no Anthropic call). Without the profile, the model service is absent.
 
 ON DONE: commit ("feat: optional local-llm compose profile"), report the profile commands and the default-vs-local switch.
 ```
@@ -155,7 +155,7 @@ CONTEXT: The wiki needs periodic upkeep (decay, graph lint, cache freshness). Th
 OBJECTIVE: Add a profile-gated `maintenance` service that periodically runs the maintenance commands against the shared volume.
 
 BUILD:
-- Compose profile `maintenance`: a `maintenance` service from the same image, sharing the mnesis-data volume, running a small loop (or cron) that on an interval (env WIKI_MAINT_INTERVAL, default daily) runs: `mnesis decay`, `mnesis graph-lint --fix` (if Phase 3 is present), and a rebuild-if-missing check. Log each run with a summary.
+- Compose profile `maintenance`: a `maintenance` service from the same image, sharing the mnesis-data volume, running a small loop (or cron) that on an interval (env MNESIS_MAINT_INTERVAL, default daily) runs: `mnesis decay`, `mnesis graph-lint --fix` (if Phase 3 is present), and a rebuild-if-missing check. Log each run with a summary.
 - Guard each command so that if a capability isn't built yet (e.g. graph-lint pre-Phase-3) it is skipped cleanly, not errored.
 - README note: this is deployment-level scheduling; Phase 4 moves it into the app as proper event hooks, at which point this sidecar can be retired.
 
@@ -183,11 +183,11 @@ BUILD:
 - scripts/seed.py and a `docker-seed` Make target: a one-shot (`docker compose run --rm mnesis cli ...` or a dedicated init service) that, in stub mode, ingests the bundled sample sources and runs `mnesis rebuild`, so a clean deployment is immediately queryable. Idempotent (re-seeding does not duplicate).
 - `docker-demo` target: run the latest phase's demo (demo_phase3 if present, else the highest available) inside the container against the seeded volume.
 - README "Run with Docker" section: prerequisites; copy .env.example to .env; `make docker-build && make docker-up && make docker-seed`; query via `make docker-cli`; the optional profiles (local-llm, maintenance); and how to connect Claude Code to the HTTP MCP endpoint (e.g. `claude mcp add --transport http <url>` with the token header), contrasted with the local stdio .mcp.json.
-- Ops runbook (docs/OPS.md): the durable-vs-regenerable table; backup = git bundle of the canonical layer + a copy of state.db (exclude .index, which `mnesis rebuild` regenerates); restore = restore those, then rebuild; health checks; how to rotate WIKI_MCP_TOKEN.
+- Ops runbook (docs/OPS.md): the durable-vs-regenerable table; backup = git bundle of the canonical layer + a copy of state.db (exclude .index, which `mnesis rebuild` regenerates); restore = restore those, then rebuild; health checks; how to rotate MNESIS_MCP_TOKEN.
 - Confirm CLAUDE.md notes the deployment model and that .index is a regenerable cache while git history + state.db are durable.
 
 CONSTRAINTS:
-- Seeding and the demo run with no network (WIKI_LLM_STUB=1).
+- Seeding and the demo run with no network (MNESIS_LLM_STUB=1).
 - The runbook backup must NOT depend on .index being present.
 
 ACCEPTANCE:
@@ -203,7 +203,7 @@ ON DONE: commit ("docs: docker seeding, ops runbook, and connection guide"), rep
 1. `make docker-build` — image builds; runs as non-root; git is present.
 2. `make docker-up` — the `mnesis` service reports healthy; `GET /health` returns stats.
 3. `make docker-seed` then `make docker-cli ARGS='query "..."'` — a populated wiki answers queries.
-4. Connect Claude Code to the HTTP MCP endpoint and call `wiki_query` / `wiki_ingest` as tools.
+4. Connect Claude Code to the HTTP MCP endpoint and call `mnesis_query` / `mnesis_ingest` as tools.
 5. `docker compose down && docker compose up -d` — data survives (volume); `down -v` clears it.
 6. `--profile local-llm up` — ingestion runs against the local model with no external inference call; plain `up` doesn't start it.
 7. `--profile maintenance up` — the sidecar runs decay/lint on a cadence and commits results to the volume's git history.
@@ -215,6 +215,6 @@ ON DONE: commit ("docs: docker seeding, ops runbook, and connection guide"), rep
 
 - These prompts are independent of the feature phases — run D1 → D6 against whatever you have built; D5's commands self-skip capabilities that aren't present yet.
 - The review judgement that matters: **treat the HTTP MCP endpoint as privileged.** It can ingest and modify the knowledge base, so it should run behind the token (and bound to localhost or a private network) rather than exposed openly. The prompts default to safe behaviour; don't loosen it for convenience.
-- Verify the installed **mcp** SDK's HTTP-transport API before D2, and prefer a **Kùzu wheel**; the SQLite graph fallback (from Phase 3) keeps the image build from stalling on an embedded-engine quirk.
+- Verify the installed **mcp** SDK's HTTP-transport API before D2. The default **SQLite graph backend** needs no extra system libraries, so the image stays lean and the build never stalls on an embedded-engine quirk; a heavier graph engine, if ever chosen, is a config switch behind the Phase-3 `GraphBackend` interface and would add its own deps then.
 - When you reach Tier B (Phases 5–6), the commented service block in D3's compose is where Postgres+pgvector+AGE, Qdrant, Redis, and a durable workflow runner attach; the app's storage layer is swapped behind the same CLI/MCP surface, so the deployment grows rather than gets rebuilt.
 ```
