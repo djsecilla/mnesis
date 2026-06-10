@@ -1,8 +1,8 @@
-# LLM Wiki v2 — Docker Deployment Playbook
+# mnesis — Docker Deployment Playbook
 
 **Containerize and spin up the whole system with Docker Compose. A sequenced prompt set for Claude Code (Opus 4.6).**
 
-This playbook packages the wiki — the Python app, the MCP server, the canonical git store, and the SQLite/Kùzu indexes — into a Compose deployment you can bring up with one command. It is **orthogonal to the feature phases**: run it after any phase. The prompts adapt to whatever is built; they assume only that the `llmwiki` package and its `wiki` CLI exist.
+This playbook packages the wiki — the Python app, the MCP server, the canonical git store, and the SQLite/Kùzu indexes — into a Compose deployment you can bring up with one command. It is **orthogonal to the feature phases**: run it after any phase. The prompts adapt to whatever is built; they assume only that the `mnesis` package and its `wiki` CLI exist.
 
 It matches the **current Tier-A architecture**: a single application container with embedded SQLite and Kùzu, and a persistent volume. It is *not* the full Tier-B topology (Postgres + pgvector + AGE, Qdrant, Redis, Temporal) — those services arrive with Phases 5–6, and D3 leaves a clearly-marked seam for them.
 
@@ -38,7 +38,7 @@ Same six-part template — **CONTEXT / OBJECTIVE / BUILD / CONSTRAINTS / ACCEPTA
 ## Prompt D1 — Containerization: Dockerfile + entrypoint
 
 ```
-CONTEXT: The llmwiki package and the `wiki` CLI exist. Package the application into a container image. Remember the canonical store is a git repo, so git is a runtime dependency, and the wiki root must live on a mountable path.
+CONTEXT: The mnesis package and the `wiki` CLI exist. Package the application into a container image. Remember the canonical store is a git repo, so git is a runtime dependency, and the wiki root must live on a mountable path.
 
 OBJECTIVE: Add a multi-stage Dockerfile, a .dockerignore, and an entrypoint that can run either the MCP server or any `wiki` CLI command, with the wiki root on a volume path.
 
@@ -58,9 +58,9 @@ CONSTRAINTS:
 - The image must build and a stub-mode smoke command must run with no network.
 
 ACCEPTANCE:
-- `docker build -t llmwiki .` succeeds. `docker run --rm llmwiki cli --help` prints CLI help. `docker run --rm -e WIKI_LLM_STUB=1 llmwiki cli rebuild` runs and exits 0 on an empty volume. The image runs as non-root (`docker run --rm llmwiki id` shows a non-zero uid).
+- `docker build -t mnesis .` succeeds. `docker run --rm mnesis cli --help` prints CLI help. `docker run --rm -e WIKI_LLM_STUB=1 mnesis cli rebuild` runs and exits 0 on an empty volume. The image runs as non-root (`docker run --rm mnesis id` shows a non-zero uid).
 
-ON DONE: build the image, commit ("build: containerize llmwiki with git-aware entrypoint"), report the final image size and the entrypoint dispatch options.
+ON DONE: build the image, commit ("build: containerize mnesis with git-aware entrypoint"), report the final image size and the entrypoint dispatch options.
 ```
 
 ---
@@ -70,13 +70,13 @@ ON DONE: build the image, commit ("build: containerize llmwiki with git-aware en
 ```
 CONTEXT: The local MCP server runs over stdio, which a client spawns as a subprocess. A container deployment must expose it over the network, so add an HTTP transport while keeping stdio the default for local Claude Code.
 
-OBJECTIVE: Make src/llmwiki/mcp_server.py support a networked HTTP transport with a health endpoint and optional bearer-token auth, selectable by env.
+OBJECTIVE: Make src/mnesis/mcp_server.py support a networked HTTP transport with a health endpoint and optional bearer-token auth, selectable by env.
 
 BUILD:
 - Verify the installed mcp SDK's transport API first, then add support for streamable HTTP (and/or SSE) alongside the existing stdio mode.
 - Config (config.py): WIKI_MCP_TRANSPORT (stdio|http, default stdio), WIKI_MCP_HOST (default 0.0.0.0 in http mode), WIKI_MCP_PORT (default 8080), WIKI_MCP_TOKEN (optional bearer token; if set, all tool calls require it).
 - A GET /health endpoint (http mode) returning status plus quick stats (page count, index present, graph present) — cheap, no LLM call.
-- A module entrypoint so `python -m llmwiki.mcp_server` honours the transport env; the entrypoint `serve` command (D1) uses it.
+- A module entrypoint so `python -m mnesis.mcp_server` honours the transport env; the entrypoint `serve` command (D1) uses it.
 
 CONSTRAINTS:
 - stdio behaviour is unchanged when WIKI_MCP_TRANSPORT is unset — no regression for local Claude Code.

@@ -10,8 +10,8 @@ import subprocess
 
 import pytest
 
-from llmwiki import config, store
-from llmwiki.store import Page
+from mnesis import config, store
+from mnesis.store import Page
 
 
 @pytest.fixture()

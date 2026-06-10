@@ -1,4 +1,4 @@
-# CLAUDE.md — LLM Wiki v2 (MVP PoC)
+# CLAUDE.md — mnesis (MVP PoC)
 
 **This is the schema document: the most important file in the system.** It is the operating contract that turns a general-purpose LLM into a disciplined knowledge worker for this repository. It is read by the coding agent (Claude Code) as project context, and its rules govern how the runtime ingestion LLM writes and curates knowledge.
 
@@ -8,7 +8,7 @@
 
 ## 1. What this project is
 
-LLM Wiki v2 is a knowledge base that **compounds** instead of resetting. Retrieval-augmented generation fetches context and forgets it; this wiki accumulates and reinforces it. This repository is the **Phase-1 MVP proof of concept**, implementing the full end-to-end loop:
+mnesis is a knowledge base that **compounds** instead of resetting. Retrieval-augmented generation fetches context and forgets it; this wiki accumulates and reinforces it. This repository is the **Phase-1 MVP proof of concept**, implementing the full end-to-end loop:
 
 > **filter → ingest → write a canonical page → index → query → file an answer back → query again and see it surface.**
 
@@ -30,15 +30,15 @@ These hold across every module and every change. Treat a violation as a defect.
 
 ## 3. Repository conventions
 
-Layout (src-layout; everything importable as `llmwiki.*`):
+Layout (src-layout; everything importable as `mnesis.*`):
 
 ```
 README.md
 CLAUDE.md                 # this file
-pyproject.toml            # deps + the `wiki` console script
+pyproject.toml            # deps + the `mnesis` console script
 .gitignore
 .mcp.json                 # MCP registration for Claude Code
-src/llmwiki/
+src/mnesis/
   config.py               # paths + env config (model, threshold, stub flag)
   store.py                # canonical Markdown + frontmatter + git
   filters.py              # secret / PII redaction (pure functions)
@@ -46,7 +46,7 @@ src/llmwiki/
   ingest.py               # pipeline: filter -> persist source -> extract -> write
   search.py               # SQLite FTS5 index: rebuild / upsert / search
   mcp_server.py           # FastMCP server exposing the wiki tools
-  cli.py                  # `wiki` command
+  cli.py                  # `mnesis` command
 wiki/
   pages/                  # canonical Markdown pages (tracked)
   sources/                # redacted raw sources, for provenance (tracked)
@@ -64,7 +64,7 @@ scripts/demo_end_to_end.py
 | `WIKI_FILEBACK_THRESHOLD` | `0.7` | Quality gate for filing answers back. |
 | `WIKI_LLM_STUB` | unset | When `1` (or no API key), the LLM client returns deterministic canned output so tests and the demo run offline. |
 
-`wiki/.index/` is never tracked by git — it is a cache that `wiki rebuild` regenerates from the pages.
+`wiki/.index/` is never tracked by git — it is a cache that `mnesis rebuild` regenerates from the pages.
 
 ---
 
@@ -136,7 +136,7 @@ The pipeline contract (`ingest.py`), in order:
 
 - Search is **BM25 keyword only** over `(id, title, tags, body)` via SQLite FTS5. Vector similarity, graph traversal, and reciprocal rank fusion are **out of scope** for the PoC.
 - `search(query, limit)` returns ranked hits with `id`, `title`, `score`, and a `snippet`.
-- The index is rebuilt from Markdown by `rebuild()`. `wiki rebuild` after deleting `wiki/.index/` must reproduce identical results — this is the canonical-vs-cache invariant, and there is a test that asserts it.
+- The index is rebuilt from Markdown by `rebuild()`. `mnesis rebuild` after deleting `wiki/.index/` must reproduce identical results — this is the canonical-vs-cache invariant, and there is a test that asserts it.
 
 ---
 

@@ -1,4 +1,4 @@
-# LLM Wiki v2 — Phase 2 Build Playbook
+# mnesis — Phase 2 Build Playbook
 
 **Confidence scoring + supersession lifecycle. A sequenced prompt set for Claude Code (Opus 4.6) that continues the build from Prompt 7.**
 
@@ -83,8 +83,8 @@ BUILD:
     * Clarify status semantics: active vs stale, and that stale pages are demoted in search, never deleted.
     * Add a "Search index vs state store" section stating the refined invariant: Markdown is canonical; the search index is a rebuildable cache; the state store (access events + review queue) is durable and is NOT cleared by rebuild; confidence degrades gracefully to its Markdown-only value if state is lost.
     * Move "confidence scoring & decay; supersession lifecycle" from the deferred table into an "in scope (Phase 2)" section.
-- Update src/llmwiki/store.py Page model with the two new fields, defaulted so existing pages still parse (backward compatible). Reading a Phase-1 page must not fail.
-- Create src/llmwiki/state.py: a durable SQLite store at wiki/.index/state.db (gitignored, but conceptually separate from the search index). Tables:
+- Update src/mnesis/store.py Page model with the two new fields, defaulted so existing pages still parse (backward compatible). Reading a Phase-1 page must not fail.
+- Create src/mnesis/state.py: a durable SQLite store at wiki/.index/state.db (gitignored, but conceptually separate from the search index). Tables:
     * access(page_id PK, access_count int, last_accessed iso)
     * review_queue(id PK, page_a, page_b, kind, detail, status [open|resolved], created)
   Functions: record_access(page_id); get_access(page_id) -> {count, last_accessed} | None; enqueue_contradiction(page_a, page_b, detail) -> id; list_open_reviews(); resolve_review(id). The state store must be created on demand and must be untouched by search.rebuild().
@@ -106,7 +106,7 @@ ON DONE: run tests, commit ("feat(phase2): schema fields and durable state store
 ```
 CONTEXT: The schema and state store exist. Implement the confidence computation exactly per the model spec in the Phase-2 playbook (support, Ebbinghaus retention, contradiction factor, access boost, stale cap, decay classes).
 
-OBJECTIVE: Implement src/llmwiki/confidence.py: a deterministic, configurable function that computes a page's confidence from its Markdown inputs plus optional access state, with a transparent breakdown.
+OBJECTIVE: Implement src/mnesis/confidence.py: a deterministic, configurable function that computes a page's confidence from its Markdown inputs plus optional access state, with a transparent breakdown.
 
 BUILD:
 - Decay-class config in config.py: STABILITY_DAYS = {decision:365, architecture:365, fact:180, note:60, transient:21, bug:21}; weights W_SUPPORT, W_RETENTION (default 1, 1); STALE_CAP (0.40); access-boost cap. All overridable via env.
@@ -192,7 +192,7 @@ CONTEXT: Pages now have confidence and can be superseded. Add the periodic proce
 OBJECTIVE: Implement a decay/lifecycle pass that recomputes confidence corpus-wide and transitions pages between active and stale.
 
 BUILD:
-- src/llmwiki/lifecycle.py:
+- src/mnesis/lifecycle.py:
     * recompute_all() -> summary: for every page, recompute confidence (refresh the cached value in the index). Transition active -> stale when confidence < STALE_THRESHOLD (config, default 0.25) AND inactivity (no access, no reinforcement) exceeds the decay-class inactivity window. Reactivate stale -> active only on reinforcement/supersession-clear, not on a read alone. Each status change is one commit ("wiki: <id> -> stale|active"). Idempotent: a second run with no time change makes no commits.
     * Return counts: scanned, restaled, reactivated, unchanged.
 - CLI: `wiki decay` runs recompute_all and prints the summary.

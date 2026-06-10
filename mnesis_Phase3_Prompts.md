@@ -1,4 +1,4 @@
-# LLM Wiki v2 — Phase 3 Build Playbook
+# mnesis — Phase 3 Build Playbook
 
 **The typed knowledge graph: entity extraction, typed relationships, graph traversal. A sequenced prompt set for Claude Code (Opus 4.6) that continues the build from Prompt 14.**
 
@@ -83,8 +83,8 @@ BUILD:
     * Add the full graph contract: entity types, predicate list with direction semantics, the entity-ref format, and that edge provenance/confidence are DERIVED (graph cache only, never frontmatter).
     * Add the refined invariant: the graph is a rebuildable cache regenerated from Markdown; wiki rebuild rebuilds search and graph; the durable state store is never cleared.
     * Move "entity extraction & typed-relationship knowledge graph" from deferred into an "in scope (Phase 3)" section.
-- Update src/llmwiki/store.py Page model: add relations: list[dict] (default []), parsing/serializing cleanly. Backward compatible — existing pages read fine with an empty list.
-- Add src/llmwiki/vocab.py: ENTITY_TYPES, PREDICATES constants; normalize_ref(ref) (lowercase, hyphenate, validate type prefix); is_valid_predicate(p); validate_relation(rel) -> normalized rel or raises with a clear message.
+- Update src/mnesis/store.py Page model: add relations: list[dict] (default []), parsing/serializing cleanly. Backward compatible — existing pages read fine with an empty list.
+- Add src/mnesis/vocab.py: ENTITY_TYPES, PREDICATES constants; normalize_ref(ref) (lowercase, hyphenate, validate type prefix); is_valid_predicate(p); validate_relation(rel) -> normalized rel or raises with a clear message.
 
 CONSTRAINTS:
 - No graph DB, no graph queries, no ingest/extraction changes yet.
@@ -129,7 +129,7 @@ ON DONE: run tests, commit ("feat(phase3): entity and relationship extraction"),
 ```
 CONTEXT: Pages now carry entities and relations in frontmatter. Build the property graph as a rebuildable projection of that Markdown, with confidence-weighted edges.
 
-OBJECTIVE: Implement src/llmwiki/graph.py: build the typed property graph from the pages, integrate it into wiki rebuild, and provide the core traversal primitives.
+OBJECTIVE: Implement src/mnesis/graph.py: build the typed property graph from the pages, integrate it into wiki rebuild, and provide the core traversal primitives.
 
 BUILD:
 - Use KuzuDB (embedded property graph, Cypher) at wiki/.index/graph (gitignored). Verify the installed kuzu Python API before coding and match it. If Kuzu is unavailable in the environment, fall back to a SQLite edge-table backend exposing the SAME primitives, selected via config; document the choice.
@@ -196,7 +196,7 @@ CONSTRAINTS:
 - No new ranking logic here - reuse Prompt 18's primitives.
 
 ACCEPTANCE:
-- tests/test_graph_mcp.py (stub): call the tool functions directly - entity, neighbors, traverse, impact, graph-stats - asserting grounded, correctly-typed results. Manual: `wiki impact library:redis` prints the affected set with paths. `python -m llmwiki.mcp_server` starts cleanly. `pytest -q` green.
+- tests/test_graph_mcp.py (stub): call the tool functions directly - entity, neighbors, traverse, impact, graph-stats - asserting grounded, correctly-typed results. Manual: `wiki impact library:redis` prints the affected set with paths. `python -m mnesis.mcp_server` starts cleanly. `pytest -q` green.
 
 ON DONE: run tests, commit ("feat(phase3): graph tools for MCP and CLI"), report the steps to call wiki_impact from Claude Code.
 ```
@@ -211,7 +211,7 @@ CONTEXT: The graph is built from extracted assertions, so it accumulates noise: 
 OBJECTIVE: Implement a graph lint that auto-fixes what is safe and flags the rest.
 
 BUILD:
-- src/llmwiki/graph_lint.py -> report with categories:
+- src/mnesis/graph_lint.py -> report with categories:
     * Undeclared entities: an entity appears in a relation ref but no page declares it as a tag -> flag (and suggest the page that should).
     * Orphan entities: declared but in no edge -> flag (informational).
     * Duplicate edges: same triple collapsed -> auto-merge provenance (should already be deduped; assert it).

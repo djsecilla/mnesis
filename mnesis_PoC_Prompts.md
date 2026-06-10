@@ -1,8 +1,8 @@
-# LLM Wiki v2 — Claude Code Build Playbook
+# mnesis — Claude Code Build Playbook
 
 **A sequenced set of prompts for building the minimum-viable, end-to-end PoC with Claude Code (Opus 4.6).**
 
-This playbook turns the LLM Wiki v2 reference architecture into a working proof of concept. The PoC implements the **Phase-1 MVP** from the roadmap — but wired into the *complete compounding loop* so you can watch knowledge accumulate:
+This playbook turns the mnesis reference architecture into a working proof of concept. The PoC implements the **Phase-1 MVP** from the roadmap — but wired into the *complete compounding loop* so you can watch knowledge accumulate:
 
 > **filter → ingest → write canonical page → index → query → file an answer back → query again and see it surface.**
 
@@ -12,7 +12,7 @@ You run these prompts in order, one per Claude Code turn. Each builds on the las
 
 ## What you'll have at the end
 
-- A Python package (`llmwiki`) with a clean module per architectural concern.
+- A Python package (`mnesis`) with a clean module per architectural concern.
 - **Canonical layer:** Markdown pages with frontmatter, versioned in Git (the source of truth).
 - **Ingest guard:** secret/PII redaction that runs *before* anything is written.
 - **Ingestion pipeline:** raw source → LLM extraction → clean page (with an offline stub so tests need no network).
@@ -69,7 +69,7 @@ The prompts leave clean seams for all of these (frontmatter fields, a rebuildabl
 ## Prompt 0 — Bootstrap & schema
 
 ```
-CONTEXT: New empty repository. We are building the MVP of "LLM Wiki v2," a compounding knowledge base for AI agents. This first task establishes the scaffold and the schema document that governs every later step.
+CONTEXT: New empty repository. We are building the MVP of "mnesis," a compounding knowledge base for AI agents. This first task establishes the scaffold and the schema document that governs every later step.
 
 OBJECTIVE: Create the project skeleton, dependency manifest, the CLAUDE.md schema document, and a stub package, with git initialized and a passing smoke test.
 
@@ -79,29 +79,29 @@ BUILD:
     CLAUDE.md
     pyproject.toml
     .gitignore
-    src/llmwiki/__init__.py
-    src/llmwiki/config.py
-    src/llmwiki/cli.py            (placeholder main() for now)
+    src/mnesis/__init__.py
+    src/mnesis/config.py
+    src/mnesis/cli.py            (placeholder main() for now)
     wiki/pages/.gitkeep
     wiki/sources/.gitkeep
     tests/test_smoke.py
     scripts/.gitkeep
-- pyproject.toml: target Python 3.11+, dependencies anthropic, mcp, python-frontmatter, pyyaml, pytest. Console script: wiki = "llmwiki.cli:main".
-- src/llmwiki/config.py: resolve repo-relative paths (WIKI_ROOT default ./wiki, PAGES_DIR, SOURCES_DIR, INDEX_DIR = wiki/.index). Read from env with fallbacks: WIKI_LLM_MODEL (default "claude-sonnet-4-6"), WIKI_FILEBACK_THRESHOLD (default 0.7), WIKI_LLM_STUB. Expose them as importable constants/functions.
+- pyproject.toml: target Python 3.11+, dependencies anthropic, mcp, python-frontmatter, pyyaml, pytest. Console script: wiki = "mnesis.cli:main".
+- src/mnesis/config.py: resolve repo-relative paths (WIKI_ROOT default ./wiki, PAGES_DIR, SOURCES_DIR, INDEX_DIR = wiki/.index). Read from env with fallbacks: WIKI_LLM_MODEL (default "claude-sonnet-4-6"), WIKI_FILEBACK_THRESHOLD (default 0.7), WIKI_LLM_STUB. Expose them as importable constants/functions.
 - CLAUDE.md — THE SCHEMA DOCUMENT, the most important file in the system. Write it to cover: the domain entity/relationship vocabulary (people, projects, libraries, concepts, files, decisions; relationships uses/depends-on/contradicts/caused/fixed/supersedes) even though the graph is deferred; the page frontmatter schema (id, title, created, updated, sources, source_count, last_confirmed, tags, kind [fact|digest|note], status [active|stale], supersedes, superseded_by); ingest rules; the CANONICAL-VS-CACHE principle (Markdown is source of truth, the index is a rebuildable cache); what is in scope for this PoC and what is deferred to later phases; and conventions (pages in wiki/pages, raw sources in wiki/sources, index in wiki/.index which is gitignored). End with an instruction that every future task must keep CLAUDE.md in sync with the code.
 - .gitignore: wiki/.index/, .venv, __pycache__, *.pyc, .env
 - README.md: one-paragraph overview plus setup steps.
-- tests/test_smoke.py: import llmwiki, assert config paths resolve and the wiki dirs are created on demand.
+- tests/test_smoke.py: import mnesis, assert config paths resolve and the wiki dirs are created on demand.
 
 CONSTRAINTS:
 - wiki/.index must NOT be tracked by git (it is a rebuildable cache).
 - No business logic beyond config; later prompts fill the modules.
-- Everything importable as llmwiki.*
+- Everything importable as mnesis.*
 
 ACCEPTANCE:
 - `pip install -e .` succeeds. `pytest -q` passes. `git log` shows one commit. The tree matches the spec.
 
-ON DONE: run tests, commit ("chore: bootstrap llm-wiki PoC scaffold and schema"), report the created tree and any assumptions.
+ON DONE: run tests, commit ("chore: bootstrap mnesis PoC scaffold and schema"), report the created tree and any assumptions.
 ```
 
 ---
@@ -111,7 +111,7 @@ ON DONE: run tests, commit ("chore: bootstrap llm-wiki PoC scaffold and schema")
 ```
 CONTEXT: The scaffold and CLAUDE.md exist. Build the canonical store: Markdown pages with YAML frontmatter, versioned in Git. This is the single source of truth.
 
-OBJECTIVE: Implement src/llmwiki/store.py with create/read/update/list/supersede operations that persist pages as frontmatter-Markdown and commit each mutation to Git.
+OBJECTIVE: Implement src/mnesis/store.py with create/read/update/list/supersede operations that persist pages as frontmatter-Markdown and commit each mutation to Git.
 
 BUILD:
 - A Page model (dataclass) with the exact frontmatter fields defined in CLAUDE.md: id, title, body, created, updated, sources (list), source_count (int), last_confirmed (iso), tags (list), kind, status, supersedes, superseded_by.
@@ -138,7 +138,7 @@ ON DONE: run tests, commit ("feat: canonical markdown+git store"), report.
 ```
 CONTEXT: The store works. Per the governance principle, nothing reaches the store carrying secrets or PII. Build the filter that runs at the ingestion boundary.
 
-OBJECTIVE: Implement src/llmwiki/filters.py that detects and redacts secrets and PII from text before any write, returning redacted text plus a findings report.
+OBJECTIVE: Implement src/mnesis/filters.py that detects and redacts secrets and PII from text before any write, returning redacted text plus a findings report.
 
 BUILD:
 - scrub(text, allowlist=None) -> (redacted_text, findings):
@@ -165,7 +165,7 @@ ON DONE: run tests, commit ("feat: sensitive-data filter for ingest"), report.
 ```
 CONTEXT: Store and filter exist. Build the pipeline that turns a raw source into a clean page: filter -> LLM extraction -> write. It must be testable offline.
 
-OBJECTIVE: Implement src/llmwiki/llm.py (an Anthropic client wrapper with an offline stub) and src/llmwiki/ingest.py (the pipeline).
+OBJECTIVE: Implement src/mnesis/llm.py (an Anthropic client wrapper with an offline stub) and src/mnesis/ingest.py (the pipeline).
 
 BUILD:
 - llm.py: a thin wrapper over the `anthropic` SDK. complete(system, user) -> str using WIKI_LLM_MODEL. It MUST support a stub mode (when WIKI_LLM_STUB=1 or no API key is present) that returns a deterministic canned JSON structure, so tests and the demo never touch the network. Centralize model name and max_tokens here. Before coding, check the installed anthropic SDK's messages API shape and match it.
@@ -193,7 +193,7 @@ ON DONE: run tests, commit ("feat: ingestion pipeline with stubbable LLM client"
 ```
 CONTEXT: Pages are being written. Build keyword search over them as a rebuildable cache, strictly honoring the canonical-vs-cache principle.
 
-OBJECTIVE: Implement src/llmwiki/search.py: an SQLite FTS5 index built FROM the Markdown pages, with query, incremental upsert, and full rebuild.
+OBJECTIVE: Implement src/mnesis/search.py: an SQLite FTS5 index built FROM the Markdown pages, with query, incremental upsert, and full rebuild.
 
 BUILD:
 - DB at wiki/.index/wiki.db (gitignored). An FTS5 virtual table over (id, title, tags, body) using the unicode61/porter tokenizer.
@@ -219,7 +219,7 @@ ON DONE: run tests, commit ("feat: FTS5 keyword search as rebuildable index"), r
 ```
 CONTEXT: All core modules exist. Expose them through the Model Context Protocol so Claude Code and other agents can use the wiki natively.
 
-OBJECTIVE: Implement src/llmwiki/mcp_server.py with the official MCP Python SDK, exposing the wiki tools, plus a .mcp.json so this repo's Claude Code connects automatically.
+OBJECTIVE: Implement src/mnesis/mcp_server.py with the official MCP Python SDK, exposing the wiki tools, plus a .mcp.json so this repo's Claude Code connects automatically.
 
 BUILD:
 - A FastMCP server (verify the import path against the installed `mcp` SDK — e.g. mcp.server.fastmcp.FastMCP — and match the version's decorator/registration API) exposing tools:
@@ -229,7 +229,7 @@ BUILD:
     * wiki_file_back(question, answer, quality_score=None) -> if quality_score (or a simple internal heuristic when None) >= WIKI_FILEBACK_THRESHOLD, write a kind=digest page that links the question and answer (crystallization-lite) and return its id; otherwise return "below threshold, not filed" with the reason.
     * wiki_list() and wiki_rebuild() as utilities.
 - Tools return concise structured text. Server runs over stdio.
-- .mcp.json registering the server (command = the project's python, args = ["-m", "llmwiki.mcp_server"]) so `claude` in this repo discovers it.
+- .mcp.json registering the server (command = the project's python, args = ["-m", "mnesis.mcp_server"]) so `claude` in this repo discovers it.
 - Append an MCP section to README: how to run the server standalone, how Claude Code auto-discovers it via .mcp.json, and the `claude mcp add` alternative.
 
 CONSTRAINTS:
@@ -237,7 +237,7 @@ CONSTRAINTS:
 - Do not invent tool registration syntax — confirm it against the installed SDK first.
 
 ACCEPTANCE:
-- tests/test_mcp.py: import the module and call the underlying tool functions directly (not over the wire) in stub mode — ingest, query, and file_back both above and below threshold — asserting behavior. Manual check: `python -m llmwiki.mcp_server` starts without error. `pytest -q` passes.
+- tests/test_mcp.py: import the module and call the underlying tool functions directly (not over the wire) in stub mode — ingest, query, and file_back both above and below threshold — asserting behavior. Manual check: `python -m mnesis.mcp_server` starts without error. `pytest -q` passes.
 
 ON DONE: run tests, commit ("feat: MCP server exposing wiki tools"), report, and print the exact steps to connect from Claude Code.
 ```
@@ -249,7 +249,7 @@ ON DONE: run tests, commit ("feat: MCP server exposing wiki tools"), report, and
 ```
 CONTEXT: Components are built and individually tested. Wire them into a CLI and prove the whole loop compounds.
 
-OBJECTIVE: Implement src/llmwiki/cli.py and scripts/demo_end_to_end.py, plus an end-to-end test exercising ingest -> query -> file-back -> query.
+OBJECTIVE: Implement src/mnesis/cli.py and scripts/demo_end_to_end.py, plus an end-to-end test exercising ingest -> query -> file-back -> query.
 
 BUILD:
 - cli.py: subcommands ingest <file|->, query <text>, get <id>, file-back <question> <answer> [--score N], list, rebuild. Human-readable output. Wire the `wiki` console script to main().

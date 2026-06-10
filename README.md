@@ -1,6 +1,6 @@
-# LLM Wiki v2 (MVP PoC)
+# mnesis (MVP PoC)
 
-LLM Wiki v2 is a knowledge base that **compounds** instead of resetting. Where
+mnesis is a knowledge base that **compounds** instead of resetting. Where
 retrieval-augmented generation fetches context and forgets it, this wiki
 accumulates and reinforces it: sources are filtered, ingested, and written as
 canonical Markdown pages; those pages are indexed for keyword search; queries
@@ -13,18 +13,17 @@ query again and see it surface*. The design contract lives in
 ## Setup
 
 ```bash
-# 1. Create and activate a virtual environment (Python 3.11+)
-python -m venv .venv
-source .venv/bin/activate
+# 1. Create a virtual environment (Python 3.11+)
+uv venv
 
 # 2. Install the package (editable) and its dependencies
-pip install -e .
+uv pip install -e .
 
 # 3. Run the tests
-pytest -q
+uv run pytest -q
 
 # 4. Invoke the CLI
-wiki
+uv run mnesis
 ```
 
 By default the wiki lives under `./wiki` (override with `WIKI_ROOT`). The

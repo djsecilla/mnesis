@@ -1,4 +1,4 @@
-"""Paths and environment configuration for LLM Wiki v2.
+"""Paths and environment configuration for mnesis.
 
 This module is the single place that resolves where the wiki lives on disk and
 reads the handful of environment knobs the PoC exposes. It contains no business
@@ -17,8 +17,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-# Repository root: this file is src/llmwiki/config.py, so the root is three
-# parents up (config.py -> llmwiki -> src -> repo root).
+# Repository root: this file is src/mnesis/config.py, so the root is three
+# parents up (config.py -> mnesis -> src -> repo root).
 REPO_ROOT: Path = Path(__file__).resolve().parents[2]
 
 

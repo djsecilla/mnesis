@@ -141,7 +141,7 @@ def _ensure_identity(repo_root: Path) -> None:
     Respects an existing global/local identity (e.g. the user's ~/.gitconfig);
     only fills the gap so runtime commits never fail.
     """
-    for key, value in (("user.name", "LLM Wiki PoC"), ("user.email", "llmwiki@localhost")):
+    for key, value in (("user.name", "mnesis PoC"), ("user.email", "mnesis@localhost")):
         result = subprocess.run(
             ["git", "-C", str(repo_root), "config", key],
             capture_output=True,

@@ -1,4 +1,4 @@
-"""LLM Wiki v2 — a compounding knowledge base for AI agents (Phase-1 MVP PoC).
+"""mnesis — a compounding knowledge base for AI agents (Phase-1 MVP PoC).
 
 See CLAUDE.md at the repository root for the authoritative design contract.
 """
