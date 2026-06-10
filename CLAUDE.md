@@ -20,7 +20,7 @@ That last step — a synthesized answer becoming durable, retrievable knowledge 
 
 These hold across every module and every change. Treat a violation as a defect.
 
-1. **Markdown is canonical; the search index is a rebuildable cache.** The Markdown pages under `wiki/pages/` are the single source of truth. The SQLite index is a projection of them and must be fully reconstructable from Markdown alone. Never persist anything in the index that is not derivable from a page.
+1. **Markdown is canonical; the search index is a rebuildable cache.** The Markdown pages under `wiki/pages/` are the single source of truth. The SQLite search index is a projection of them and must be fully reconstructable from Markdown alone. Never persist anything *in the search index* that is not derivable from a page. (The **durable state store** — access events + review queue — is the deliberate exception: it holds state that is *not* derivable from Markdown and is never cleared by rebuild. See §8, "Search index vs state store".)
 2. **Filter sensitive data before any write.** Secrets and PII are redacted at the ingestion boundary, *before* a source is persisted or sent to the LLM. A raw secret value must never reach disk, logs, an LLM prompt, or a findings report.
 3. **Record derived-state inputs; do not compute decay yet.** Confidence inputs (`source_count`, `last_confirmed`) are stored now as a seam. Confidence scoring and time decay are Phase 2 — do not implement them in the PoC.
 4. **The git history is the audit trail.** Every page mutation is a commit. Do not batch unrelated writes into one commit, and do not rewrite history.
@@ -86,11 +86,15 @@ Every page is a Markdown file at `wiki/pages/<id>.md` with YAML frontmatter foll
 | `status` | enum | yes | `active` | `active` \| `stale`. Stale pages are deprioritised, not deleted. |
 | `supersedes` | string \| null | no | `null` | Id of the page this one replaces. |
 | `superseded_by` | string \| null | no | `null` | Id of the page that replaced this one. |
+| `contradicts` | list[string] | yes | `[]` | Ids of pages this page directly conflicts with. *(Phase 2; flag-don't-resolve — see §11.)* |
+| `decay_class` | string \| null | no | `null` | Optional override of the decay class otherwise inferred from `kind`/`tags`. *(Confidence input — recorded now, scored in Phase 2.)* |
 | `question` | string | digest only | — | For `digest` pages: the question that produced the filed answer. |
 
 The **body** is clean Markdown prose. It carries no index or search metadata — those live only in the (rebuildable) index.
 
 Timestamps (`created`, `updated`, `last_confirmed`) are written in UTC ISO 8601 with **microsecond precision** and a `Z` suffix (e.g. `2026-06-10T17:25:20.118087Z`); the appendix examples elide the fraction for readability. `question` is emitted **only** for `digest` pages — `fact`/`note` frontmatter omits it. This is exactly the implemented `store.Page` model.
+
+**Status semantics.** `active` is the normal state — the page participates fully in search. `stale` means the claim is deprioritised: stale pages are **demoted** in search ranking (and excluded from results unless explicitly requested), but they are **never deleted** — reversibility is preferred over destruction (§12). A page goes stale via the lifecycle (low confidence after decay, or being superseded/contradicted); it can return to `active` on reinforcement. *(The transitions are scored in Phase 2; Phase 1 only records the inputs.)*
 
 ---
 
@@ -140,6 +144,16 @@ The pipeline contract (`ingest.py`), in order:
 - `search(query, limit)` returns ranked hits with `id`, `title`, `score`, and a `snippet`.
 - The index is rebuilt from Markdown by `rebuild()`. `mnesis rebuild` after deleting `wiki/.index/` must reproduce identical results — this is the canonical-vs-cache invariant, and there is a test that asserts it.
 
+### Search index vs state store (refined invariant)
+
+Phase 2 introduces a second store under `wiki/.index/`. The two have different durability, and the distinction is load-bearing:
+
+- **Markdown pages** (`wiki/pages/`) — the single source of truth. Everything else is reconstructable from them.
+- **Search index** (`wiki/.index/wiki.db`) — a **rebuildable cache**. A pure projection of the Markdown; `rebuild()` drops and regenerates it and must reproduce identical results. Stores nothing not derivable from a page.
+- **State store** (`wiki/.index/state.db`) — **durable, auxiliary state** that is *not* derivable from Markdown: access events (how often/recently a page was read) and the contradiction review queue. It is created on demand and **`search.rebuild()` must never clear or touch it.** Losing it is survivable but lossy.
+
+Refined rule: **confidence degrades gracefully to its Markdown-only value if the state store is lost.** Confidence is computed from canonical inputs (`source_count`, `last_confirmed`, `contradicts`, decay class) *enriched* by durable state (access recency/frequency). With the state store gone, confidence still computes from Markdown alone — just without the access-based enrichment. So `state.db` is in `wiki/.index/` (gitignored, regenerable location) for convenience, but it is **conceptually separate from the cache**: deleting the *search index* is routine; deleting the *state store* loses access history and open reviews, which cannot be rebuilt from Markdown.
+
 ---
 
 ## 9. File-back / crystallisation rule
@@ -175,13 +189,14 @@ PoC behaviour is **flag, don't resolve**: if ingestion notices a direct conflict
 
 ## 13. Scope: in vs. deferred
 
-**In scope (this PoC — implemented):** filtered ingest · Markdown + git canonical store · FTS5 keyword search (rebuildable) · MCP interface with `wiki_ingest` / `wiki_query` / `wiki_file_back` (+ `wiki_get`, `wiki_list`, `wiki_rebuild`) · `mnesis` CLI · end-to-end demo and test. All present and exercised by the test suite.
+**In scope (Phase 1 — implemented):** filtered ingest · Markdown + git canonical store · FTS5 keyword search (rebuildable) · MCP interface with `wiki_ingest` / `wiki_query` / `wiki_file_back` (+ `wiki_get`, `wiki_list`, `wiki_rebuild`) · `mnesis` CLI · end-to-end demo and test. All present and exercised by the test suite.
 
-**Out of scope for this PoC — map of where each deferred capability lands:**
+**In scope (Phase 2 — in progress):** confidence scoring & Ebbinghaus-style decay; the supersession/stale lifecycle; contradiction review queue. *Foundations landed:* the `contradicts` and `decay_class` frontmatter fields, and the durable **state store** (`state.py`: access events + review queue). *Still to come:* the actual confidence computation, decay-driven `active`↔`stale` transitions, and reinforcement-on-reingest. No scoring or behaviour change has shipped yet.
+
+**Out of scope for now — map of where each deferred capability lands:**
 
 | Capability | Phase |
 |---|---|
-| Confidence scoring & Ebbinghaus decay; supersession lifecycle | 2 |
 | Entity extraction & typed-relationship knowledge graph | 3 |
 | Automation hooks (on-source/session/query/schedule) & scheduler | 4 |
 | Vector stream + reciprocal rank fusion; LLM-as-judge quality scoring | 5 |
@@ -218,6 +233,8 @@ kind: fact
 status: active
 supersedes: null
 superseded_by: null
+contradicts: []
+decay_class: null
 ---
 Project Atlas uses Redis as its primary caching layer. The auth-migration work
 stream depends on this cache. Sarah owns the auth migration.
@@ -243,6 +260,8 @@ kind: digest
 status: active
 supersedes: null
 superseded_by: null
+contradicts: []
+decay_class: null
 question: What depends on Redis in Project Atlas?
 ---
 The Redis cache underpins Atlas's caching layer, and the auth-migration work

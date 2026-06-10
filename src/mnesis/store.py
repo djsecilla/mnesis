@@ -37,6 +37,8 @@ _META_KEYS = (
     "status",
     "supersedes",
     "superseded_by",
+    "contradicts",
+    "decay_class",
     "question",
 )
 
@@ -68,6 +70,8 @@ class Page:
     status: str = "active"  # active | stale
     supersedes: str | None = None
     superseded_by: str | None = None
+    contradicts: list[str] = field(default_factory=list)  # Phase 2: conflicting page ids
+    decay_class: str | None = None  # Phase 2: optional override of inferred decay class
     question: str | None = None  # digest pages only
 
 
