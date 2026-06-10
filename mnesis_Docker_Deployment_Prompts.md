@@ -2,7 +2,7 @@
 
 **Containerize and spin up the whole system with Docker Compose. A sequenced prompt set for Claude Code (Opus 4.6).**
 
-This playbook packages the wiki — the Python app, the MCP server, the canonical git store, and the SQLite/Kùzu indexes — into a Compose deployment you can bring up with one command. It is **orthogonal to the feature phases**: run it after any phase. The prompts adapt to whatever is built; they assume only that the `mnesis` package and its `wiki` CLI exist.
+This playbook packages the wiki — the Python app, the MCP server, the canonical git store, and the SQLite/Kùzu indexes — into a Compose deployment you can bring up with one command. It is **orthogonal to the feature phases**: run it after any phase. The prompts adapt to whatever is built; they assume only that the `mnesis` package and its `mnesis` CLI exist.
 
 It matches the **current Tier-A architecture**: a single application container with embedded SQLite and Kùzu, and a persistent volume. It is *not* the full Tier-B topology (Postgres + pgvector + AGE, Qdrant, Redis, Temporal) — those services arrive with Phases 5–6, and D3 leaves a clearly-marked seam for them.
 
@@ -18,10 +18,10 @@ It matches the **current Tier-A architecture**: a single application container w
 |---|---|---|
 | `pages/`, `sources/`, `.git/` | Canonical knowledge + audit trail | **Durable — must persist and be backed up.** |
 | `.index/state.db` | Access events + contradiction review queue | **Durable — not regenerable from Markdown.** |
-| `.index/wiki.db` | FTS5 search index | Regenerable via `wiki rebuild`. |
-| `.index/graph` | Kùzu graph | Regenerable via `wiki rebuild`. |
+| `.index/wiki.db` | FTS5 search index | Regenerable via `mnesis rebuild`. |
+| `.index/graph` | Kùzu graph | Regenerable via `mnesis rebuild`. |
 
-So: `git` must be installed in the image; the volume holds the whole wiki root; backups need only the git tree plus `state.db`; a fresh container can regenerate the rest with `wiki rebuild`.
+So: `git` must be installed in the image; the volume holds the whole wiki root; backups need only the git tree plus `state.db`; a fresh container can regenerate the rest with `mnesis rebuild`.
 
 ---
 
@@ -38,9 +38,9 @@ Same six-part template — **CONTEXT / OBJECTIVE / BUILD / CONSTRAINTS / ACCEPTA
 ## Prompt D1 — Containerization: Dockerfile + entrypoint
 
 ```
-CONTEXT: The mnesis package and the `wiki` CLI exist. Package the application into a container image. Remember the canonical store is a git repo, so git is a runtime dependency, and the wiki root must live on a mountable path.
+CONTEXT: The mnesis package and the `mnesis` CLI exist. Package the application into a container image. Remember the canonical store is a git repo, so git is a runtime dependency, and the wiki root must live on a mountable path.
 
-OBJECTIVE: Add a multi-stage Dockerfile, a .dockerignore, and an entrypoint that can run either the MCP server or any `wiki` CLI command, with the wiki root on a volume path.
+OBJECTIVE: Add a multi-stage Dockerfile, a .dockerignore, and an entrypoint that can run either the MCP server or any `mnesis` CLI command, with the wiki root on a volume path.
 
 BUILD:
 - Dockerfile (multi-stage, python:3.12-slim base):
@@ -48,8 +48,8 @@ BUILD:
     * Runtime stage installs git and ca-certificates, creates a non-root user, copies the installed package, sets WIKI_ROOT=/data/wiki, and declares VOLUME /data/wiki.
 - docker/entrypoint.sh:
     * Ensure /data/wiki and its subdirs exist; if it is not yet a git repo, `git init` and set a local user.name/user.email so commits never fail.
-    * If the search index/graph are missing, run `wiki rebuild` to regenerate them (cache warm-up); never clear state.db.
-    * Dispatch: first arg `serve` -> launch the MCP server; first arg `cli` -> exec `wiki` with the remaining args; otherwise exec the given command.
+    * If the search index/graph are missing, run `mnesis rebuild` to regenerate them (cache warm-up); never clear state.db.
+    * Dispatch: first arg `serve` -> launch the MCP server; first arg `cli` -> exec `mnesis` with the remaining args; otherwise exec the given command.
 - .dockerignore excluding wiki/.index, .git of the source repo build context noise, __pycache__, .venv, tests artifacts.
 
 CONSTRAINTS:
@@ -100,12 +100,12 @@ OBJECTIVE: Add docker-compose.yml bringing up the wiki MCP server with a persist
 
 BUILD:
 - docker-compose.yml:
-    * service `wiki`: build ., command runs the MCP server in http mode (`serve`), env_file .env, environment defaults (WIKI_MCP_TRANSPORT=http, WIKI_ROOT=/data/wiki), ports "${WIKI_MCP_PORT:-8080}:8080", healthcheck hitting /health, restart: unless-stopped.
-    * named volume `wiki-data` mounted at /data/wiki (holds pages, sources, .git, and .index).
+    * service `mnesis`: build ., command runs the MCP server in http mode (`serve`), env_file .env, environment defaults (WIKI_MCP_TRANSPORT=http, WIKI_ROOT=/data/wiki), ports "${WIKI_MCP_PORT:-8080}:8080", healthcheck hitting /health, restart: unless-stopped.
+    * named volume `mnesis-data` mounted at /data/wiki (holds pages, sources, .git, and .index).
     * A clearly-commented placeholder block noting where Tier-B services (Postgres+pgvector+AGE, Qdrant, Redis, Temporal) attach at Phases 5-6 — commented out, not active.
 - .env.example: ANTHROPIC_API_KEY (blank), WIKI_LLM_MODEL, WIKI_LLM_STUB (1 for a no-network demo), WIKI_FILEBACK_THRESHOLD, WIKI_MCP_PORT, WIKI_MCP_TOKEN. Document that .env is gitignored.
 - Enable SQLite WAL mode for the index and state DBs so the running server and an exec'd CLI can read concurrently (single-writer awareness; note heavy concurrent writes are a Tier-B concern).
-- Makefile targets: docker-build, docker-up, docker-down, docker-logs, docker-cli (wraps `docker compose exec wiki wiki ...`).
+- Makefile targets: docker-build, docker-up, docker-down, docker-logs, docker-cli (wraps `docker compose exec mnesis mnesis ...`).
 
 CONSTRAINTS:
 - The volume must survive `docker compose down` (only `down -v` removes it); state.db and git history are irreplaceable.
@@ -113,7 +113,7 @@ CONSTRAINTS:
 - Core stack stays single-service — do not activate Tier-B services.
 
 ACCEPTANCE:
-- `docker compose up -d` -> the wiki service becomes healthy. `make docker-cli ARGS="rebuild"` works. Ingest a stub source and query it via `make docker-cli`. `docker compose down && docker compose up -d` -> the ingested page is still there (volume persisted). `docker compose down -v` clears it.
+- `docker compose up -d` -> the mnesis service becomes healthy. `make docker-cli ARGS="rebuild"` works. Ingest a stub source and query it via `make docker-cli`. `docker compose down && docker compose up -d` -> the ingested page is still there (volume persisted). `docker compose down -v` clears it.
 
 ON DONE: bring it up, commit ("feat: docker-compose core stack with persistent volume"), report the up/seed/query/persist sequence you verified.
 ```
@@ -130,7 +130,7 @@ OBJECTIVE: Add a `local-llm` Compose profile running a local model service, with
 BUILD:
 - Compose profile `local-llm`:
     * service `ollama` (or an equivalent local model server) with its own named volume for model weights, and a one-shot init that pulls the configured model.
-    * wire the `wiki` service, under this profile, to point llm.py at the local endpoint.
+    * wire the `mnesis` service, under this profile, to point llm.py at the local endpoint.
 - Extend llm.py: a provider switch (env WIKI_LLM_PROVIDER=anthropic|local, default anthropic) with a local provider that calls the Ollama/OpenAI-compatible endpoint (WIKI_LLM_BASE_URL, WIKI_LLM_MODEL). The Anthropic path and the stub remain unchanged and default.
 - Document in README that with this profile, ingestion and extraction run with no external inference calls.
 
@@ -155,7 +155,7 @@ CONTEXT: The wiki needs periodic upkeep (decay, graph lint, cache freshness). Th
 OBJECTIVE: Add a profile-gated `maintenance` service that periodically runs the maintenance commands against the shared volume.
 
 BUILD:
-- Compose profile `maintenance`: a `maintenance` service from the same image, sharing the wiki-data volume, running a small loop (or cron) that on an interval (env WIKI_MAINT_INTERVAL, default daily) runs: `wiki decay`, `wiki graph-lint --fix` (if Phase 3 is present), and a rebuild-if-missing check. Log each run with a summary.
+- Compose profile `maintenance`: a `maintenance` service from the same image, sharing the mnesis-data volume, running a small loop (or cron) that on an interval (env WIKI_MAINT_INTERVAL, default daily) runs: `mnesis decay`, `mnesis graph-lint --fix` (if Phase 3 is present), and a rebuild-if-missing check. Log each run with a summary.
 - Guard each command so that if a capability isn't built yet (e.g. graph-lint pre-Phase-3) it is skipped cleanly, not errored.
 - README note: this is deployment-level scheduling; Phase 4 moves it into the app as proper event hooks, at which point this sidecar can be retired.
 
@@ -180,10 +180,10 @@ CONTEXT: The stack runs. Make a fresh `up` yield a populated, queryable wiki, do
 OBJECTIVE: Add a seed/bootstrap one-shot, an ops runbook (backup/restore, connecting Claude Code), and finalize docs.
 
 BUILD:
-- scripts/seed.py and a `docker-seed` Make target: a one-shot (`docker compose run --rm wiki cli ...` or a dedicated init service) that, in stub mode, ingests the bundled sample sources and runs `wiki rebuild`, so a clean deployment is immediately queryable. Idempotent (re-seeding does not duplicate).
+- scripts/seed.py and a `docker-seed` Make target: a one-shot (`docker compose run --rm mnesis cli ...` or a dedicated init service) that, in stub mode, ingests the bundled sample sources and runs `mnesis rebuild`, so a clean deployment is immediately queryable. Idempotent (re-seeding does not duplicate).
 - `docker-demo` target: run the latest phase's demo (demo_phase3 if present, else the highest available) inside the container against the seeded volume.
 - README "Run with Docker" section: prerequisites; copy .env.example to .env; `make docker-build && make docker-up && make docker-seed`; query via `make docker-cli`; the optional profiles (local-llm, maintenance); and how to connect Claude Code to the HTTP MCP endpoint (e.g. `claude mcp add --transport http <url>` with the token header), contrasted with the local stdio .mcp.json.
-- Ops runbook (docs/OPS.md): the durable-vs-regenerable table; backup = git bundle of the canonical layer + a copy of state.db (exclude .index, which `wiki rebuild` regenerates); restore = restore those, then rebuild; health checks; how to rotate WIKI_MCP_TOKEN.
+- Ops runbook (docs/OPS.md): the durable-vs-regenerable table; backup = git bundle of the canonical layer + a copy of state.db (exclude .index, which `mnesis rebuild` regenerates); restore = restore those, then rebuild; health checks; how to rotate WIKI_MCP_TOKEN.
 - Confirm CLAUDE.md notes the deployment model and that .index is a regenerable cache while git history + state.db are durable.
 
 CONSTRAINTS:
@@ -201,13 +201,13 @@ ON DONE: commit ("docs: docker seeding, ops runbook, and connection guide"), rep
 ## Verifying the deployment (after D6)
 
 1. `make docker-build` — image builds; runs as non-root; git is present.
-2. `make docker-up` — the `wiki` service reports healthy; `GET /health` returns stats.
+2. `make docker-up` — the `mnesis` service reports healthy; `GET /health` returns stats.
 3. `make docker-seed` then `make docker-cli ARGS='query "..."'` — a populated wiki answers queries.
 4. Connect Claude Code to the HTTP MCP endpoint and call `wiki_query` / `wiki_ingest` as tools.
 5. `docker compose down && docker compose up -d` — data survives (volume); `down -v` clears it.
 6. `--profile local-llm up` — ingestion runs against the local model with no external inference call; plain `up` doesn't start it.
 7. `--profile maintenance up` — the sidecar runs decay/lint on a cadence and commits results to the volume's git history.
-8. Backup/restore drill — git bundle + `state.db`, delete `.index`, `wiki rebuild` — reproduces identical results, proving the durable/regenerable split holds in practice.
+8. Backup/restore drill — git bundle + `state.db`, delete `.index`, `mnesis rebuild` — reproduces identical results, proving the durable/regenerable split holds in practice.
 
 ---
 

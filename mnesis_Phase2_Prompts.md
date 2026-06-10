@@ -29,8 +29,8 @@ Each Phase-2 capability lands on a seam already present in the repo:
 Phase 2 introduces durable runtime state (access counts, the review queue) that cannot be derived from Markdown. The invariant is therefore sharpened, not broken:
 
 - **Markdown is canonical.** All knowledge — claims, sources, supersession links, status — lives in Markdown frontmatter and is committed to git.
-- **The search index is a rebuildable cache.** `wiki rebuild` drops and regenerates it from Markdown at any time.
-- **The state store is durable, auxiliary state.** Access events and the contradiction review queue live here. `wiki rebuild` must **not** clear it.
+- **The search index is a rebuildable cache.** `mnesis rebuild` drops and regenerates it from Markdown at any time.
+- **The state store is durable, auxiliary state.** Access events and the contradiction review queue live here. `mnesis rebuild` must **not** clear it.
 - **Graceful degradation.** Confidence is computed from Markdown-durable inputs (sources, recency, contradictions) plus an optional access boost from the state store. If the state store is lost, confidence falls back to its Markdown-only value — nothing essential is lost.
 
 ---
@@ -195,7 +195,7 @@ BUILD:
 - src/mnesis/lifecycle.py:
     * recompute_all() -> summary: for every page, recompute confidence (refresh the cached value in the index). Transition active -> stale when confidence < STALE_THRESHOLD (config, default 0.25) AND inactivity (no access, no reinforcement) exceeds the decay-class inactivity window. Reactivate stale -> active only on reinforcement/supersession-clear, not on a read alone. Each status change is one commit ("wiki: <id> -> stale|active"). Idempotent: a second run with no time change makes no commits.
     * Return counts: scanned, restaled, reactivated, unchanged.
-- CLI: `wiki decay` runs recompute_all and prints the summary.
+- CLI: `mnesis decay` runs recompute_all and prints the summary.
 - MCP: wiki_decay() tool exposing the same.
 - Config: STALE_THRESHOLD, INACTIVITY_DAYS per decay class.
 
@@ -221,8 +221,8 @@ OBJECTIVE: Surface and resolve the contradiction review queue via CLI and MCP, a
 
 BUILD:
 - CLI:
-    * `wiki review` -> list open contradictions: each shows the queue id, the two page ids and titles, their current confidences, and the conflict detail.
-    * `wiki resolve <review_id> --keep <page_id>` -> supersede the other page with the kept one (or mark the kept page authoritative), clear both pages' mutual `contradicts` entry, and state.resolve_review(review_id). One commit.
+    * `mnesis review` -> list open contradictions: each shows the queue id, the two page ids and titles, their current confidences, and the conflict detail.
+    * `mnesis resolve <review_id> --keep <page_id>` -> supersede the other page with the kept one (or mark the kept page authoritative), clear both pages' mutual `contradicts` entry, and state.resolve_review(review_id). One commit.
 - MCP: wiki_review() and wiki_resolve(review_id, keep_id) mirroring the CLI; wiki_query/get results note when a returned page has open contradictions.
 - Resolution must clear the contradiction from BOTH pages' `contradicts` lists, restoring the kept page's confidence (the contradiction_factor penalty lifts).
 
@@ -253,9 +253,9 @@ BUILD:
     2. ingest a second, agreeing source -> A reinforced: source_count 2, confidence rises, still ONE page.
     3. ingest a source that updates the claim -> new page B supersedes A; A goes stale.
     4. query the topic -> B (high confidence) ranks first; A is excluded by default, demoted with include_stale.
-    5. ingest a conflicting, low-margin source -> a review-queue entry; resolve it with `wiki resolve`.
-    6. run `wiki decay` over an aged fixture page -> it transitions to stale.
-- tests/test_phase2_e2e.py: the programmatic regression asserting each step above, plus: deleting wiki/.index/ and running `wiki rebuild` preserves access/review state and reproduces ranking and confidences.
+    5. ingest a conflicting, low-margin source -> a review-queue entry; resolve it with `mnesis resolve`.
+    6. run `mnesis decay` over an aged fixture page -> it transitions to stale.
+- tests/test_phase2_e2e.py: the programmatic regression asserting each step above, plus: deleting wiki/.index/ and running `mnesis rebuild` preserves access/review state and reproduces ranking and confidences.
 - Update README (verify-Phase-2 checklist; new commands: decay, review, resolve) and Makefile/justfile (decay, review targets). Confirm CLAUDE.md reflects the shipped Phase-2 schema and that the scope table now lists Phase 2 as in scope and Phases 3-6 as deferred.
 
 CONSTRAINTS:
@@ -275,10 +275,10 @@ ON DONE: run tests, commit ("feat(phase2): surface confidence, regression demo, 
 1. `make test` — full suite green, offline. Phase-1 tests still pass (no regression).
 2. `make demo-phase2` (or `python scripts/demo_phase2.py`) — prints: a reinforced claim (one page, rising confidence), a supersession (old page stale, new page active), confidence-ordered query results, a queued-then-resolved contradiction, and an aged page going stale.
 3. Reinforce a real page by ingesting a second agreeing source — confirm `source_count` rises and no duplicate page appears.
-4. `wiki query "<topic>"` — confirm results are ordered by a blend of match and confidence, and stale pages are absent unless asked for.
-5. `wiki review` then `wiki resolve <id> --keep <page>` — confirm the loser goes stale and the kept page's confidence recovers.
-6. `wiki decay` twice — first run may restale/reactivate; the second run is a no-op (idempotent).
-7. Delete `wiki/.index/` and `wiki rebuild` — search ranking and confidences return; **access counts and the review queue survive** (durable state store). This is the refined invariant in action.
+4. `mnesis query "<topic>"` — confirm results are ordered by a blend of match and confidence, and stale pages are absent unless asked for.
+5. `mnesis review` then `mnesis resolve <id> --keep <page>` — confirm the loser goes stale and the kept page's confidence recovers.
+6. `mnesis decay` twice — first run may restale/reactivate; the second run is a no-op (idempotent).
+7. Delete `wiki/.index/` and `mnesis rebuild` — search ranking and confidences return; **access counts and the review queue survive** (durable state store). This is the refined invariant in action.
 
 If all seven hold, the wiki now ages, reinforces, and self-corrects — and the seams for Phase 3 (the typed knowledge graph) are the `contradicts` links and the `type:value` tags you have been writing all along.
 

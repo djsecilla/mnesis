@@ -17,7 +17,7 @@ Run these prompts in order, one per Claude Code turn, after Phase 2 is green.
 | Phase-2 `contradicts` links between pages | `contradicts` **graph edges**. |
 | `supersedes` / `superseded_by` page links | `supersedes` **graph edges**; stale pages' edges demoted. |
 | Phase-2 confidence per page | **Edge confidence**, aggregated across the pages that assert a triple. |
-| Search index as a rebuildable cache | The **graph** is a rebuildable cache too — `wiki rebuild` rebuilds both. |
+| Search index as a rebuildable cache | The **graph** is a rebuildable cache too — `mnesis rebuild` rebuilds both. |
 
 ---
 
@@ -26,7 +26,7 @@ Run these prompts in order, one per Claude Code turn, after Phase 2 is green.
 Phase 3 extends the two-speed store with a third derived projection. The rules stay consistent:
 
 - **Assertions are canonical.** Entities (`type:value` tags) and relations (subject–predicate–object triples) are recorded in Markdown frontmatter and committed to git. They are knowledge, so they are canonical.
-- **The graph is a rebuildable cache.** `rebuild_graph()` regenerates the property graph from Markdown at any time, alongside the search index. `wiki rebuild` rebuilds search **and** graph.
+- **The graph is a rebuildable cache.** `rebuild_graph()` regenerates the property graph from Markdown at any time, alongside the search index. `mnesis rebuild` rebuilds search **and** graph.
 - **Derived scores stay out of Markdown.** Edge confidence and assertion counts are computed from the asserting pages and live only in the graph cache — never in frontmatter, exactly as page confidence does.
 - **The durable state store is never cleared by rebuild** (access events, review queue), and neither the search index nor the graph holds anything that can't be regenerated from Markdown + that state.
 - **Graceful degradation.** Lose the graph DB → rebuild it from Markdown. Lose the state store → confidence (and thus edge confidence) falls back to its Markdown-only value.
@@ -81,7 +81,7 @@ BUILD:
 - Update CLAUDE.md:
     * Define the relations frontmatter field: a list of triples {s, p, o} where s and o are type:value entity refs and p is an allowed predicate. State that entities are the type:value tags (no separate field) and that relations are the structured edges promoted out of the §6 vocabulary.
     * Add the full graph contract: entity types, predicate list with direction semantics, the entity-ref format, and that edge provenance/confidence are DERIVED (graph cache only, never frontmatter).
-    * Add the refined invariant: the graph is a rebuildable cache regenerated from Markdown; wiki rebuild rebuilds search and graph; the durable state store is never cleared.
+    * Add the refined invariant: the graph is a rebuildable cache regenerated from Markdown; mnesis rebuild rebuilds search and graph; the durable state store is never cleared.
     * Move "entity extraction & typed-relationship knowledge graph" from deferred into an "in scope (Phase 3)" section.
 - Update src/mnesis/store.py Page model: add relations: list[dict] (default []), parsing/serializing cleanly. Backward compatible — existing pages read fine with an empty list.
 - Add src/mnesis/vocab.py: ENTITY_TYPES, PREDICATES constants; normalize_ref(ref) (lowercase, hyphenate, validate type prefix); is_valid_predicate(p); validate_relation(rel) -> normalized rel or raises with a clear message.
@@ -129,12 +129,12 @@ ON DONE: run tests, commit ("feat(phase3): entity and relationship extraction"),
 ```
 CONTEXT: Pages now carry entities and relations in frontmatter. Build the property graph as a rebuildable projection of that Markdown, with confidence-weighted edges.
 
-OBJECTIVE: Implement src/mnesis/graph.py: build the typed property graph from the pages, integrate it into wiki rebuild, and provide the core traversal primitives.
+OBJECTIVE: Implement src/mnesis/graph.py: build the typed property graph from the pages, integrate it into mnesis rebuild, and provide the core traversal primitives.
 
 BUILD:
 - Use KuzuDB (embedded property graph, Cypher) at wiki/.index/graph (gitignored). Verify the installed kuzu Python API before coding and match it. If Kuzu is unavailable in the environment, fall back to a SQLite edge-table backend exposing the SAME primitives, selected via config; document the choice.
 - rebuild_graph() -> summary: drop and repopulate from store.list_pages(). Nodes = distinct entity refs (typed). Edges = relations, deduplicated across pages, each carrying source_pages, assertion_count, and confidence = noisy-OR of the asserting pages' Phase-2 confidence. Also project page-level structural edges: supersedes (page->page) and contradicts (page<->page) from frontmatter. Mark edges supported only by stale/superseded pages as demoted.
-- Integrate: extend search.rebuild / the `wiki rebuild` path to rebuild the graph too. Neither rebuild clears the durable state store.
+- Integrate: extend search.rebuild / the `mnesis rebuild` path to rebuild the graph too. Neither rebuild clears the durable state store.
 - Query primitives: get_entity(ref) -> {type, pages, edges}; neighbors(ref, predicate=None, direction="out") ; traverse(ref, predicate=None, depth=2, include_demoted=False) -> reachable entities with the connecting edges and paths. Traversal is confidence-weighted and excludes demoted edges by default.
 
 CONSTRAINTS:
@@ -188,7 +188,7 @@ BUILD:
     * wiki_impact(entity, depth=3) -> affected entities with paths and grounding pages.
     * wiki_graph_stats() -> node/edge counts by type, demoted-edge count.
   wiki_query / wiki_get results gain a "related entities" note.
-- CLI mirrors: wiki entity <ref>, wiki neighbors <ref> [--pred P] [--in], wiki impact <entity>, wiki graph-stats. Human-readable output showing paths and confidences.
+- CLI mirrors: mnesis entity <ref>, mnesis neighbors <ref> [--pred P] [--in], mnesis impact <entity>, mnesis graph-stats. Human-readable output showing paths and confidences.
 - Tool descriptions explain that traversal is confidence-weighted and excludes stale edges by default.
 
 CONSTRAINTS:
@@ -196,7 +196,7 @@ CONSTRAINTS:
 - No new ranking logic here - reuse Prompt 18's primitives.
 
 ACCEPTANCE:
-- tests/test_graph_mcp.py (stub): call the tool functions directly - entity, neighbors, traverse, impact, graph-stats - asserting grounded, correctly-typed results. Manual: `wiki impact library:redis` prints the affected set with paths. `python -m mnesis.mcp_server` starts cleanly. `pytest -q` green.
+- tests/test_graph_mcp.py (stub): call the tool functions directly - entity, neighbors, traverse, impact, graph-stats - asserting grounded, correctly-typed results. Manual: `mnesis impact library:redis` prints the affected set with paths. `python -m mnesis.mcp_server` starts cleanly. `pytest -q` green.
 
 ON DONE: run tests, commit ("feat(phase3): graph tools for MCP and CLI"), report the steps to call wiki_impact from Claude Code.
 ```
@@ -218,7 +218,7 @@ BUILD:
     * Stale-only edges: every supporting page is stale/superseded -> auto-demote (already excluded by default; ensure the cache marks them).
     * Dangling structural edges: supersedes/contradicts pointing to a missing page -> flag.
     * Edge-confidence recompute: refresh each edge's noisy-OR confidence from current page confidences.
-- CLI `wiki graph-lint [--fix]`: report-only by default; with --fix applies the safe auto-fixes and prints what changed. Tie it into any existing lint entry point.
+- CLI `mnesis graph-lint [--fix]`: report-only by default; with --fix applies the safe auto-fixes and prints what changed. Tie it into any existing lint entry point.
 
 CONSTRAINTS:
 - Auto-fix only the safe categories (merge dupes, demote stale-only, recompute confidence). Everything else is flagged for human review.
@@ -243,11 +243,11 @@ OBJECTIVE: Add a Phase-3 demo and regression test, surface the graph in docs, an
 BUILD:
 - scripts/demo_phase3.py (stub mode, no network), printing each step:
     1. ingest sources establishing entities and relations: Atlas uses Redis; the auth-migration depends_on the Redis cache; Sarah owns auth-migration.
-    2. wiki rebuild -> build search index AND graph; print graph stats.
+    2. mnesis rebuild -> build search index AND graph; print graph stats.
     3. ask "impact of upgrading Redis" -> traversal returns auth-migration and (transitively) Atlas, with the connecting paths - a connection the auth-migration page never states in words.
     4. ingest a source that updates a relation -> the superseding page's edges take over; the superseded page's edges are demoted in traversal.
-    5. wiki graph-lint --fix -> show a clean report after fixes.
-- tests/test_phase3_e2e.py: the programmatic regression asserting steps 1-4, plus: deleting wiki/.index/ and running wiki rebuild reproduces the graph, the search ranking, and confidences, while preserving the durable state store (access + review queue). Phase-1 and Phase-2 end-to-end tests still pass.
+    5. mnesis graph-lint --fix -> show a clean report after fixes.
+- tests/test_phase3_e2e.py: the programmatic regression asserting steps 1-4, plus: deleting wiki/.index/ and running mnesis rebuild reproduces the graph, the search ranking, and confidences, while preserving the durable state store (access + review queue). Phase-1 and Phase-2 end-to-end tests still pass.
 - Update README (verify-Phase-3 checklist; new commands: entity, neighbors, impact, graph-stats, graph-lint), Makefile/justfile (rebuild already covers the graph; add graph-stats and graph-lint targets, plus demo-phase3), and confirm CLAUDE.md lists Phase 3 as in scope with Phases 4-6 deferred.
 
 CONSTRAINTS:
@@ -266,12 +266,12 @@ ON DONE: run tests, commit ("feat(phase3): graph demo, regression, docs"), repor
 
 1. `make test` — full suite green, offline. Phases 1–2 still pass (no regression).
 2. `make demo-phase3` — prints entities and typed edges, then answers an impact query by **traversing** to a page that never names the entity in prose. That discovery is the whole point of Phase 3.
-3. `wiki impact library:redis` — returns what depends on/uses Redis, with the connecting paths and grounding pages.
-4. `wiki entity project:atlas` — shows its type, the pages that declare it, and its typed edges with confidences.
+3. `mnesis impact library:redis` — returns what depends on/uses Redis, with the connecting paths and grounding pages.
+4. `mnesis entity project:atlas` — shows its type, the pages that declare it, and its typed edges with confidences.
 5. Ingest a second source asserting the same relation — confirm the edge's confidence rises (noisy-OR) without a duplicate edge.
 6. Make a supporting page stale (via Phase-2 decay) — confirm its edges are demoted and drop out of default traversal.
-7. `wiki graph-lint --fix` then again — first run cleans, second is a no-op (idempotent).
-8. Delete `wiki/.index/` and `wiki rebuild` — search, graph, and confidences all return; **access counts and the review queue survive**. Markdown remains the only source of truth.
+7. `mnesis graph-lint --fix` then again — first run cleans, second is a no-op (idempotent).
+8. Delete `wiki/.index/` and `mnesis rebuild` — search, graph, and confidences all return; **access counts and the review queue survive**. Markdown remains the only source of truth.
 
 If all eight hold, the wiki now has structure as well as memory — and the seam for Phase 4 (automation) is every command you have built: each is a hook waiting to be fired on an event instead of by hand.
 

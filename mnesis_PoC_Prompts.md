@@ -86,7 +86,7 @@ BUILD:
     wiki/sources/.gitkeep
     tests/test_smoke.py
     scripts/.gitkeep
-- pyproject.toml: target Python 3.11+, dependencies anthropic, mcp, python-frontmatter, pyyaml, pytest. Console script: wiki = "mnesis.cli:main".
+- pyproject.toml: target Python 3.11+, dependencies anthropic, mcp, python-frontmatter, pyyaml, pytest. Console script: mnesis = "mnesis.cli:main".
 - src/mnesis/config.py: resolve repo-relative paths (WIKI_ROOT default ./wiki, PAGES_DIR, SOURCES_DIR, INDEX_DIR = wiki/.index). Read from env with fallbacks: WIKI_LLM_MODEL (default "claude-sonnet-4-6"), WIKI_FILEBACK_THRESHOLD (default 0.7), WIKI_LLM_STUB. Expose them as importable constants/functions.
 - CLAUDE.md — THE SCHEMA DOCUMENT, the most important file in the system. Write it to cover: the domain entity/relationship vocabulary (people, projects, libraries, concepts, files, decisions; relationships uses/depends-on/contradicts/caused/fixed/supersedes) even though the graph is deferred; the page frontmatter schema (id, title, created, updated, sources, source_count, last_confirmed, tags, kind [fact|digest|note], status [active|stale], supersedes, superseded_by); ingest rules; the CANONICAL-VS-CACHE principle (Markdown is source of truth, the index is a rebuildable cache); what is in scope for this PoC and what is deferred to later phases; and conventions (pages in wiki/pages, raw sources in wiki/sources, index in wiki/.index which is gitignored). End with an instruction that every future task must keep CLAUDE.md in sync with the code.
 - .gitignore: wiki/.index/, .venv, __pycache__, *.pyc, .env
@@ -252,7 +252,7 @@ CONTEXT: Components are built and individually tested. Wire them into a CLI and 
 OBJECTIVE: Implement src/mnesis/cli.py and scripts/demo_end_to_end.py, plus an end-to-end test exercising ingest -> query -> file-back -> query.
 
 BUILD:
-- cli.py: subcommands ingest <file|->, query <text>, get <id>, file-back <question> <answer> [--score N], list, rebuild. Human-readable output. Wire the `wiki` console script to main().
+- cli.py: subcommands ingest <file|->, query <text>, get <id>, file-back <question> <answer> [--score N], list, rebuild. Human-readable output. Wire the `mnesis` console script to main().
 - scripts/demo_end_to_end.py: runs in stub mode, end to end, on small bundled sample sources. Include one source containing a fake API key to demonstrate redaction. Steps, each printed: ingest source A and source B -> rebuild -> query -> synthesize and file_back a digest answer -> query again and show the digest now surfaces alongside the originals.
 - tests/test_e2e.py: the programmatic version, asserting: both source pages created; the secret is redacted everywhere (page + saved source); search finds the right page; file_back above threshold creates a digest; a follow-up query retrieves that digest; git history contains the expected commits; and a fresh rebuild reproduces the search results.
 
@@ -261,7 +261,7 @@ CONSTRAINTS:
 - Keep sample data small and self-contained under tests/fixtures or scripts.
 
 ACCEPTANCE:
-- `python scripts/demo_end_to_end.py` prints the full loop. The whole suite `pytest -q` passes. `wiki query "..."` works from the shell.
+- `python scripts/demo_end_to_end.py` prints the full loop. The whole suite `pytest -q` passes. `mnesis query "..."` works from the shell.
 
 ON DONE: run tests, commit ("feat: CLI and end-to-end demo of the compounding loop"), report a transcript of the demo run.
 ```
@@ -301,7 +301,7 @@ Run these yourself to confirm the loop:
 2. `make test` — full suite green, all in stub mode (no network).
 3. `make demo` — prints: two sources ingested, a secret redacted, a query answered, an answer filed back as a digest, and a follow-up query surfacing that digest. That last step *is* the compounding behaviour.
 4. `make run-mcp`, then connect from Claude Code and call `wiki_query` / `wiki_ingest` / `wiki_file_back` as tools.
-5. Delete `wiki/.index/` and run `wiki rebuild` — search results are identical, proving the index is a pure cache of the Markdown.
+5. Delete `wiki/.index/` and run `mnesis rebuild` — search results are identical, proving the index is a pure cache of the Markdown.
 
 If all five hold, you have a faithful end-to-end MVP and clean seams for Phases 2–6.
 
