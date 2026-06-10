@@ -90,6 +90,8 @@ Every page is a Markdown file at `wiki/pages/<id>.md` with YAML frontmatter foll
 
 The **body** is clean Markdown prose. It carries no index or search metadata — those live only in the (rebuildable) index.
 
+Timestamps (`created`, `updated`, `last_confirmed`) are written in UTC ISO 8601 with **microsecond precision** and a `Z` suffix (e.g. `2026-06-10T17:25:20.118087Z`); the appendix examples elide the fraction for readability. `question` is emitted **only** for `digest` pages — `fact`/`note` frontmatter omits it. This is exactly the implemented `store.Page` model.
+
 ---
 
 ## 5. Page kinds
@@ -118,9 +120,9 @@ Use lowercase, hyphenated values. Prefer an existing tag over inventing a near-d
 The pipeline contract (`ingest.py`), in order:
 
 1. **Scrub first.** Run `filters.scrub` on the raw text. Proceed with the redacted text only.
-2. **Persist the source.** Save the redacted source to `wiki/sources/<source_ref>.md` for provenance.
+2. **Persist the source.** Save the redacted source via `store.write_source`, which writes `wiki/sources/<source_ref>.md` and commits it as `mnesis: source <source_ref>` for provenance.
 3. **Extract.** Call the LLM with the disciplined extraction prompt to produce JSON `{title, summary_markdown, key_facts, tags}`. Parse robustly: strip code fences; on failure, retry once with a stricter instruction; then fall back to a minimal page built directly from the source.
-4. **Write.** Build a `fact` page (`source_count: 1`, `last_confirmed: now`, `sources: [source_ref]`) and write it through `store.write_page`.
+4. **Write.** Build a `fact` page (`source_count: 1`, `last_confirmed: now`, `sources: [source_ref]`) and write it through `store.write_page`, which commits it as `mnesis: write <id>`. (Indexing into the search cache via `search.upsert` is done by the calling interface — CLI/MCP — not by the store.)
 
 **Extraction discipline** (these go in the extraction system prompt):
 - Cite the source. State only what the source supports.
@@ -173,9 +175,9 @@ PoC behaviour is **flag, don't resolve**: if ingestion notices a direct conflict
 
 ## 13. Scope: in vs. deferred
 
-**In scope (this PoC):** filtered ingest · Markdown + git canonical store · FTS5 keyword search (rebuildable) · MCP interface with `wiki_ingest` / `wiki_query` / `wiki_file_back` (+ `wiki_get`, `wiki_list`, `wiki_rebuild`) · CLI · end-to-end demo and test.
+**In scope (this PoC — implemented):** filtered ingest · Markdown + git canonical store · FTS5 keyword search (rebuildable) · MCP interface with `wiki_ingest` / `wiki_query` / `wiki_file_back` (+ `wiki_get`, `wiki_list`, `wiki_rebuild`) · `mnesis` CLI · end-to-end demo and test. All present and exercised by the test suite.
 
-**Deferred — map of where each capability lands:**
+**Out of scope for this PoC — map of where each deferred capability lands:**
 
 | Capability | Phase |
 |---|---|
