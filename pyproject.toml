@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llmwiki"
+version = "0.1.0"
+description = "LLM Wiki v2 — a compounding knowledge base for AI agents (Phase-1 MVP PoC)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "anthropic",
+    "mcp",
+    "python-frontmatter",
+    "pyyaml",
+    "pytest",
+]
+
+[project.scripts]
+wiki = "llmwiki.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
