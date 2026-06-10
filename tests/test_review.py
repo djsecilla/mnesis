@@ -98,3 +98,18 @@ def test_query_notes_open_contradiction(wiki):
     _queue_a_contradiction()
     out = mcp_server.wiki_query("redis caching", include_stale=True)
     assert "contradiction under review" in out
+
+
+def test_resolved_review_does_not_return_after_decay(wiki):
+    from mnesis import lifecycle
+
+    existing, new, review_id = _queue_a_contradiction()
+    mcp_server.wiki_resolve(review_id, existing.id)
+    assert state.list_open_reviews() == []
+
+    # A later decay pass must not resurrect the resolved review.
+    lifecycle.recompute_all()
+    assert state.list_open_reviews() == []
+    assert "(no open contradictions)" in mcp_server.wiki_review()
+    # The superseded loser remains as stale history (never deleted).
+    assert store.read_page(new.id).status == "stale"
