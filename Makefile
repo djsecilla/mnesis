@@ -1,7 +1,8 @@
 # mnesis — developer ergonomics. See README.md for the full runbook.
 # All targets use uv; the test/demo targets run fully offline (stub LLM).
 
-.PHONY: help setup test demo demo-phase2 demo-phase3 run-mcp rebuild decay review graph-stats graph-lint
+.PHONY: help setup test demo demo-phase2 demo-phase3 run-mcp rebuild decay review graph-stats graph-lint \
+        docker-build docker-up docker-down docker-logs docker-cli
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -40,3 +41,20 @@ graph-stats: ## Print knowledge-graph node/edge counts
 
 graph-lint: ## Check graph consistency (use ARGS=--fix to apply safe fixes)
 	uv run mnesis graph-lint $(ARGS)
+
+# --- Docker / compose -------------------------------------------------------
+
+docker-build: ## Build the container image
+	docker compose build
+
+docker-up: ## Start the core stack (detached); volume persists across down
+	docker compose up -d
+
+docker-down: ## Stop the stack (volume KEPT; use `docker compose down -v` to wipe)
+	docker compose down
+
+docker-logs: ## Tail the mnesis service logs
+	docker compose logs -f mnesis
+
+docker-cli: ## Run a CLI command in the running container, e.g. ARGS='query "redis"'
+	docker compose exec -T mnesis mnesis $(ARGS)

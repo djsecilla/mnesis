@@ -33,6 +33,8 @@ def _connect() -> sqlite3.Connection:
     """Open the state DB, creating it and its schema on demand."""
     config.INDEX_DIR.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(_db_path())
+    conn.execute("PRAGMA journal_mode=WAL")  # concurrent reads with the running server
+    conn.execute("PRAGMA busy_timeout=5000")
     conn.row_factory = sqlite3.Row
     conn.execute(
         """

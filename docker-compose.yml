@@ -1,0 +1,65 @@
+# mnesis — core single-service stack (Phase D3).
+# Bring up:  docker compose up -d   (copy .env.example -> .env first to customize)
+# The canonical store (pages, sources, .git) and the durable state.db live on the
+# named volume `mnesis-data`; they survive `down` and are removed only by `down -v`.
+
+services:
+  mnesis:
+    build: .
+    image: mnesis:latest
+    command: serve                       # entrypoint dispatch -> MCP server
+    restart: unless-stopped
+    # .env is gitignored; absent is fine — the defaults below still bring it up.
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      MNESIS_MCP_TRANSPORT: http
+      MNESIS_ROOT: /data/mnesis
+      MNESIS_MCP_HOST: 0.0.0.0
+      MNESIS_MCP_PORT: "8080"            # internal bind; the HOST port is set via `ports`
+    ports:
+      # host ${MNESIS_MCP_PORT:-8080} -> container 8080
+      - "${MNESIS_MCP_PORT:-8080}:8080"
+    volumes:
+      - mnesis-data:/data/mnesis         # pages, sources, .git, and .index
+    healthcheck:
+      # /health is unauthenticated; python is already in the image (no curl needed).
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/health', timeout=3).status==200 else 1)"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # --- Tier-B services (Phases 5-6) — PLACEHOLDER, intentionally not active -----
+  # The core stack is single-service. When Phases 5-6 land (vector stream + RRF,
+  # multi-agent mesh, workflow orchestration), these attach via the same env-driven
+  # config and the GraphBackend/stream interfaces — no change to the core service.
+  # Uncomment and wire as needed; keep secrets in .env, never here.
+  #
+  # postgres:                # Postgres + pgvector (vectors) + Apache AGE (Tier-B graph)
+  #   image: ankane/pgvector:latest   # or an AGE-enabled image
+  #   environment:
+  #     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+  #   volumes:
+  #     - postgres-data:/var/lib/postgresql/data
+  #
+  # qdrant:                  # vector store (alternative to pgvector)
+  #   image: qdrant/qdrant:latest
+  #   volumes:
+  #     - qdrant-data:/qdrant/storage
+  #
+  # redis:                   # caching / pub-sub for the multi-agent mesh
+  #   image: redis:7-alpine
+  #
+  # temporal:                # durable workflow orchestration (automation/scheduler)
+  #   image: temporalio/auto-setup:latest
+
+volumes:
+  mnesis-data:
+  # postgres-data:           # (Tier-B) uncomment alongside the postgres service
+  # qdrant-data:             # (Tier-B) uncomment alongside the qdrant service

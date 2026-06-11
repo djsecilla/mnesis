@@ -79,6 +79,11 @@ def _connect() -> sqlite3.Connection:
     """
     config.INDEX_DIR.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(_db_path())
+    # WAL lets the running server and an exec'd CLI read concurrently; busy_timeout
+    # makes a concurrent writer wait rather than error (single-writer awareness —
+    # heavy concurrent writes are a Tier-B concern).
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
     _assert_fts5(conn)
     conn.execute(f"CREATE VIRTUAL TABLE IF NOT EXISTS pages USING {_SCHEMA}")
     cols = [r[1] for r in conn.execute("PRAGMA table_info(pages)").fetchall()]

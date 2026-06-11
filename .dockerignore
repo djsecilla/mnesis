@@ -23,3 +23,7 @@ dist/
 *.docx
 mnesis_*_Prompts.md
 LLM_Wiki_*
+
+# secrets / compose (not needed in the image)
+.env
+docker-compose*.yml
