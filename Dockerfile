@@ -36,7 +36,8 @@ RUN useradd --create-home --uid 10001 mnesis \
     && chown -R mnesis:mnesis /data/mnesis
 
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod +x /usr/local/bin/entrypoint.sh
+COPY docker/maintenance.sh /usr/local/bin/maintenance.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/maintenance.sh
 
 USER mnesis
 VOLUME /data/mnesis

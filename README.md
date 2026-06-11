@@ -172,6 +172,22 @@ external inference calls** — no Anthropic request, no API key needed. A plain
 `docker compose up` does **not** start the model service (profile-gated); the
 default Anthropic/stub behaviour is unchanged.
 
+**Maintenance sidecar (opt-in).** The wiki needs periodic upkeep — decay, graph
+lint, cache freshness. Until Phase 4 moves these into the app as event hooks,
+the `maintenance` profile runs them on a cadence at the deployment layer:
+
+```bash
+docker compose --profile maintenance up -d        # default interval: daily (MNESIS_MAINT_INTERVAL)
+```
+
+The sidecar shares the data volume with the server and, each cycle, runs
+`mnesis decay`, `mnesis graph-lint --fix`, and a rebuild-if-missing check — all
+through the **CLI**, so every change is committed and git-audited in the volume.
+Commands for capabilities not yet built are skipped cleanly, write contention is
+retried (WAL), and an empty wiki is a clean no-op. It is **not** started by a
+plain `docker compose up`. **Phase 4** replaces this sidecar with in-app
+scheduling, at which point it can be retired.
+
 ## Verify the PoC
 
 Run top to bottom on a fresh clone; each step states what you should see.

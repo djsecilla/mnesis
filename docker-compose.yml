@@ -77,6 +77,25 @@ services:
          ollama list && echo "model ready"'
     restart: "no"
 
+  # --- maintenance profile: periodic upkeep sidecar ---------------------------
+  # NOT started by a plain `up`. Bring it up with:
+  #   docker compose --profile maintenance up -d
+  # It shares the data volume with the server and runs decay / graph-lint --fix /
+  # rebuild-if-missing on an interval, committing changes via the CLI (git-audited).
+  # Phase 4 moves this into the app as event hooks; this sidecar can then retire.
+  maintenance:
+    build: .
+    image: mnesis:latest
+    profiles: ["maintenance"]
+    command: maintenance
+    restart: unless-stopped
+    environment:
+      MNESIS_ROOT: /data/mnesis
+      MNESIS_MAINT_INTERVAL: ${MNESIS_MAINT_INTERVAL:-86400}   # default daily
+      MNESIS_LLM_STUB: "1"              # upkeep commands never call the LLM
+    volumes:
+      - mnesis-data:/data/mnesis
+
   # --- Tier-B services (Phases 5-6) — PLACEHOLDER, intentionally not active -----
   # The core stack is single-service. When Phases 5-6 land (vector stream + RRF,
   # multi-agent mesh, workflow orchestration), these attach via the same env-driven

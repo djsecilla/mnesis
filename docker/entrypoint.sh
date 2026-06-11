@@ -9,11 +9,15 @@ ROOT="${MNESIS_ROOT:-/data/mnesis}"
 mkdir -p "$ROOT/pages" "$ROOT/sources" "$ROOT/.index"
 
 if [ ! -d "$ROOT/.git" ]; then
-    git init -q "$ROOT"
-    # A usable local identity so commits never fail (overridable via git env).
-    git -C "$ROOT" config user.name "mnesis"
-    git -C "$ROOT" config user.email "mnesis@localhost"
+    # `|| true`: tolerate a concurrent init race (server + maintenance sidecar
+    # starting together) — whichever wins creates a valid repo; the loser's
+    # template-hook copy may error harmlessly.
+    git init -q "$ROOT" 2>/dev/null || true
 fi
+# A usable local identity so commits never fail (set unconditionally + idempotent,
+# so it is correct even when another container created the repo first).
+git -C "$ROOT" config user.name "mnesis" 2>/dev/null || true
+git -C "$ROOT" config user.email "mnesis@localhost" 2>/dev/null || true
 
 # --- warm the rebuildable caches if missing (never touches the durable state) -
 if [ ! -f "$ROOT/.index/wiki.db" ] || [ ! -f "$ROOT/.index/graph.db" ]; then
@@ -29,6 +33,10 @@ case "${1:-serve}" in
     cli)
         shift
         exec mnesis "$@"
+        ;;
+    maintenance)
+        # Periodic upkeep sidecar (decay / graph-lint / rebuild-if-missing).
+        exec /usr/local/bin/maintenance.sh
         ;;
     *)
         # Run any given command verbatim (e.g. `id`, `sh`, `mnesis ...`).
