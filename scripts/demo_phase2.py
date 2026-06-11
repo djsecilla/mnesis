@@ -18,11 +18,11 @@ from datetime import datetime, timedelta, timezone
 
 # Configure BEFORE importing the package (config reads env at import time).
 _TMP = tempfile.mkdtemp(prefix="mnesis-phase2-")
-os.environ["WIKI_LLM_STUB"] = "1"
-os.environ["WIKI_ROOT"] = os.path.join(_TMP, "wiki")
+os.environ["MNESIS_LLM_STUB"] = "1"
+os.environ["MNESIS_ROOT"] = os.path.join(_TMP, "wiki")
 # Raise the stale threshold so an aged single-source page can fall stale in the
 # demo (a 1-source page's confidence asymptotes to ~0.25 under the default).
-os.environ["WIKI_STALE_THRESHOLD"] = "0.5"
+os.environ["MNESIS_STALE_THRESHOLD"] = "0.5"
 
 from mnesis import config, confidence, ingest, mcp_server, search, state, store  # noqa: E402
 from mnesis.store import Page  # noqa: E402
@@ -44,7 +44,7 @@ def main() -> None:
     subprocess.run(["git", "-C", _TMP, "init", "-q"], check=True)
     subprocess.run(["git", "-C", _TMP, "config", "user.name", "mnesis demo"], check=True)
     subprocess.run(["git", "-C", _TMP, "config", "user.email", "demo@localhost"], check=True)
-    print(f"Demo wiki root: {config.WIKI_ROOT}  (offline stub mode)")
+    print(f"Demo wiki root: {config.MNESIS_ROOT}  (offline stub mode)")
 
     _hr("STEP 1 — Ingest a claim -> page A (moderate confidence)")
     a = ingest.ingest_source(f"{TITLE}.", "atlas-arch")

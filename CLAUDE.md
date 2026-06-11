@@ -59,10 +59,10 @@ scripts/demo_end_to_end.py
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `WIKI_ROOT` | `./wiki` | Root of pages, sources, and index. |
-| `WIKI_LLM_MODEL` | `claude-sonnet-4-6` | Model used by the ingestion/extraction LLM. |
-| `WIKI_FILEBACK_THRESHOLD` | `0.7` | Quality gate for filing answers back. |
-| `WIKI_LLM_STUB` | unset | When `1` (or no API key), the LLM client returns deterministic canned output so tests and the demo run offline. |
+| `MNESIS_ROOT` | `./wiki` | Root of pages, sources, and index. |
+| `MNESIS_LLM_MODEL` | `claude-sonnet-4-6` | Model used by the ingestion/extraction LLM. |
+| `MNESIS_FILEBACK_THRESHOLD` | `0.7` | Quality gate for filing answers back. |
+| `MNESIS_LLM_STUB` | unset | When `1` (or no API key), the LLM client returns deterministic canned output so tests and the demo run offline. |
 
 `wiki/.index/` is never tracked by git — it is a cache that `mnesis rebuild` regenerates from the pages.
 
@@ -210,7 +210,7 @@ The pass is **idempotent**: with no time change it makes no transitions and no c
 
 `wiki_file_back(question, answer, quality_score=None)` is the compounding mechanism:
 
-- If `quality_score` (or a simple internal heuristic when `None`) **≥ `WIKI_FILEBACK_THRESHOLD`**, write a `digest` page that records the `question`, the answer (body), and the facts it drew on (`sources`/`tags`). Return its id.
+- If `quality_score` (or a simple internal heuristic when `None`) **≥ `MNESIS_FILEBACK_THRESHOLD`**, write a `digest` page that records the `question`, the answer (body), and the facts it drew on (`sources`/`tags`). Return its id.
 - Otherwise, **do not file**; return the reason ("below threshold").
 - Digest pages are tagged `kind:digest` (and may carry `concept:` tags) so they never masquerade as primary sourced facts.
 

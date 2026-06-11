@@ -23,11 +23,11 @@ def wiki(tmp_path, monkeypatch):
     root = tmp_path / "wiki"
     (root / "pages").mkdir(parents=True)
     (root / "sources").mkdir(parents=True)
-    monkeypatch.setattr(config, "WIKI_ROOT", root)
+    monkeypatch.setattr(config, "MNESIS_ROOT", root)
     monkeypatch.setattr(config, "PAGES_DIR", root / "pages")
     monkeypatch.setattr(config, "SOURCES_DIR", root / "sources")
     monkeypatch.setattr(config, "INDEX_DIR", root / ".index")
-    monkeypatch.setattr(config, "WIKI_LLM_STUB", True)
+    monkeypatch.setattr(config, "MNESIS_LLM_STUB", True)
     monkeypatch.setattr(config, "STALE_THRESHOLD", 0.5)  # so an aged 1-src page can go stale
 
     subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True)

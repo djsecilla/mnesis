@@ -20,8 +20,8 @@ import tempfile
 # Force offline stub mode and a throwaway wiki root BEFORE importing the package,
 # since config reads these at import time.
 _TMP = tempfile.mkdtemp(prefix="mnesis-demo-")
-os.environ["WIKI_LLM_STUB"] = "1"
-os.environ["WIKI_ROOT"] = os.path.join(_TMP, "wiki")
+os.environ["MNESIS_LLM_STUB"] = "1"
+os.environ["MNESIS_ROOT"] = os.path.join(_TMP, "wiki")
 
 from mnesis import config, mcp_server  # noqa: E402  (import after env setup)
 
@@ -52,7 +52,7 @@ def main() -> None:
     subprocess.run(["git", "-C", _TMP, "config", "user.name", "mnesis demo"], check=True)
     subprocess.run(["git", "-C", _TMP, "config", "user.email", "demo@localhost"], check=True)
 
-    print(f"Demo wiki root: {config.WIKI_ROOT}  (offline stub mode)")
+    print(f"Demo wiki root: {config.MNESIS_ROOT}  (offline stub mode)")
 
     _hr("STEP 1 — Ingest source A (Atlas / Redis)")
     print(mcp_server.wiki_ingest(SOURCE_A, "atlas-architecture"))

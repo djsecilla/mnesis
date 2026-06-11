@@ -17,7 +17,7 @@ NOW = datetime(2026, 6, 11, 12, 0, 0, tzinfo=timezone.utc)
 def wiki(tmp_path, monkeypatch):
     root = tmp_path / "wiki"
     (root / "pages").mkdir(parents=True)
-    monkeypatch.setattr(config, "WIKI_ROOT", root)
+    monkeypatch.setattr(config, "MNESIS_ROOT", root)
     monkeypatch.setattr(config, "PAGES_DIR", root / "pages")
     monkeypatch.setattr(config, "INDEX_DIR", root / ".index")
     monkeypatch.setattr(config, "GRAPH_BACKEND", "sqlite")

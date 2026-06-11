@@ -12,7 +12,7 @@ setup: ## Create the venv and install the package (editable) + deps
 	uv pip install -e .
 
 test: ## Run the full test suite offline (no network, no API key)
-	WIKI_LLM_STUB=1 uv run pytest -q
+	MNESIS_LLM_STUB=1 uv run pytest -q
 
 demo: ## Run the Phase-1 end-to-end compounding-loop demo (offline, throwaway wiki)
 	uv run python scripts/demo_end_to_end.py

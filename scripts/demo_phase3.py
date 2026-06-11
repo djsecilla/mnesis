@@ -16,8 +16,8 @@ import subprocess
 import tempfile
 
 _TMP = tempfile.mkdtemp(prefix="mnesis-phase3-")
-os.environ["WIKI_LLM_STUB"] = "1"
-os.environ["WIKI_ROOT"] = os.path.join(_TMP, "wiki")
+os.environ["MNESIS_LLM_STUB"] = "1"
+os.environ["MNESIS_ROOT"] = os.path.join(_TMP, "wiki")
 
 from mnesis import config, graph, ingest, mcp_server  # noqa: E402
 
@@ -31,7 +31,7 @@ def main() -> None:
     subprocess.run(["git", "-C", _TMP, "init", "-q"], check=True)
     subprocess.run(["git", "-C", _TMP, "config", "user.name", "mnesis demo"], check=True)
     subprocess.run(["git", "-C", _TMP, "config", "user.email", "demo@localhost"], check=True)
-    print(f"Demo wiki root: {config.WIKI_ROOT}  (offline stub mode)")
+    print(f"Demo wiki root: {config.MNESIS_ROOT}  (offline stub mode)")
 
     _hr("STEP 1 — Ingest sources establishing entities and relations")
     # A dependency chain: Atlas -> auth-migration -> Redis, plus Sarah owns it.

@@ -32,7 +32,7 @@ agents can use it natively. Filing a synthesized answer back
 - **[uv](https://docs.astral.sh/uv/)** for environment and dependency management.
 - **git** (the canonical store commits every page mutation).
 - *Optional:* `ANTHROPIC_API_KEY` for real LLM extraction. Without it (or with
-  `WIKI_LLM_STUB=1`) mnesis runs fully offline with a deterministic stub, so the
+  `MNESIS_LLM_STUB=1`) mnesis runs fully offline with a deterministic stub, so the
   tests and demo never touch the network.
 
 ## Setup
@@ -45,7 +45,7 @@ make demo         # end-to-end compounding-loop demo, offline
 
 `make help` lists every target (`setup`, `test`, `demo`, `run-mcp`, `rebuild`).
 
-By default the wiki lives under `./wiki` (override with `WIKI_ROOT`). The SQLite
+By default the wiki lives under `./wiki` (override with `MNESIS_ROOT`). The SQLite
 index under `wiki/.index/` is gitignored — it is a rebuildable cache, never the
 source of truth.
 
@@ -65,7 +65,7 @@ mnesis query "redis caching"
 mnesis get project-atlas-uses-redis-for-caching
 
 # 4. FILE-BACK a synthesized answer as a durable digest page (the compounding
-#    step). Files only if the quality score clears WIKI_FILEBACK_THRESHOLD (0.7).
+#    step). Files only if the quality score clears MNESIS_FILEBACK_THRESHOLD (0.7).
 mnesis file-back "What caches Atlas?" "Atlas uses Redis for caching." --score 0.9
 ```
 
@@ -100,10 +100,9 @@ page. See [`CLAUDE.md`](CLAUDE.md) §7/§8/§11 for the model.
 Ingest extracts typed **entities** (`type:value`) and **relations** (`{s,p,o}`
 triples) into page frontmatter; `mnesis rebuild` projects them into a knowledge
 graph (alongside the search index). The graph is a rebuildable cache behind a
-pluggable backend — `WIKI_GRAPH_BACKEND` selects it (default `sqlite`, an
+pluggable backend — `MNESIS_GRAPH_BACKEND` selects it (default `sqlite`, an
 embedded backend; a Tier-B backend like Postgres+AGE or Neo4j implements the
-same interface with no other changes). *(The Phase-3 playbook calls this env var
-`MNESIS_GRAPH_BACKEND`; this codebase uses the `WIKI_` prefix throughout.)*
+same interface with no other changes).
 
 ```bash
 mnesis entity library:redis           # type, declaring pages, and typed edges
@@ -139,7 +138,7 @@ launches `.venv/bin/python -m mnesis.mcp_server`, so run `make setup` first.
 claude mcp add mnesis -- uv run python -m mnesis.mcp_server
 ```
 
-Set `ANTHROPIC_API_KEY` for real extraction, or `WIKI_LLM_STUB=1` to run offline.
+Set `ANTHROPIC_API_KEY` for real extraction, or `MNESIS_LLM_STUB=1` to run offline.
 
 ## Verify the PoC
 
@@ -160,19 +159,19 @@ Run top to bottom on a fresh clone; each step states what you should see.
 
    ```bash
    rm -rf /tmp/mnesis-try && git init -q /tmp/mnesis-try
-   export WIKI_LLM_STUB=1 WIKI_ROOT=/tmp/mnesis-try/wiki
+   export MNESIS_LLM_STUB=1 MNESIS_ROOT=/tmp/mnesis-try/wiki
    echo "Project Atlas uses Redis for caching." | uv run mnesis ingest - --ref atlas
    uv run mnesis rebuild
    uv run mnesis query "redis"          # -> the ingested page is the top hit
    uv run mnesis file-back "What caches Atlas?" "Atlas uses Redis for caching." --score 0.9
    uv run mnesis query "caching"        # -> BOTH the fact and the new digest appear
-   unset WIKI_ROOT WIKI_LLM_STUB
+   unset MNESIS_ROOT MNESIS_LLM_STUB
    ```
 
 5. **Canonical-vs-cache holds** — the index is a pure projection of Markdown:
 
    ```bash
-   rm -f /tmp/mnesis-try/wiki/.index/wiki.db && uv run env WIKI_ROOT=/tmp/mnesis-try/wiki mnesis rebuild
+   rm -f /tmp/mnesis-try/wiki/.index/wiki.db && uv run env MNESIS_ROOT=/tmp/mnesis-try/wiki mnesis rebuild
    ```
 
    deleting the index and rebuilding reproduces identical search results (this
@@ -223,7 +222,7 @@ Phase 3 extracts entities/relations and projects them into a typed graph.
    `wiki/.index/graph.db` and running `mnesis rebuild` reproduces the graph, the
    search ranking, and confidences, while the durable state store
    (`wiki/.index/state.db`) is preserved. Asserted by `tests/test_phase3_e2e.py`.
-3. **Pluggable backend** — `WIKI_GRAPH_BACKEND` selects the engine (default
+3. **Pluggable backend** — `MNESIS_GRAPH_BACKEND` selects the engine (default
    `sqlite`); all graph access goes through one `GraphBackend` interface, so a
    Tier-B backend is a config change, not a refactor.
 

@@ -1,9 +1,9 @@
 """Anthropic client wrapper with a deterministic offline stub.
 
 This is the only module that talks to the LLM. It centralizes the model name
-(``config.WIKI_LLM_MODEL``) and ``MAX_TOKENS`` so callers never hard-code them.
+(``config.MNESIS_LLM_MODEL``) and ``MAX_TOKENS`` so callers never hard-code them.
 
-**Stub mode** (``config.WIKI_LLM_STUB`` — set by ``WIKI_LLM_STUB=1`` or the
+**Stub mode** (``config.MNESIS_LLM_STUB`` — set by ``MNESIS_LLM_STUB=1`` or the
 absence of an API key) returns a deterministic, network-free JSON response
 derived from the prompt, so the test suite and the demo run fully offline.
 
@@ -79,7 +79,7 @@ def _real_complete(system: str, user: str) -> str:
 
         _client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from env
     response = _client.messages.create(
-        model=config.WIKI_LLM_MODEL,
+        model=config.MNESIS_LLM_MODEL,
         max_tokens=MAX_TOKENS,
         system=system,
         messages=[{"role": "user", "content": user}],
@@ -92,9 +92,9 @@ def _real_complete(system: str, user: str) -> str:
 def complete(system: str, user: str) -> str:
     """Return the model's text response to ``system``/``user``.
 
-    Routes to the offline stub whenever ``config.WIKI_LLM_STUB`` is set
+    Routes to the offline stub whenever ``config.MNESIS_LLM_STUB`` is set
     (read at call time so tests can toggle it).
     """
-    if config.WIKI_LLM_STUB:
+    if config.MNESIS_LLM_STUB:
         return _stub_complete(system, user)
     return _real_complete(system, user)

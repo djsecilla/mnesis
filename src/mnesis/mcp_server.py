@@ -148,13 +148,13 @@ def wiki_file_back(question: str, answer: str, quality_score: float | None = Non
     """File a synthesized answer back as a durable ``digest`` page (compounding).
 
     If ``quality_score`` (or the internal heuristic when ``None``) is at least
-    ``WIKI_FILEBACK_THRESHOLD``, write a ``kind=digest`` page linking the
+    ``MNESIS_FILEBACK_THRESHOLD``, write a ``kind=digest`` page linking the
     question and answer and return its id. Otherwise file nothing and return the
     reason. Digest pages are tagged ``kind:digest`` so they never masquerade as
     primary sourced facts (CLAUDE.md §5, §9).
     """
     score = quality_score if quality_score is not None else _heuristic_quality(answer)
-    threshold = config.WIKI_FILEBACK_THRESHOLD
+    threshold = config.MNESIS_FILEBACK_THRESHOLD
     if score < threshold:
         return f"below threshold, not filed (score {score:.2f} < {threshold:.2f})"
 

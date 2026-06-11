@@ -424,7 +424,7 @@ def get_graph_backend() -> GraphBackend:
     backend = config.GRAPH_BACKEND
     if backend == "sqlite":
         return SqliteGraphBackend(config.INDEX_DIR / "graph.db")
-    raise ValueError(f"unknown graph backend {backend!r} (set WIKI_GRAPH_BACKEND)")
+    raise ValueError(f"unknown graph backend {backend!r} (set MNESIS_GRAPH_BACKEND)")
 
 
 # --- Projection from Markdown ----------------------------------------------

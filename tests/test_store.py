@@ -20,7 +20,7 @@ def wiki(tmp_path, monkeypatch):
     root = tmp_path / "wiki"
     pages = root / "pages"
     pages.mkdir(parents=True)
-    monkeypatch.setattr(config, "WIKI_ROOT", root)
+    monkeypatch.setattr(config, "MNESIS_ROOT", root)
     monkeypatch.setattr(config, "PAGES_DIR", pages)
 
     subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True)
