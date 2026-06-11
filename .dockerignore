@@ -1,0 +1,25 @@
+# Keep the build context small and free of host-only / regenerable artifacts.
+.git
+.gitignore
+.venv
+**/__pycache__
+*.pyc
+*.pyo
+
+# Rebuildable caches (search index, graph, durable state live under the volume).
+wiki/.index
+mnesis/.index
+
+# The wiki data and host scratch — not part of the image.
+wiki/
+scripts/
+tests/
+.pytest_cache
+
+# Packaging / docs noise.
+*.egg-info
+build/
+dist/
+*.docx
+mnesis_*_Prompts.md
+LLM_Wiki_*
