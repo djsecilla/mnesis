@@ -38,7 +38,9 @@ def _stub_complete(system: str, user: str) -> str:
       ``relation:<label>`` marker in the user text (default ``unrelated``). This
       lets tests drive every ingest branch deterministically.
     - **Extraction** (default): return ``{title, summary_markdown, key_facts,
-      tags}`` derived from the user text.
+      tags, relations}`` derived from the user text. Entities and relations come
+      from ``tag{type:value}`` and ``rel{s|p|o}`` markers in the source, so tests
+      can drive entity/edge extraction offline.
     """
     if all(label in system for label in _RELATION_LABELS):
         match = re.search(r"relation:(reinforces|supersedes|contradicts|unrelated)", user)
@@ -54,11 +56,18 @@ def _stub_complete(system: str, user: str) -> str:
     title = first[:80].rstrip()
     summary = " ".join(text.split())[:300]
     key_facts = sentences[:3] or [title]
+    tags = re.findall(r"tag\{([^}]*)\}", text)
+    relations = []
+    for m in re.findall(r"rel\{([^}]*)\}", text):
+        parts = [p.strip() for p in m.split("|")]
+        if len(parts) == 3:
+            relations.append({"s": parts[0], "p": parts[1], "o": parts[2]})
     payload = {
         "title": title,
         "summary_markdown": summary,
         "key_facts": key_facts,
-        "tags": [],
+        "tags": tags,
+        "relations": relations,
     }
     return json.dumps(payload)
 

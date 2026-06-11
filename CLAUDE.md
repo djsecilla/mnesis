@@ -141,8 +141,8 @@ The pipeline contract (`ingest.py`), in order:
 
 1. **Scrub first.** Run `filters.scrub` on the raw text. Proceed with the redacted text only.
 2. **Persist the source.** Save the redacted source via `store.write_source`, which writes `wiki/sources/<source_ref>.md` and commits it as `mnesis: source <source_ref>` for provenance.
-3. **Extract.** Call the LLM with the disciplined extraction prompt to produce JSON `{title, summary_markdown, key_facts, tags}`. Parse robustly: strip code fences; on failure, retry once with a stricter instruction; then fall back to a minimal page built directly from the source.
-4. **Classify & route (Phase 2).** Build the candidate `fact` page, find top-`CANDIDATE_TOP_N` active existing pages via `search.search`, and classify the new info against each (conservative LLM classifier, defaults to `unrelated`). Route to the lifecycle action below. Ingest upserts every page it touches into the search cache.
+3. **Extract.** Call the LLM with the disciplined extraction prompt to produce JSON `{title, summary_markdown, key_facts, tags, relations}` (Phase 3 adds `relations`). Parse robustly: strip code fences; on failure, retry once with a stricter instruction; then fall back to a minimal page built directly from the source. **Normalize & validate** every entity ref (`vocab.normalize_ref`) and every triple (`vocab.validate_relation`); invalid/unsupported triples are **dropped and logged** (never written), and relations are deduplicated. Each entity an edge touches is also recorded as a tag.
+4. **Classify & route (Phase 2).** Build the candidate `fact` page, find top-`CANDIDATE_TOP_N` active existing pages via `search.search` (matched on `title`), and classify the new info against each (conservative LLM classifier, defaults to `unrelated`). Route to the lifecycle action below. On **reinforce**, new valid relations and entity tags are unioned (deduped) into the existing page. Ingest upserts every page it touches into the search cache.
 
 **Extraction discipline** (these go in the extraction system prompt):
 - Cite the source. State only what the source supports.

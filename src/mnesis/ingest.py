@@ -21,13 +21,16 @@ never silently deleted — losers go ``stale`` via supersede, or are queued.
 from __future__ import annotations
 
 import json
+import logging
 import re
 
-from . import config, confidence, llm, search, state, store
+from . import config, confidence, llm, search, state, store, vocab
 from .filters import scrub
 from .store import Page
 
-# --- Extraction prompt (unchanged contract) --------------------------------
+log = logging.getLogger(__name__)
+
+# --- Extraction prompt ------------------------------------------------------
 
 EXTRACTION_SYSTEM_PROMPT = """You extract a single, well-formed knowledge-base \
 page from a source document. The source has reference id: {source_ref}.
@@ -39,11 +42,16 @@ Return ONLY a JSON object (no prose, no code fences) with exactly these keys:
     supports. Mark any uncertainty explicitly. Do not invent facts, names,
     numbers, or relationships.
   - "key_facts": a list of short, discrete factual strings drawn from the source.
-  - "tags": a list of lowercase "type:value" tags using the entity types
-    person/project/library/concept/file/decision plus free tags.
+  - "tags": lowercase "type:value" entity refs for every entity the source
+    mentions, using ONLY the entity types {entity_types} (e.g. "project:atlas",
+    "library:redis", "person:sarah"). Reuse existing forms where possible.
+  - "relations": a list of {{"s","p","o"}} triples that the source explicitly
+    supports, where "s" and "o" are entity refs (as in tags) and "p" is one of
+    the allowed predicates {predicates}. State the direction as "A -p-> B".
 
 Discipline: cite only the given source; state nothing the source does not
-support; prefer one coherent claim per page."""
+support. Do not invent entities or relationships. Prefer FEWER, well-grounded
+edges over speculative ones, and prefer one coherent claim per page."""
 
 _STRICTER_SUFFIX = (
     "\n\nIMPORTANT: Your previous output was not valid JSON. Respond with a "
@@ -105,7 +113,11 @@ def _parse_json_object(raw: str) -> dict | None:
 
 def _extract(redacted: str, source_ref: str) -> dict | None:
     """Extract the page dict, retrying once stricter; ``None`` if unparseable."""
-    system = EXTRACTION_SYSTEM_PROMPT.format(source_ref=source_ref)
+    system = EXTRACTION_SYSTEM_PROMPT.format(
+        source_ref=source_ref,
+        entity_types=", ".join(vocab.ENTITY_TYPES),
+        predicates=", ".join(vocab.PREDICATES),
+    )
     for sys_prompt in (system, system + _STRICTER_SUFFIX):
         data = _parse_json_object(llm.complete(sys_prompt, redacted))
         if data and isinstance(data.get("title"), str) and data["title"].strip():
@@ -125,28 +137,92 @@ def _build_body(data: dict, source_ref: str) -> str:
     return "\n\n".join(parts)
 
 
+def _normalize_tags(raw_tags) -> list[str]:
+    """Normalize extracted tags, deduped and order-preserving.
+
+    A ``type:value`` tag whose type is a known entity type is canonicalized via
+    ``vocab.normalize_ref``; anything else is kept as a lowercased free tag.
+    """
+    out: list[str] = []
+    for raw in raw_tags or []:
+        tag = str(raw).strip()
+        if not tag:
+            continue
+        try:
+            tag = vocab.normalize_ref(tag)
+        except ValueError:
+            tag = tag.lower()  # not an entity ref — keep as a free tag
+        if tag not in out:
+            out.append(tag)
+    return out
+
+
+def _validate_relations(raw_relations) -> tuple[list[dict], list[dict]]:
+    """Validate/normalize extracted triples. Returns ``(valid, dropped)``.
+
+    ``valid`` is deduplicated, normalized triples; ``dropped`` records each
+    rejected triple with a human-readable reason (never written, only reported).
+    """
+    valid: list[dict] = []
+    dropped: list[dict] = []
+    seen: set[tuple[str, str, str]] = set()
+    for raw in raw_relations or []:
+        try:
+            rel = vocab.validate_relation(raw)
+        except ValueError as exc:
+            dropped.append({"triple": raw, "reason": str(exc)})
+            continue
+        key = (rel["s"], rel["p"], rel["o"])
+        if key not in seen:
+            seen.add(key)
+            valid.append(rel)
+    return valid, dropped
+
+
 def _page_from_extraction(redacted: str, source_ref: str) -> Page:
-    """Build the candidate new ``fact`` page (not yet written) from a source."""
+    """Build the candidate new ``fact`` page (not yet written) from a source.
+
+    Extracts entities (tags) and typed relations, normalizing/validating both;
+    invalid triples are dropped and reported to the log (CLAUDE.md §7), never
+    written.
+    """
     data = _extract(redacted, source_ref)
     if data is None:
         first_line = next((ln.strip() for ln in redacted.splitlines() if ln.strip()), source_ref)
         title = first_line[:80] or source_ref
         body = f"{redacted.strip()}\n\nSource: {source_ref}. (Extraction fell back to raw source.)"
         tags: list[str] = []
+        relations: list[dict] = []
     else:
         title = data["title"].strip()
         body = _build_body(data, source_ref)
-        tags = [str(t).strip() for t in (data.get("tags") or []) if str(t).strip()]
+        tags = _normalize_tags(data.get("tags"))
+        relations, dropped = _validate_relations(data.get("relations"))
+        for d in dropped:
+            log.warning("ingest %s: dropped invalid relation %r — %s",
+                        source_ref, d["triple"], d["reason"])
+        # Every entity that an edge touches should appear as a tag.
+        for rel in relations:
+            for ref in (rel["s"], rel["o"]):
+                if ref not in tags:
+                    tags.append(ref)
+
     return Page(id=store.make_id(title), title=title, body=body, sources=[source_ref],
-                tags=tags, kind="fact")
+                tags=tags, relations=relations, kind="fact")
 
 
 # --- Classification --------------------------------------------------------
 
 
 def _find_candidates(new_page: Page) -> list[Page]:
-    """Top-N active existing pages that might relate to ``new_page``."""
-    query = new_page.title + " " + " ".join(new_page.tags)
+    """Top-N active existing pages that might relate to ``new_page``.
+
+    Matches on the title — the declarative claim is the stable signal for
+    reinforce/supersede/contradict. (Entity tags are not part of the query: with
+    FTS5's implicit-AND, a new page's extra entity tags would exclude an existing
+    page that doesn't share them. The LLM classifier makes the final call.)
+    """
+    query = new_page.title
     candidates: list[Page] = []
     for hit in search.search(query, limit=config.CANDIDATE_TOP_N, include_stale=False):
         if hit.id == new_page.id:
@@ -185,12 +261,29 @@ def _create(new_page: Page) -> Page:
     return new_page
 
 
-def _reinforce(existing: Page, source_ref: str) -> Page:
-    """Same claim, new support: bump support and reset the retention clock."""
+def _merge_relations(existing: list[dict], incoming: list[dict]) -> list[dict]:
+    """Union two relation lists, deduped by (s, p, o), preserving order."""
+    merged = list(existing)
+    seen = {(r["s"], r["p"], r["o"]) for r in existing if {"s", "p", "o"} <= r.keys()}
+    for rel in incoming:
+        key = (rel["s"], rel["p"], rel["o"])
+        if key not in seen:
+            seen.add(key)
+            merged.append(rel)
+    return merged
+
+
+def _reinforce(existing: Page, source_ref: str, new_page: Page) -> Page:
+    """Same claim, new support: bump support, reset the retention clock, and union
+    in any new valid entities/relations the new source contributes."""
     if source_ref not in existing.sources:
         existing.sources.append(source_ref)
     existing.source_count += 1
     existing.last_confirmed = store.now_iso()  # reinforcement resets retention
+    existing.relations = _merge_relations(existing.relations, new_page.relations)
+    for tag in new_page.tags:
+        if tag not in existing.tags:
+            existing.tags.append(tag)
     store.write_page(existing, message=f"mnesis: reinforce {existing.id}")
     search.upsert(existing)
     return existing
@@ -252,7 +345,7 @@ def ingest_source(raw_text: str, source_ref: str) -> Page:
     for candidate in _find_candidates(new_page):
         label = _classify(new_page, candidate, redacted)
         if label == "reinforces":
-            return _reinforce(candidate, source_ref)
+            return _reinforce(candidate, source_ref, new_page)
         if label == "supersedes":
             return _supersede(new_page, candidate.id)
         if label == "contradicts":
