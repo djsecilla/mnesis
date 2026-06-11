@@ -95,6 +95,28 @@ support, no new page), **supersede** it (old → stale), **contradict** it
 (auto-resolved by confidence margin, else queued for `review`), or create a new
 page. See [`CLAUDE.md`](CLAUDE.md) §7/§8/§11 for the model.
 
+### Phase-3 graph commands
+
+Ingest extracts typed **entities** (`type:value`) and **relations** (`{s,p,o}`
+triples) into page frontmatter; `mnesis rebuild` projects them into a knowledge
+graph (alongside the search index). The graph is a rebuildable cache behind a
+pluggable backend — `WIKI_GRAPH_BACKEND` selects it (default `sqlite`, an
+embedded backend; a Tier-B backend like Postgres+AGE or Neo4j implements the
+same interface with no other changes). *(The Phase-3 playbook calls this env var
+`MNESIS_GRAPH_BACKEND`; this codebase uses the `WIKI_` prefix throughout.)*
+
+```bash
+mnesis entity library:redis           # type, declaring pages, and typed edges
+mnesis neighbors library:redis --in   # adjacent entities (--in for incoming; --pred to filter)
+mnesis impact library:redis           # what depends on/uses it (reverse traversal, with paths)
+mnesis graph-stats                    # node/edge counts by type and predicate
+mnesis graph-lint [--fix]             # consistency check; --fix applies the safe auto-fixes
+```
+
+`query`/`get` also note a page's related entities, and `query` folds in
+graph-reachable pages (grounded by the connecting edge) even when they lack the
+keyword. See [`CLAUDE.md`](CLAUDE.md) §6 for the graph contract.
+
 ## Connect the MCP server to Claude Code
 
 mnesis exposes its tools over the [Model Context Protocol](https://modelcontextprotocol.io):
@@ -182,5 +204,28 @@ Phase 2 adds confidence, decay, supersession, and the contradiction review queue
    (`wiki/.index/state.db`: access counts + review queue). Asserted by
    `tests/test_phase2_e2e.py`.
 
-See [`CLAUDE.md` §13](CLAUDE.md) for the scope map: Phases 1–2 are in scope and
-implemented; Phases 3–6 are deferred, with each capability mapped to its phase.
+## Verify Phase 3 (knowledge graph)
+
+Phase 3 extracts entities/relations and projects them into a typed graph.
+
+1. **Graph demo** — `make demo-phase3` (i.e. `uv run python scripts/demo_phase3.py`)
+   prints the full walkthrough. Confirm:
+   - **Step 2** — `mnesis rebuild` reports the graph it built (entities/edges)
+     and the active backend (`sqlite`); `graph-stats` shows counts by type.
+   - **Step 3** — `impact library:redis` returns **auth-migration (hop 1)** and
+     **Atlas (hop 2)** with the connecting path `project:atlas -> decision:auth-migration
+     -> library:redis` — a Redis dependency the Atlas page never states in words.
+   - **Step 4** — after a superseding source moves the migration to Postgres, the
+     old Redis edge is **demoted** (Redis impact becomes empty) and the new
+     Postgres edge **takes over** the chain.
+   - **Step 5** — `graph-lint --fix` reports **clean**.
+2. **Graph is a rebuildable cache** — deleting both `wiki/.index/wiki.db` and
+   `wiki/.index/graph.db` and running `mnesis rebuild` reproduces the graph, the
+   search ranking, and confidences, while the durable state store
+   (`wiki/.index/state.db`) is preserved. Asserted by `tests/test_phase3_e2e.py`.
+3. **Pluggable backend** — `WIKI_GRAPH_BACKEND` selects the engine (default
+   `sqlite`); all graph access goes through one `GraphBackend` interface, so a
+   Tier-B backend is a config change, not a refactor.
+
+See [`CLAUDE.md` §13](CLAUDE.md) for the scope map: Phases 1–3 are in scope and
+implemented; Phases 4–6 are deferred, with each capability mapped to its phase.
