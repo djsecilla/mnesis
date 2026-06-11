@@ -39,6 +39,7 @@ _META_KEYS = (
     "superseded_by",
     "contradicts",
     "decay_class",
+    "relations",
     "question",
 )
 
@@ -72,6 +73,7 @@ class Page:
     superseded_by: str | None = None
     contradicts: list[str] = field(default_factory=list)  # Phase 2: conflicting page ids
     decay_class: str | None = None  # Phase 2: optional override of inferred decay class
+    relations: list[dict] = field(default_factory=list)  # Phase 3: typed {s,p,o} edges
     question: str | None = None  # digest pages only
 
 

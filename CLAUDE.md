@@ -88,6 +88,7 @@ Every page is a Markdown file at `wiki/pages/<id>.md` with YAML frontmatter foll
 | `superseded_by` | string \| null | no | `null` | Id of the page that replaced this one. |
 | `contradicts` | list[string] | yes | `[]` | Ids of pages this page directly conflicts with. *(Phase 2; flag-don't-resolve — see §11.)* |
 | `decay_class` | string \| null | no | `null` | Optional override of the decay class otherwise inferred from `kind`/`tags`. *(Confidence input — recorded now, scored in Phase 2.)* |
+| `relations` | list[{s,p,o}] | yes | `[]` | Typed graph edges (Phase 3): `s`/`o` are `type:value` entity refs, `p` an allowed predicate (§6). The page is the edge's provenance; edge confidence is derived in the graph cache, never here. |
 | `question` | string | digest only | — | For `digest` pages: the question that produced the filed answer. |
 
 The **body** is clean Markdown prose. It carries no index or search metadata — those live only in the (rebuildable) index.
@@ -106,16 +107,31 @@ Timestamps (`created`, `updated`, `last_confirmed`) are written in UTC ISO 8601 
 
 ---
 
-## 6. Domain vocabulary (entity & relationship types)
+## 6. Domain vocabulary & graph contract (entities, predicates, relations)
 
-The typed knowledge graph is **deferred to Phase 3**, but tag consistently *now* so the graph can be built later with zero re-tagging. Encode entities as `type:value` tags on every page.
+The typed knowledge graph (Phase 3) is built from two things already in Markdown: the **entities** are the `type:value` tags, and the **relations** are structured edges in the `relations` frontmatter field. There is no separate entity field — an entity is just a `type:value` ref.
 
-**Entity types:** `person`, `project`, `library`, `concept`, `file`, `decision`.
-Example tags: `project:atlas`, `library:redis`, `person:sarah`, `concept:caching`, `decision:auth-migration`.
+**Entity ref format:** `type:value`, **lowercase, hyphenated** value (`project:atlas`, `library:redis`, `person:sarah`, `decision:auth-migration`). Normalised by `vocab.normalize_ref`.
 
-**Relationship types** (for Phase 3 edges; for now, express them in the page body, not as structured edges): `uses`, `depends_on`, `contradicts`, `caused`, `fixed`, `supersedes`, `owns`.
+**Entity types** (`vocab.ENTITY_TYPES`): `person`, `project`, `library`, `concept`, `file`, `decision`.
 
-Use lowercase, hyphenated values. Prefer an existing tag over inventing a near-duplicate (`library:redis`, never also `lib:Redis`).
+**Predicates** (`vocab.PREDICATES`) — directed edge types, written `A -> B`:
+
+| Predicate | Direction semantics |
+|---|---|
+| `uses` | A makes use of B |
+| `depends_on` | A requires B; changing B affects A |
+| `owns` | person/team A is responsible for B |
+| `caused` | A brought about B |
+| `fixed` | A resolved B |
+| `contradicts` | A conflicts with B (stored directed, treated symmetric in traversal) |
+| `supersedes` | A replaces B |
+
+**Relation = a triple** `{s, p, o}` in a page's `relations` frontmatter list, where `s`/`o` are entity refs and `p` a predicate. **The page that carries the triple is its provenance.** Validated/normalised by `vocab.validate_relation`.
+
+**Edge provenance & confidence are DERIVED** — they live only in the graph cache, never in frontmatter. For each distinct triple: `source_pages` (the asserting page ids), `assertion_count`, and `confidence` = noisy-OR over those pages' Phase-2 confidence, `1 - Π(1 - conf_i)`. Edges supported only by stale/superseded pages are demoted and excluded by default.
+
+Use lowercase, hyphenated values. Prefer an existing ref over a near-duplicate (`library:redis`, never also `lib:Redis`). *(Edge building, traversal, and `impact()` are later Phase-3 steps; this step records and validates relations only.)*
 
 ---
 
@@ -158,6 +174,7 @@ Phase 2 introduces a second store under `wiki/.index/`. The two have different d
 - **Markdown pages** (`wiki/pages/`) — the single source of truth. Everything else is reconstructable from them.
 - **Search index** (`wiki/.index/wiki.db`) — a **rebuildable cache**. A pure projection of the Markdown; `rebuild()` drops and regenerates it and must reproduce identical results. Stores nothing not derivable from a page.
 - **State store** (`wiki/.index/state.db`) — **durable, auxiliary state** that is *not* derivable from Markdown: access events (how often/recently a page was read) and the contradiction review queue. It is created on demand and **`search.rebuild()` must never clear or touch it.** Losing it is survivable but lossy.
+- **Graph cache** (`wiki/.index/`, Phase 3) — a **rebuildable cache** too: the typed knowledge graph is regenerated from the pages' `relations` (and `type:value` tags). Like the search index it holds nothing not derivable from Markdown + the durable state store (edge confidence is computed from page confidence). `mnesis rebuild` rebuilds **both** the search index and the graph; neither rebuild clears the state store. The graph engine sits behind a pluggable `GraphBackend` interface whose default is an **embedded SQLite** backend (edges table + recursive-CTE traversal); because the graph is a cache, not a system of record, swapping engines (e.g. Postgres+AGE, Neo4j) touches nothing canonical.
 
 Refined rule: **confidence degrades gracefully to its Markdown-only value if the state store is lost.** Confidence is computed from canonical inputs (`source_count`, `last_confirmed`, `contradicts`, decay class) *enriched* by durable state (access recency/frequency). With the state store gone, confidence still computes from Markdown alone — just without the access-based enrichment. So `state.db` is in `wiki/.index/` (gitignored, regenerable location) for convenience, but it is **conceptually separate from the cache**: deleting the *search index* is routine; deleting the *state store* loses access history and open reviews, which cannot be rebuilt from Markdown.
 
@@ -227,11 +244,12 @@ A page is acceptable when it: states a clear, declarative claim in the `title`; 
 
 **In scope (Phase 2 — implemented):** confidence scoring (`confidence.py`) & Ebbinghaus-style decay with the active↔stale lifecycle (`lifecycle.py`, `mnesis decay`); relation-aware ingest — reinforce / supersede / contradict / create (`ingest.py`); the durable **state store** (`state.py`: access events + review queue); confidence-blended retrieval with access-on-read reinforcement (`search.py`); and the contradiction review queue (`mnesis review` / `resolve`). The `contradicts` and `decay_class` frontmatter fields back this. All exercised by the test suite and the `scripts/demo_phase2.py` regression demo.
 
+**In scope (Phase 3 — in progress):** the typed-relationship knowledge graph. *Foundations landed:* the `relations` frontmatter field and the entity/predicate vocabulary contract with validation (`vocab.py`, §6). *Still to come:* extracting relations on ingest, the `GraphBackend` (embedded SQLite default) built into `mnesis rebuild`, traversal and `impact()` queries, and CLI/MCP graph tools. No graph backend or extraction change has shipped yet.
+
 **Out of scope for now — map of where each deferred capability lands:**
 
 | Capability | Phase |
 |---|---|
-| Entity extraction & typed-relationship knowledge graph | 3 |
 | Automation hooks (on-source/session/query/schedule) & scheduler | 4 |
 | Vector stream + reciprocal rank fusion; LLM-as-judge quality scoring | 5 |
 | Multi-agent mesh sync; private/shared scoping | 6 |
@@ -269,6 +287,9 @@ supersedes: null
 superseded_by: null
 contradicts: []
 decay_class: null
+relations:
+  - {s: project:atlas, p: uses, o: library:redis}
+  - {s: person:sarah, p: owns, o: decision:auth-migration}
 ---
 Project Atlas uses Redis as its primary caching layer. The auth-migration work
 stream depends on this cache. Sarah owns the auth migration.
@@ -296,6 +317,8 @@ supersedes: null
 superseded_by: null
 contradicts: []
 decay_class: null
+relations:
+  - {s: decision:auth-migration, p: depends_on, o: library:redis}
 question: What depends on Redis in Project Atlas?
 ---
 The Redis cache underpins Atlas's caching layer, and the auth-migration work
