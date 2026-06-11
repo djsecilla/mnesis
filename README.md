@@ -154,6 +154,24 @@ claude mcp add mnesis --transport http http://<host>:8080/mcp \
   --header "Authorization: Bearer $MNESIS_MCP_TOKEN"
 ```
 
+**Local-first inference (opt-in).** By default mnesis uses Anthropic (or the
+offline stub). For a privacy-preserving deployment where **sources never leave
+the host**, switch the provider to a local model server via the `local-llm`
+compose profile. In `.env` set `MNESIS_LLM_PROVIDER=local`,
+`MNESIS_LLM_MODEL=llama3.2:1b` (a small default — change as you like), and blank
+`MNESIS_LLM_STUB`, then:
+
+```bash
+docker compose --profile local-llm up -d
+```
+
+This starts an `ollama` service (model weights on the `ollama-models` volume), a
+one-shot job that pulls the configured model, and points `llm.py` at
+`http://ollama:11434`. With this profile, **ingestion and extraction make no
+external inference calls** — no Anthropic request, no API key needed. A plain
+`docker compose up` does **not** start the model service (profile-gated); the
+default Anthropic/stub behaviour is unchanged.
+
 ## Verify the PoC
 
 Run top to bottom on a fresh clone; each step states what you should see.

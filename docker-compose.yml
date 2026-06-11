@@ -18,6 +18,12 @@ services:
       MNESIS_ROOT: /data/mnesis
       MNESIS_MCP_HOST: 0.0.0.0
       MNESIS_MCP_PORT: "8080"            # internal bind; the HOST port is set via `ports`
+      # Inference provider (default anthropic/stub). To run local-first inference,
+      # set MNESIS_LLM_PROVIDER=local in .env and bring the stack up with
+      # `--profile local-llm`. The base URL targets the `ollama` service below;
+      # it is ignored unless the provider is "local".
+      MNESIS_LLM_PROVIDER: ${MNESIS_LLM_PROVIDER:-anthropic}
+      MNESIS_LLM_BASE_URL: ${MNESIS_LLM_BASE_URL:-http://ollama:11434}
     ports:
       # host ${MNESIS_MCP_PORT:-8080} -> container 8080
       - "${MNESIS_MCP_PORT:-8080}:8080"
@@ -34,6 +40,42 @@ services:
       timeout: 5s
       retries: 5
       start_period: 15s
+
+  # --- local-llm profile: opt-in local-first inference (data isolation) --------
+  # NOT started by a plain `docker compose up`. Bring it up with:
+  #   docker compose --profile local-llm up -d
+  # and set MNESIS_LLM_PROVIDER=local (and MNESIS_LLM_MODEL=<an ollama tag>) in .env.
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["local-llm"]
+    restart: unless-stopped
+    volumes:
+      - ollama-models:/root/.ollama     # model weights persist here
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # One-shot: wait for the server, then pull the configured model into the volume.
+  ollama-init:
+    image: ollama/ollama:latest
+    profiles: ["local-llm"]
+    depends_on:
+      - ollama
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: ["/bin/sh", "-lc"]
+    # Default to a SMALL model that fits modest hardware; override via MNESIS_LLM_MODEL.
+    # Retry the pull: large models can hit a client deadline on the final manifest
+    # step even after the blob downloads; a retry resumes from cache and completes.
+    command:
+      - 'until ollama list >/dev/null 2>&1; do echo "waiting for ollama..."; sleep 2; done;
+         m="${MNESIS_LLM_MODEL:-llama3.2:1b}";
+         for i in 1 2 3 4 5; do ollama pull "$$m" && break; echo "pull attempt $$i failed; retrying..."; sleep 3; done;
+         ollama list && echo "model ready"'
+    restart: "no"
 
   # --- Tier-B services (Phases 5-6) — PLACEHOLDER, intentionally not active -----
   # The core stack is single-service. When Phases 5-6 land (vector stream + RRF,
@@ -61,5 +103,6 @@ services:
 
 volumes:
   mnesis-data:
+  ollama-models:             # (local-llm) model weights; created only with the profile
   # postgres-data:           # (Tier-B) uncomment alongside the postgres service
   # qdrant-data:             # (Tier-B) uncomment alongside the qdrant service

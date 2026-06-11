@@ -39,8 +39,16 @@ INDEX_DIR: Path = MNESIS_ROOT / ".index"
 
 # --- Environment-configurable settings (all with fallbacks) ----------------
 
-#: Model used by the ingestion/extraction LLM.
+#: Inference provider: "anthropic" (default) or "local" (an Ollama / OpenAI-
+#: compatible endpoint, for local-first inference that never leaves the host).
+MNESIS_LLM_PROVIDER: str = os.environ.get("MNESIS_LLM_PROVIDER", "anthropic")
+
+#: Model used by the ingestion/extraction LLM (an Anthropic model id by default;
+#: an Ollama model tag like "llama3.2:1b" when provider is "local").
 MNESIS_LLM_MODEL: str = os.environ.get("MNESIS_LLM_MODEL", "claude-sonnet-4-6")
+
+#: Base URL of the local model server (used only when provider is "local").
+MNESIS_LLM_BASE_URL: str = os.environ.get("MNESIS_LLM_BASE_URL", "http://localhost:11434")
 
 #: Quality gate for filing answers back as digest pages.
 MNESIS_FILEBACK_THRESHOLD: float = float(os.environ.get("MNESIS_FILEBACK_THRESHOLD", "0.7"))
@@ -49,12 +57,15 @@ MNESIS_FILEBACK_THRESHOLD: float = float(os.environ.get("MNESIS_FILEBACK_THRESHO
 def _read_stub_flag() -> bool:
     """True when the LLM client should return deterministic canned output.
 
-    Enabled when MNESIS_LLM_STUB is set to a truthy value, or when no Anthropic API
-    key is present (so tests and the demo run offline by default).
+    Explicit MNESIS_LLM_STUB wins. Otherwise the stub auto-enables only for the
+    Anthropic provider when no API key is present (so tests/demo run offline) —
+    the local provider has its own endpoint and never falls back to the stub.
     """
     raw = os.environ.get("MNESIS_LLM_STUB")
     if raw is not None:
         return raw.strip().lower() in {"1", "true", "yes", "on"}
+    if os.environ.get("MNESIS_LLM_PROVIDER", "anthropic") == "local":
+        return False
     return not os.environ.get("ANTHROPIC_API_KEY")
 
 

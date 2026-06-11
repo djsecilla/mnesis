@@ -72,7 +72,7 @@ def _stub_complete(system: str, user: str) -> str:
     return json.dumps(payload)
 
 
-def _real_complete(system: str, user: str) -> str:
+def _anthropic_complete(system: str, user: str) -> str:
     global _client
     if _client is None:
         import anthropic
@@ -89,12 +89,41 @@ def _real_complete(system: str, user: str) -> str:
     )
 
 
+def _local_complete(system: str, user: str) -> str:
+    """Call a local Ollama / OpenAI-compatible chat endpoint — no external calls.
+
+    Targets ``{MNESIS_LLM_BASE_URL}/v1/chat/completions`` with ``MNESIS_LLM_MODEL``.
+    No API key: inference stays on the host, inside the trust boundary.
+    """
+    import httpx
+
+    url = config.MNESIS_LLM_BASE_URL.rstrip("/") + "/v1/chat/completions"
+    response = httpx.post(
+        url,
+        json={
+            "model": config.MNESIS_LLM_MODEL,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "temperature": 0,
+            "stream": False,
+        },
+        timeout=120,
+    )
+    response.raise_for_status()
+    return response.json()["choices"][0]["message"]["content"]
+
+
 def complete(system: str, user: str) -> str:
     """Return the model's text response to ``system``/``user``.
 
-    Routes to the offline stub whenever ``config.MNESIS_LLM_STUB`` is set
-    (read at call time so tests can toggle it).
+    Routed at call time (so tests can toggle): the offline **stub** when
+    ``config.MNESIS_LLM_STUB`` is set; otherwise the **local** provider when
+    ``MNESIS_LLM_PROVIDER == "local"``; otherwise **Anthropic** (the default).
     """
     if config.MNESIS_LLM_STUB:
         return _stub_complete(system, user)
-    return _real_complete(system, user)
+    if config.MNESIS_LLM_PROVIDER == "local":
+        return _local_complete(system, user)
+    return _anthropic_complete(system, user)
