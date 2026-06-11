@@ -99,35 +99,35 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "ingest":
         text = _read_source(args.file)
         source_ref = args.source_ref or ("stdin" if args.file == "-" else Path(args.file).stem)
-        print(mcp_server.wiki_ingest(text, source_ref))
+        print(mcp_server.mnesis_ingest(text, source_ref))
     elif args.command == "query":
-        print(mcp_server.wiki_query(args.text, args.limit, include_stale=args.include_stale))
+        print(mcp_server.mnesis_query(args.text, args.limit, include_stale=args.include_stale))
     elif args.command == "get":
-        print(mcp_server.wiki_get(args.id))
+        print(mcp_server.mnesis_get(args.id))
     elif args.command == "file-back":
-        print(mcp_server.wiki_file_back(args.question, args.answer, args.score))
+        print(mcp_server.mnesis_file_back(args.question, args.answer, args.score))
     elif args.command == "list":
-        print(mcp_server.wiki_list())
+        print(mcp_server.mnesis_list())
     elif args.command == "rebuild":
-        print(mcp_server.wiki_rebuild())
+        print(mcp_server.mnesis_rebuild())
     elif args.command == "decay":
-        print(mcp_server.wiki_decay())
+        print(mcp_server.mnesis_decay())
     elif args.command == "impact":
-        print(mcp_server.wiki_impact(args.entity, depth=args.depth))
+        print(mcp_server.mnesis_impact(args.entity, depth=args.depth))
     elif args.command == "entity":
-        print(mcp_server.wiki_entity(args.ref))
+        print(mcp_server.mnesis_entity(args.ref))
     elif args.command == "neighbors":
-        print(mcp_server.wiki_neighbors(
+        print(mcp_server.mnesis_neighbors(
             args.ref, predicate=args.predicate, direction="in" if args.incoming else "out"
         ))
     elif args.command == "graph-stats":
-        print(mcp_server.wiki_graph_stats())
+        print(mcp_server.mnesis_graph_stats())
     elif args.command == "graph-lint":
-        print(mcp_server.wiki_graph_lint(args.fix))
+        print(mcp_server.mnesis_graph_lint(args.fix))
     elif args.command == "review":
-        print(mcp_server.wiki_review())
+        print(mcp_server.mnesis_review())
     elif args.command == "resolve":
-        print(mcp_server.wiki_resolve(args.review_id, args.keep_id))
+        print(mcp_server.mnesis_resolve(args.review_id, args.keep_id))
     return 0
 
 

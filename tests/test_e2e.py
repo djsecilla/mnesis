@@ -55,8 +55,8 @@ def _git_log(repo) -> list[str]:
 
 def test_full_compounding_loop(wiki):
     # --- ingest both sources ---
-    mcp_server.wiki_ingest(SOURCE_A, "atlas-architecture")
-    mcp_server.wiki_ingest(SOURCE_B, "billing-notes")
+    mcp_server.mnesis_ingest(SOURCE_A, "atlas-architecture")
+    mcp_server.mnesis_ingest(SOURCE_B, "billing-notes")
 
     facts = store.list_pages(kind="fact")
     assert len(facts) == 2
@@ -77,7 +77,7 @@ def test_full_compounding_loop(wiki):
     # --- file_back above threshold creates a digest ---
     question = "What does Atlas use for caching?"
     answer = "Atlas uses Redis as its primary caching layer; the auth migration depends on it."
-    result = mcp_server.wiki_file_back(question, answer, quality_score=0.9)
+    result = mcp_server.mnesis_file_back(question, answer, quality_score=0.9)
     assert result.startswith("filed digest:")
     digests = store.list_pages(kind="digest")
     assert len(digests) == 1

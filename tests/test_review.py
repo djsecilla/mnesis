@@ -53,7 +53,7 @@ def _queue_a_contradiction() -> tuple[Page, Page, int]:
 def test_review_lists_open_contradiction(wiki):
     existing, new, review_id = _queue_a_contradiction()
 
-    out = mcp_server.wiki_review()
+    out = mcp_server.mnesis_review()
     assert f"#{review_id}" in out
     assert existing.id in out and new.id in out
     assert "conf" in out  # confidences shown
@@ -64,7 +64,7 @@ def test_resolve_supersedes_loser_lifts_confidence_and_empties_queue(wiki):
     existing, new, review_id = _queue_a_contradiction()
     conf_before = _conf(existing.id)  # penalised by the contradiction
 
-    result = mcp_server.wiki_resolve(review_id, existing.id)
+    result = mcp_server.mnesis_resolve(review_id, existing.id)
     assert result.startswith("resolved review")
 
     # Loser superseded -> stale, links both ways.
@@ -83,20 +83,20 @@ def test_resolve_supersedes_loser_lifts_confidence_and_empties_queue(wiki):
 
     # Queue empty, and the resolved review never returns.
     assert state.list_open_reviews() == []
-    assert "(no open contradictions)" in mcp_server.wiki_review()
+    assert "(no open contradictions)" in mcp_server.mnesis_review()
 
 
 def test_resolve_rejects_bad_inputs(wiki):
     _, _, review_id = _queue_a_contradiction()
-    assert "no open review" in mcp_server.wiki_resolve(9999, "atlas-cache")
-    assert "not part of review" in mcp_server.wiki_resolve(review_id, "some-other-page")
+    assert "no open review" in mcp_server.mnesis_resolve(9999, "atlas-cache")
+    assert "not part of review" in mcp_server.mnesis_resolve(review_id, "some-other-page")
     # The queue is untouched by the failed attempts.
     assert len(state.list_open_reviews()) == 1
 
 
 def test_query_notes_open_contradiction(wiki):
     _queue_a_contradiction()
-    out = mcp_server.wiki_query("redis caching", include_stale=True)
+    out = mcp_server.mnesis_query("redis caching", include_stale=True)
     assert "contradiction under review" in out
 
 
@@ -104,12 +104,12 @@ def test_resolved_review_does_not_return_after_decay(wiki):
     from mnesis import lifecycle
 
     existing, new, review_id = _queue_a_contradiction()
-    mcp_server.wiki_resolve(review_id, existing.id)
+    mcp_server.mnesis_resolve(review_id, existing.id)
     assert state.list_open_reviews() == []
 
     # A later decay pass must not resurrect the resolved review.
     lifecycle.recompute_all()
     assert state.list_open_reviews() == []
-    assert "(no open contradictions)" in mcp_server.wiki_review()
+    assert "(no open contradictions)" in mcp_server.mnesis_review()
     # The superseded loser remains as stale history (never deleted).
     assert store.read_page(new.id).status == "stale"

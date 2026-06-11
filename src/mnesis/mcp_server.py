@@ -6,8 +6,8 @@ tools are thin orchestration over the core modules (filters, ingest, store,
 search) — no business logic lives here that isn't in those modules.
 
 Newly written pages are ``search.upsert``-ed into the index immediately, so a
-``wiki_file_back`` answer (or a fresh ingest) surfaces on the next
-``wiki_query`` — the compounding loop the PoC exists to demonstrate.
+``mnesis_file_back`` answer (or a fresh ingest) surfaces on the next
+``mnesis_query`` — the compounding loop the PoC exists to demonstrate.
 
 Verified against mcp 1.27.x: ``mcp.server.fastmcp.FastMCP``, ``@mcp.tool()``,
 ``mcp.run(transport="stdio")``.
@@ -63,7 +63,7 @@ def _digest_body(answer: str, sources: list[str]) -> str:
 
 
 @mcp.tool()
-def wiki_ingest(text: str, source_ref: str) -> str:
+def mnesis_ingest(text: str, source_ref: str) -> str:
     """Filter, extract, and write a source as a canonical fact page.
 
     Returns the created page's id, title, tags, and how many secrets/PII were
@@ -82,7 +82,7 @@ def wiki_ingest(text: str, source_ref: str) -> str:
 
 
 @mcp.tool()
-def wiki_query(query: str, limit: int = 10, include_stale: bool = False) -> str:
+def mnesis_query(query: str, limit: int = 10, include_stale: bool = False) -> str:
     """Search the wiki: BM25 blended with confidence, augmented by the graph.
 
     Results are ordered by a blended score (keyword match × confidence + a small
@@ -118,7 +118,7 @@ def wiki_query(query: str, limit: int = 10, include_stale: bool = False) -> str:
 
 
 @mcp.tool()
-def wiki_get(page_id: str) -> str:
+def mnesis_get(page_id: str) -> str:
     """Return a page's full Markdown (frontmatter + body), prefixed with its
     current derived confidence and status.
 
@@ -134,7 +134,7 @@ def wiki_get(page_id: str) -> str:
     page = store.read_page(page_id)
     header = f"[{page_id}] status: {page.status} | confidence: {_page_confidence(page):.2f}"
     if page_id in _open_contradiction_ids():
-        header += " | ⚠ contradiction under review (see `wiki_review`)"
+        header += " | ⚠ contradiction under review (see `mnesis_review`)"
     related = _related_entities(page_id, page)
     if related:
         header += f"\nrelated entities: {', '.join(related)}"
@@ -144,7 +144,7 @@ def wiki_get(page_id: str) -> str:
 
 
 @mcp.tool()
-def wiki_file_back(question: str, answer: str, quality_score: float | None = None) -> str:
+def mnesis_file_back(question: str, answer: str, quality_score: float | None = None) -> str:
     """File a synthesized answer back as a durable ``digest`` page (compounding).
 
     If ``quality_score`` (or the internal heuristic when ``None``) is at least
@@ -176,7 +176,7 @@ def wiki_file_back(question: str, answer: str, quality_score: float | None = Non
 
 
 @mcp.tool()
-def wiki_list() -> str:
+def mnesis_list() -> str:
     """List every page: id, kind/status, and title."""
     pages = store.list_pages()
     if not pages:
@@ -185,7 +185,7 @@ def wiki_list() -> str:
 
 
 @mcp.tool()
-def wiki_rebuild() -> str:
+def mnesis_rebuild() -> str:
     """Rebuild the rebuildable caches from Markdown: the search index AND the
     knowledge graph. The durable state store is never cleared."""
     n = search.rebuild()
@@ -197,7 +197,7 @@ def wiki_rebuild() -> str:
 
 
 @mcp.tool()
-def wiki_impact(entity: str, depth: int = 3) -> str:
+def mnesis_impact(entity: str, depth: int = 3) -> str:
     """What would be affected by changing ``entity`` (a ``type:value`` ref).
 
     Reverse-traverses ``depends_on``/``uses`` edges: returns the affected entities
@@ -219,7 +219,7 @@ def wiki_impact(entity: str, depth: int = 3) -> str:
 
 
 @mcp.tool()
-def wiki_entity(ref: str) -> str:
+def mnesis_entity(ref: str) -> str:
     """Inspect a graph entity (a ``type:value`` ref): its type, the pages that
     declare/assert it, and its typed edges with confidence and grounding pages.
     Traversal/edges are confidence-weighted and exclude stale (demoted) edges by
@@ -245,7 +245,7 @@ def wiki_entity(ref: str) -> str:
 
 
 @mcp.tool()
-def wiki_neighbors(ref: str, predicate: str | None = None, direction: str = "out") -> str:
+def mnesis_neighbors(ref: str, predicate: str | None = None, direction: str = "out") -> str:
     """Adjacent entities of ``ref`` via non-demoted edges. ``direction`` is
     ``out``/``in``/``both``; optional ``predicate`` filter. Each result cites the
     pages behind its edge."""
@@ -266,7 +266,7 @@ def wiki_neighbors(ref: str, predicate: str | None = None, direction: str = "out
 
 
 @mcp.tool()
-def wiki_traverse(ref: str, predicate: str | None = None, depth: int = 2) -> str:
+def mnesis_traverse(ref: str, predicate: str | None = None, depth: int = 2) -> str:
     """Entities reachable from ``ref`` within ``depth`` hops (out edges), with the
     path and predicates. Cycle-safe, confidence-ordered upstream, excludes stale
     (demoted) edges."""
@@ -281,7 +281,7 @@ def wiki_traverse(ref: str, predicate: str | None = None, depth: int = 2) -> str
 
 
 @mcp.tool()
-def wiki_graph_stats() -> str:
+def mnesis_graph_stats() -> str:
     """Knowledge-graph size: node and edge counts by type/predicate, plus the
     demoted-edge count."""
     s = graph.graph_stats()
@@ -294,7 +294,7 @@ def wiki_graph_stats() -> str:
 
 
 @mcp.tool()
-def wiki_graph_lint(fix: bool = False) -> str:
+def mnesis_graph_lint(fix: bool = False) -> str:
     """Lint the knowledge graph. Report-only by default; with ``fix=True`` applies
     the safe auto-fixes (merge duplicate edges, demote stale-only edges, recompute
     edge confidence) and flags the rest (undeclared/orphan entities, dangling
@@ -304,7 +304,7 @@ def wiki_graph_lint(fix: bool = False) -> str:
 
 
 @mcp.tool()
-def wiki_decay() -> str:
+def mnesis_decay() -> str:
     """Run the decay/lifecycle pass: recompute confidence corpus-wide and
     transition pages between active and stale (aged, unread, low-confidence pages
     go stale; reinforced ones revive). Idempotent. Returns the transition counts."""
@@ -316,7 +316,7 @@ def wiki_decay() -> str:
 
 
 @mcp.tool()
-def wiki_review() -> str:
+def mnesis_review() -> str:
     """List open contradiction reviews: queue id, both pages (with current
     confidence and title), and the conflict detail."""
     reviews = state.list_open_reviews()
@@ -338,7 +338,7 @@ def wiki_review() -> str:
 
 
 @mcp.tool()
-def wiki_resolve(review_id: int, keep_id: str) -> str:
+def mnesis_resolve(review_id: int, keep_id: str) -> str:
     """Resolve an open contradiction by keeping ``keep_id`` and superseding the
     other page (→ stale). Clears the mutual ``contradicts`` link (lifting the
     kept page's confidence) and closes the review. Goes through

@@ -63,7 +63,7 @@ def test_reading_increments_access_and_nudges_confidence(wiki):
     before = search.search("redis")[0].confidence
     assert state.get_access("p") is None
 
-    mcp_server.wiki_get("p")  # reinforcement on read
+    mcp_server.mnesis_get("p")  # reinforcement on read
 
     assert state.get_access("p")["count"] == 1
     after = search.search("redis")[0].confidence
@@ -75,8 +75,8 @@ def test_rebuild_preserves_access_and_reproduces_ranking(wiki):
     store.write_page(Page(id="p-high", title="High", body=_BODY, source_count=3))
     search.rebuild()
 
-    mcp_server.wiki_get("p-low")  # build up some durable access state
-    mcp_server.wiki_get("p-low")
+    mcp_server.mnesis_get("p-low")  # build up some durable access state
+    mcp_server.mnesis_get("p-low")
     order_before = [h.id for h in search.search("redis caching", include_stale=True)]
 
     # Blow away the search index; the state store must survive.

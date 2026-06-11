@@ -57,12 +57,12 @@ def main() -> None:
     print("note: the Atlas page mentions only the auth migration — it never says 'Redis'.")
 
     _hr("STEP 2 — `mnesis rebuild` (search index AND graph)")
-    print(mcp_server.wiki_rebuild())
+    print(mcp_server.mnesis_rebuild())
     print(f"active graph backend: {config.GRAPH_BACKEND}")
-    print(mcp_server.wiki_graph_stats())
+    print(mcp_server.mnesis_graph_stats())
 
     _hr("STEP 3 — Impact of upgrading Redis (graph traversal)")
-    print(mcp_server.wiki_impact("library:redis"))
+    print(mcp_server.mnesis_impact("library:redis"))
     print("\n-> Atlas surfaces transitively, through auth-migration — a Redis dependency")
     print("   its own page never states in words.")
 
@@ -74,17 +74,17 @@ def main() -> None:
         "rel{decision:auth-migration|depends_on|library:postgres}",
         "auth-migration-postgres",
     )
-    print(mcp_server.wiki_rebuild())
+    print(mcp_server.mnesis_rebuild())
     print("\nimpact of upgrading Redis now (old edge demoted, superseded page stale):")
-    print(mcp_server.wiki_impact("library:redis"))
+    print(mcp_server.mnesis_impact("library:redis"))
     print("\nimpact of upgrading Postgres now (the superseding page's edge took over):")
-    print(mcp_server.wiki_impact("library:postgres"))
+    print(mcp_server.mnesis_impact("library:postgres"))
 
     _hr("STEP 5 — `mnesis graph-lint --fix`")
-    print(mcp_server.wiki_graph_lint(fix=True))
+    print(mcp_server.mnesis_graph_lint(fix=True))
 
     _hr("Final graph")
-    print(mcp_server.wiki_graph_stats())
+    print(mcp_server.mnesis_graph_stats())
     print(f"\nDone. (Throwaway demo data left at {_TMP})")
 
 

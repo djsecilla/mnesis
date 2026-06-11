@@ -55,19 +55,19 @@ def main() -> None:
     print(f"Demo wiki root: {config.MNESIS_ROOT}  (offline stub mode)")
 
     _hr("STEP 1 — Ingest source A (Atlas / Redis)")
-    print(mcp_server.wiki_ingest(SOURCE_A, "atlas-architecture"))
+    print(mcp_server.mnesis_ingest(SOURCE_A, "atlas-architecture"))
 
     _hr("STEP 2 — Ingest source B (billing / PostgreSQL, contains a fake secret)")
-    print(mcp_server.wiki_ingest(SOURCE_B, "billing-notes"))
+    print(mcp_server.mnesis_ingest(SOURCE_B, "billing-notes"))
     saved = (config.SOURCES_DIR / "billing-notes.md").read_text()
     print("\nSaved source on disk (note the secret is gone):")
     print("  " + saved.strip().replace("\n", "\n  "))
 
     _hr("STEP 3 — Rebuild the search index from Markdown")
-    print(mcp_server.wiki_rebuild())
+    print(mcp_server.mnesis_rebuild())
 
     _hr('STEP 4 — Query "redis caching"')
-    print(mcp_server.wiki_query("redis caching"))
+    print(mcp_server.mnesis_query("redis caching"))
 
     _hr("STEP 5 — Synthesize an answer and file it back as a digest")
     question = "What does Project Atlas use for caching, and what depends on it?"
@@ -78,13 +78,13 @@ def main() -> None:
         "Sarah, who owns it."
     )
     print(f"Q: {question}")
-    print(mcp_server.wiki_file_back(question, answer, quality_score=0.9))
+    print(mcp_server.mnesis_file_back(question, answer, quality_score=0.9))
 
     _hr('STEP 6 — Query "caching" again — the digest now surfaces alongside the facts')
-    print(mcp_server.wiki_query("caching"))
+    print(mcp_server.mnesis_query("caching"))
 
     _hr("All pages now in the wiki")
-    print(mcp_server.wiki_list())
+    print(mcp_server.mnesis_list())
 
     print(f"\nDone. (Throwaway demo data left at {_TMP})")
 

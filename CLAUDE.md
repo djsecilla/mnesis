@@ -102,7 +102,7 @@ Timestamps (`created`, `updated`, `last_confirmed`) are written in UTC ISO 8601 
 ## 5. Page kinds
 
 - **`fact`** — A discrete, sourced claim ingested from external material. The default output of the ingestion pipeline.
-- **`digest`** — A synthesized answer filed back via `wiki_file_back` (crystallisation-lite): a question, the answer, and the facts it drew on. This is how exploration becomes durable knowledge. Always tagged so it is distinguishable from ingested facts.
+- **`digest`** — A synthesized answer filed back via `mnesis_file_back` (crystallisation-lite): a question, the answer, and the facts it drew on. This is how exploration becomes durable knowledge. Always tagged so it is distinguishable from ingested facts.
 - **`note`** — A human- or agent-authored observation that is neither a single sourced fact nor a synthesized answer. Used sparingly.
 
 ---
@@ -165,7 +165,7 @@ A contradicted page is **never silently deleted** — it is superseded (→ `sta
 - Matching is **BM25 keyword** over `(id, title, tags, body)` via SQLite FTS5, **blended with confidence** (Phase 2): `final_score = bm25_norm * (0.5 + 0.5 * confidence)`. Vector similarity, graph traversal, and reciprocal rank fusion remain out of scope (Phase 5 / Phase 3).
 - `search(query, limit=10, include_stale=False)` returns hits with `id`, `title`, `snippet`, `bm25_score`, `confidence`, `final_score`, and `status`, ordered by `final_score`. **Stale pages are excluded unless `include_stale=True`**, and (capped at `STALE_CAP`) never outrank an active page of comparable match.
 - Each indexed row **caches** the page's `confidence` (and `computed_at`) in UNINDEXED columns — derived state that lives in the index, never in Markdown. The Markdown-derived part is reproducible by `rebuild()`; the access-boost part comes from the durable state store. So after deleting `wiki/.index/`, `rebuild()` reproduces the deterministic parts (bm25, snippets) and the ranking *order*; exact confidence floats may differ only by the wall-clock delta in retention. A test asserts this.
-- **Reads reinforce.** `wiki_get`, and the top hits of `wiki_query`, call `state.record_access` and refresh that page's cached confidence — cheaply and never blocking or failing the query.
+- **Reads reinforce.** `mnesis_get`, and the top hits of `mnesis_query`, call `state.record_access` and refresh that page's cached confidence — cheaply and never blocking or failing the query.
 - **Graph-augmented (Phase 3).** When a query resolves to an entity, `graph.graph_query` folds in graph-reachable pages (depth-bounded) alongside the keyword hits, adding a small additive `graph_proximity` term that decays per hop (`final += graph_proximity`). A graph-reached page is always presented with its **grounding** (the connecting edge + asserting page) — augment, don't obscure. A query that resolves to no entity is unchanged. `graph.impact(entity, depth=3)` is the headline query: reverse-traverse `depends_on`/`uses` to find what a change to the entity would affect, with paths and grounding pages (demoted edges excluded). All graph access goes through the `GraphBackend` primitives — no engine calls leak into the query path. This is **not** RRF; vectors/RRF remain Phase 5.
 
 ### Search index vs state store (refined invariant)
@@ -202,13 +202,13 @@ if status == "stale":  conf = min(conf, STALE_CAP)       # STALE_CAP default 0.4
 - **active → stale** when *intrinsic* confidence (the stale cap is ignored for this decision) is below `STALE_THRESHOLD` **and** inactivity — `now` minus the most recent of `last_confirmed` or `last_accessed` — exceeds the decay class's `INACTIVITY_DAYS` window. A recently read or freshly confirmed page therefore stays active.
 - **stale → active** only on recent **reinforcement** (`last_confirmed` within the window), never on a read alone, and never for a page explicitly `superseded_by` another. Access boosts confidence but cannot by itself revive a stale page.
 
-The pass is **idempotent**: with no time change it makes no transitions and no commits. The scheduler that fires it automatically is Phase 4; for now it is the `mnesis decay` command (MCP `wiki_decay`).
+The pass is **idempotent**: with no time change it makes no transitions and no commits. The scheduler that fires it automatically is Phase 4; for now it is the `mnesis decay` command (MCP `mnesis_decay`).
 
 ---
 
 ## 9. File-back / crystallisation rule
 
-`wiki_file_back(question, answer, quality_score=None)` is the compounding mechanism:
+`mnesis_file_back(question, answer, quality_score=None)` is the compounding mechanism:
 
 - If `quality_score` (or a simple internal heuristic when `None`) **≥ `MNESIS_FILEBACK_THRESHOLD`**, write a `digest` page that records the `question`, the answer (body), and the facts it drew on (`sources`/`tags`). Return its id.
 - Otherwise, **do not file**; return the reason ("below threshold").
@@ -226,7 +226,7 @@ A page is acceptable when it: states a clear, declarative claim in the `title`; 
 
 **Phase 2 — confidence-margin auto-resolution.** When ingest classifies new info as `contradicts` an existing page, both pages' confidence is compared. If the winner leads by ≥ `AUTO_RESOLVE_MARGIN` (default 0.25), the loser is auto-superseded (→ `stale`, links set). Otherwise — no clear winner — both pages coexist as `active`, each records the other's id in its `contradicts` list (which feeds the `contradiction_factor` penalty, sinking both in search), and `state.enqueue_contradiction` files a review-queue entry.
 
-**Resolving the queue.** `mnesis review` (MCP `wiki_review`) lists open contradictions with each page's current confidence; `mnesis resolve <review_id> --keep <page_id>` (MCP `wiki_resolve`) keeps one page and supersedes the other through `store.supersede` — which clears the mutual `contradicts` link, lifting the kept page's `contradiction_factor` back to 1.0 — then calls `state.resolve_review`. Resolution is always via supersede/status change (no ad hoc edits); the loser stays as `stale` history, never deleted; a resolved review never reappears. `wiki_query`/`wiki_get` flag a returned page that has an open contradiction. LLM-as-judge adjudication remains Phase 5.
+**Resolving the queue.** `mnesis review` (MCP `mnesis_review`) lists open contradictions with each page's current confidence; `mnesis resolve <review_id> --keep <page_id>` (MCP `mnesis_resolve`) keeps one page and supersedes the other through `store.supersede` — which clears the mutual `contradicts` link, lifting the kept page's `contradiction_factor` back to 1.0 — then calls `state.resolve_review`. Resolution is always via supersede/status change (no ad hoc edits); the loser stays as `stale` history, never deleted; a resolved review never reappears. `mnesis_query`/`mnesis_get` flag a returned page that has an open contradiction. LLM-as-judge adjudication remains Phase 5.
 
 ---
 
@@ -241,11 +241,11 @@ A page is acceptable when it: states a clear, declarative claim in the `title`; 
 
 ## 13. Scope: in vs. deferred
 
-**In scope (Phase 1 — implemented):** filtered ingest · Markdown + git canonical store · FTS5 keyword search (rebuildable) · MCP interface with `wiki_ingest` / `wiki_query` / `wiki_file_back` (+ `wiki_get`, `wiki_list`, `wiki_rebuild`) · `mnesis` CLI · end-to-end demo and test. All present and exercised by the test suite.
+**In scope (Phase 1 — implemented):** filtered ingest · Markdown + git canonical store · FTS5 keyword search (rebuildable) · MCP interface with `mnesis_ingest` / `mnesis_query` / `mnesis_file_back` (+ `mnesis_get`, `mnesis_list`, `mnesis_rebuild`) · `mnesis` CLI · end-to-end demo and test. All present and exercised by the test suite.
 
 **In scope (Phase 2 — implemented):** confidence scoring (`confidence.py`) & Ebbinghaus-style decay with the active↔stale lifecycle (`lifecycle.py`, `mnesis decay`); relation-aware ingest — reinforce / supersede / contradict / create (`ingest.py`); the durable **state store** (`state.py`: access events + review queue); confidence-blended retrieval with access-on-read reinforcement (`search.py`); and the contradiction review queue (`mnesis review` / `resolve`). The `contradicts` and `decay_class` frontmatter fields back this. All exercised by the test suite and the `scripts/demo_phase2.py` regression demo.
 
-**In scope (Phase 3 — implemented):** the typed-relationship knowledge graph. The `relations` frontmatter field and entity/predicate vocabulary with validation (`vocab.py`, §6); relation extraction on ingest (`ingest.py`); the pluggable `GraphBackend` (`graph.py`) with an embedded-SQLite default, the rebuild-from-Markdown projection (noisy-OR edge confidence, demotion of stale-only edges), and cycle-safe traversal/neighbors — built into `mnesis rebuild` (search index + graph rebuild together; state store untouched); graph-augmented query and `impact()` wired into retrieval (`wiki_query` folds in graph-reachable pages); the graph tools — `wiki_entity` / `wiki_neighbors` / `wiki_traverse` / `wiki_impact` / `wiki_graph_stats` (MCP) and `mnesis entity` / `neighbors` / `impact` / `graph-stats` (CLI), with query/get noting related entities; and **graph lint** (`graph_lint.py`, `mnesis graph-lint [--fix]`) — auto-fixes the safe categories (merge duplicate edges, demote stale-only edges, recompute confidence) and flags the rest (undeclared/orphan entities, dangling structural edges), idempotently.
+**In scope (Phase 3 — implemented):** the typed-relationship knowledge graph. The `relations` frontmatter field and entity/predicate vocabulary with validation (`vocab.py`, §6); relation extraction on ingest (`ingest.py`); the pluggable `GraphBackend` (`graph.py`) with an embedded-SQLite default, the rebuild-from-Markdown projection (noisy-OR edge confidence, demotion of stale-only edges), and cycle-safe traversal/neighbors — built into `mnesis rebuild` (search index + graph rebuild together; state store untouched); graph-augmented query and `impact()` wired into retrieval (`mnesis_query` folds in graph-reachable pages); the graph tools — `mnesis_entity` / `mnesis_neighbors` / `mnesis_traverse` / `mnesis_impact` / `mnesis_graph_stats` (MCP) and `mnesis entity` / `neighbors` / `impact` / `graph-stats` (CLI), with query/get noting related entities; and **graph lint** (`graph_lint.py`, `mnesis graph-lint [--fix]`) — auto-fixes the safe categories (merge duplicate edges, demote stale-only edges, recompute confidence) and flags the rest (undeclared/orphan entities, dangling structural edges), idempotently.
 
 **Out of scope for now — map of where each deferred capability lands:**
 

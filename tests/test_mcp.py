@@ -31,8 +31,8 @@ def wiki(tmp_path, monkeypatch):
     return tmp_path
 
 
-def test_wiki_ingest_reports_summary_and_redacts(wiki):
-    out = mcp_server.wiki_ingest(
+def test_mnesis_ingest_reports_summary_and_redacts(wiki):
+    out = mcp_server.mnesis_ingest(
         f"Project Atlas uses Redis for caching. Deploy key {FAKE_SECRET}.",
         "atlas-notes",
     )
@@ -47,16 +47,16 @@ def test_wiki_ingest_reports_summary_and_redacts(wiki):
 
 
 def test_query_surfaces_ingested_page(wiki):
-    mcp_server.wiki_ingest("Project Atlas uses Redis as its caching layer.", "atlas")
-    out = mcp_server.wiki_query("redis caching")
+    mcp_server.mnesis_ingest("Project Atlas uses Redis as its caching layer.", "atlas")
+    out = mcp_server.mnesis_query("redis caching")
     assert "no results" not in out
     assert "redis" in out.lower()
 
 
 def test_file_back_above_threshold_creates_digest(wiki):
-    mcp_server.wiki_ingest("Project Atlas uses Redis for caching.", "atlas")
+    mcp_server.mnesis_ingest("Project Atlas uses Redis for caching.", "atlas")
 
-    result = mcp_server.wiki_file_back(
+    result = mcp_server.mnesis_file_back(
         "What does Atlas use for caching?",
         "Atlas uses Redis as its primary caching layer, per the architecture notes.",
         quality_score=0.9,
@@ -71,33 +71,33 @@ def test_file_back_above_threshold_creates_digest(wiki):
     assert d.question == "What does Atlas use for caching?"
 
     # The filed answer is now retrievable (compounding).
-    assert "no results" not in mcp_server.wiki_query("caching")
+    assert "no results" not in mcp_server.mnesis_query("caching")
 
 
 def test_file_back_below_threshold_files_nothing(wiki):
     before = len(store.list_pages())
-    result = mcp_server.wiki_file_back("Q?", "Too thin.", quality_score=0.3)
+    result = mcp_server.mnesis_file_back("Q?", "Too thin.", quality_score=0.3)
     assert "below threshold" in result
     assert len(store.list_pages()) == before  # nothing written
 
 
 def test_file_back_heuristic_when_no_score(wiki):
     # A short answer scores below threshold under the heuristic.
-    assert "below threshold" in mcp_server.wiki_file_back("Q?", "Three words only")
+    assert "below threshold" in mcp_server.mnesis_file_back("Q?", "Three words only")
     # A long, developed answer clears it.
     long_answer = " ".join(["word"] * 30)
-    assert mcp_server.wiki_file_back("Q long?", long_answer).startswith("filed digest:")
+    assert mcp_server.mnesis_file_back("Q long?", long_answer).startswith("filed digest:")
 
 
 def test_get_and_list_and_rebuild(wiki):
-    mcp_server.wiki_ingest("Sarah owns the auth migration.", "sarah-note")
+    mcp_server.mnesis_ingest("Sarah owns the auth migration.", "sarah-note")
     pid = store.list_pages()[0].id
 
-    md = mcp_server.wiki_get(pid)
+    md = mcp_server.mnesis_get(pid)
     assert "status:" in md and "confidence:" in md  # derived header
     assert "---" in md  # full frontmatter Markdown follows
-    assert "no such page" not in mcp_server.wiki_get(pid)
-    assert "no such page" in mcp_server.wiki_get("does-not-exist")
+    assert "no such page" not in mcp_server.mnesis_get(pid)
+    assert "no such page" in mcp_server.mnesis_get("does-not-exist")
 
-    assert pid in mcp_server.wiki_list()
-    assert "rebuilt search index from 1 page" in mcp_server.wiki_rebuild()
+    assert pid in mcp_server.mnesis_list()
+    assert "rebuilt search index from 1 page" in mcp_server.mnesis_rebuild()

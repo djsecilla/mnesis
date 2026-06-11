@@ -78,7 +78,7 @@ def test_phase2_full_lifecycle(wiki):
     review_id = state.list_open_reviews()[0]["id"]
     conf_b_penalised = _conf(b.id)
 
-    mcp_server.wiki_resolve(review_id, b.id)
+    mcp_server.mnesis_resolve(review_id, b.id)
     assert store.read_page(c.id).status == "stale"
     assert store.read_page(c.id).superseded_by == b.id
     assert b.id not in store.read_page(c.id).contradicts
@@ -109,8 +109,8 @@ def test_rebuild_preserves_state_and_reproduces_ranking(wiki):
     a = ingest.ingest_source(f"{TITLE}.", "atlas-arch")
     ingest.ingest_source("Billing runs on PostgreSQL with nightly backups.", "billing")
     # Build durable state: an access record and an (unresolved) review entry.
-    mcp_server.wiki_get(a.id)
-    mcp_server.wiki_get(a.id)
+    mcp_server.mnesis_get(a.id)
+    mcp_server.mnesis_get(a.id)
     review_id = state.enqueue_contradiction(a.id, "ghost-page", "fixture review")
 
     access_before = state.get_access(a.id)

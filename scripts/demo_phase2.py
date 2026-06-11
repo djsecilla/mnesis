@@ -68,19 +68,19 @@ def main() -> None:
 
     _hr('STEP 4 — Query "redis caching"')
     print("default (active only) — B ranks, A is hidden:")
-    print(mcp_server.wiki_query("redis caching"))
+    print(mcp_server.mnesis_query("redis caching"))
     print("\nwith include_stale=True — A reappears, demoted:")
-    print(mcp_server.wiki_query("redis caching", include_stale=True))
+    print(mcp_server.mnesis_query("redis caching", include_stale=True))
 
     _hr("STEP 5 — Low-margin conflicting source -> review queue -> resolve")
     c = ingest.ingest_source(
         f"{TITLE}. relation:contradicts Actually Atlas uses Postgres for caching.", "atlas-conflict"
     )
     print(f"conflicting page C: {c.id}  (coexists, cross-linked, queued)\n")
-    print(mcp_server.wiki_review())
+    print(mcp_server.mnesis_review())
     review_id = state.list_open_reviews()[0]["id"]
     print(f"\nResolving review #{review_id}, keeping {b.id}:")
-    print("  " + mcp_server.wiki_resolve(review_id, b.id))
+    print("  " + mcp_server.mnesis_resolve(review_id, b.id))
     print(f"  page C status: {store.read_page(c.id).status}")
     print(f"  open reviews now: {len(state.list_open_reviews())}")
 
@@ -99,11 +99,11 @@ def main() -> None:
     search.upsert(aged)
     print(f"before: {aged.id}  status={store.read_page(aged.id).status}  confidence={_conf(aged.id):.2f}")
     print("running `mnesis decay`:")
-    print("  " + mcp_server.wiki_decay())
+    print("  " + mcp_server.mnesis_decay())
     print(f"after:  {aged.id}  status={store.read_page(aged.id).status}")
 
     _hr("Final state of the wiki")
-    print(mcp_server.wiki_list())
+    print(mcp_server.mnesis_list())
     print(f"\nDone. (Throwaway demo data left at {_TMP})")
 
 

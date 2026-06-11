@@ -23,7 +23,7 @@ a canonical `fact` page (`store.py`, `ingest.py`). A **SQLite FTS5 index**
 `rebuild()` can reconstruct at any time. Everything is exposed both as a **CLI**
 (`cli.py`) and as an **MCP server** (`mcp_server.py`) so Claude Code and other
 agents can use it natively. Filing a synthesized answer back
-(`wiki_file_back`) writes a `digest` page — that is the compounding step.
+(`mnesis_file_back`) writes a `digest` page — that is the compounding step.
 
 ## Prerequisites
 
@@ -119,10 +119,10 @@ keyword. See [`CLAUDE.md`](CLAUDE.md) §6 for the graph contract.
 ## Connect the MCP server to Claude Code
 
 mnesis exposes its tools over the [Model Context Protocol](https://modelcontextprotocol.io):
-`wiki_ingest`, `wiki_query`, `wiki_get`, `wiki_file_back`, `wiki_list`,
-`wiki_rebuild`, `wiki_decay`, `wiki_review`, `wiki_resolve`, and the graph tools
-`wiki_entity`, `wiki_neighbors`, `wiki_traverse`, `wiki_impact`,
-`wiki_graph_stats`, `wiki_graph_lint`.
+`mnesis_ingest`, `mnesis_query`, `mnesis_get`, `mnesis_file_back`, `mnesis_list`,
+`mnesis_rebuild`, `mnesis_decay`, `mnesis_review`, `mnesis_resolve`, and the graph tools
+`mnesis_entity`, `mnesis_neighbors`, `mnesis_traverse`, `mnesis_impact`,
+`mnesis_graph_stats`, `mnesis_graph_lint`.
 
 **Run the server standalone** (stdio transport): `make run-mcp` (i.e.
 `uv run python -m mnesis.mcp_server`).
