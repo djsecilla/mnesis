@@ -236,6 +236,7 @@ A page is acceptable when it: states a clear, declarative claim in the `title`; 
 - **Audit** is the git history plus the saved (redacted) sources. Every write is one commit.
 - **Reversibility:** prefer `status: stale` over deletion. The PoC does not hard-delete pages.
 - The MVP filter (regex + entropy) is intentionally simple; `detect-secrets` and Microsoft Presidio are the production upgrade path.
+- **Deployment model.** The app containerizes as a single MCP service (stdio locally; HTTP for networked/remote use) over a volume at `MNESIS_ROOT` (`/data/mnesis`). The durable, must-back-up layer is the **git history** (pages + sources) plus **`.index/state.db`** (access events + review queue). Everything else under `.index/` (`wiki.db`, `graph.db`) is a **regenerable cache** that `mnesis rebuild` reconstructs from Markdown + `state.db` — so backups exclude `.index/` except `state.db`. See `docs/OPS.md`.
 
 ---
 

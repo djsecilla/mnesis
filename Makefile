@@ -2,7 +2,7 @@
 # All targets use uv; the test/demo targets run fully offline (stub LLM).
 
 .PHONY: help setup test demo demo-phase2 demo-phase3 run-mcp rebuild decay review graph-stats graph-lint \
-        docker-build docker-up docker-down docker-logs docker-cli
+        docker-build docker-up docker-down docker-logs docker-cli docker-seed docker-demo
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -58,3 +58,12 @@ docker-logs: ## Tail the mnesis service logs
 
 docker-cli: ## Run a CLI command in the running container, e.g. ARGS='query "redis"'
 	docker compose exec -T mnesis mnesis $(ARGS)
+
+docker-seed: ## Seed the volume with bundled sample sources (offline, idempotent)
+	docker compose run --rm -e MNESIS_LLM_STUB=1 --entrypoint python mnesis -m mnesis.seed
+
+docker-demo: ## Run the latest-phase demo inside the container (offline, self-contained)
+	@d=$$(for s in demo_phase3 demo_phase2 demo_end_to_end; do [ -f scripts/$$s.py ] && echo $$s && break; done); \
+	echo "running scripts/$$d.py in the container"; \
+	docker compose run --rm -e MNESIS_LLM_STUB=1 -v "$(PWD)/scripts:/scripts:ro" \
+		--entrypoint python mnesis "/scripts/$$d.py"

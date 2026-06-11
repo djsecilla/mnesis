@@ -188,6 +188,50 @@ retried (WAL), and an empty wiki is a clean no-op. It is **not** started by a
 plain `docker compose up`. **Phase 4** replaces this sidecar with in-app
 scheduling, at which point it can be retired.
 
+## Run with Docker
+
+A containerized core stack: a single `mnesis` service (HTTP MCP server) over a
+persistent volume. See [`docs/OPS.md`](docs/OPS.md) for backup/restore and ops.
+
+**Prerequisites:** Docker (with Compose v2). No Python/uv needed on the host.
+
+```bash
+cp .env.example .env          # then edit: MNESIS_MCP_TOKEN (recommended), keys, etc.
+make docker-build             # build the image
+make docker-up                # start the stack; wait for the `mnesis` service to be healthy
+make docker-seed              # ingest bundled sample sources (offline, idempotent)
+
+make docker-cli ARGS='query "redis"'          # query the seeded wiki
+make docker-cli ARGS='impact library:redis'   # graph impact
+make docker-demo                              # run the latest-phase demo inside the container
+```
+
+`make docker-seed` is idempotent — re-running it does not duplicate pages. The
+data (pages, sources, `.git`, `state.db`) lives on the `mnesis-data` volume and
+survives `docker compose down`; only `docker compose down -v` wipes it.
+
+**Optional profiles** (not started by a plain `up`):
+- `docker compose --profile local-llm up -d` — on-host inference (see above); set
+  `MNESIS_LLM_PROVIDER=local` in `.env` so sources never leave the box.
+- `docker compose --profile maintenance up -d` — periodic decay / graph-lint /
+  rebuild upkeep (see above).
+
+### Connect Claude Code
+
+**Networked (deployed HTTP server):** point a client at the HTTP MCP endpoint,
+sending the bearer token:
+
+```bash
+claude mcp add mnesis --transport http http://<host>:8080/mcp \
+  --header "Authorization: Bearer $MNESIS_MCP_TOKEN"
+```
+
+**Local (this repo, stdio):** for development you don't need Docker at all — the
+repo ships [`.mcp.json`](.mcp.json), so running `claude` from the project root
+auto-discovers the server over **stdio** (it spawns `.venv/bin/python -m
+mnesis.mcp_server`; run `make setup` first). stdio = local subprocess, no port,
+no token; HTTP = networked, token-guarded. Same tools either way.
+
 ## Verify the PoC
 
 Run top to bottom on a fresh clone; each step states what you should see.
