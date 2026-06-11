@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from mcp.server.fastmcp import FastMCP
 
-from . import config, confidence, graph, ingest, lifecycle, search, state, store
+from . import config, confidence, graph, graph_lint, ingest, lifecycle, search, state, store
 from .filters import scrub
 from .store import Page
 
@@ -291,6 +291,16 @@ def wiki_graph_stats() -> str:
     if s.get("edges_by_predicate"):
         lines.append("by predicate: " + ", ".join(f"{p}={n}" for p, n in s["edges_by_predicate"].items()))
     return "\n".join(lines)
+
+
+@mcp.tool()
+def wiki_graph_lint(fix: bool = False) -> str:
+    """Lint the knowledge graph. Report-only by default; with ``fix=True`` applies
+    the safe auto-fixes (merge duplicate edges, demote stale-only edges, recompute
+    edge confidence) and flags the rest (undeclared/orphan entities, dangling
+    structural edges) for human review. Idempotent; never deletes an edge with an
+    active supporting page."""
+    return graph_lint.graph_lint(fix=fix).summary()
 
 
 @mcp.tool()

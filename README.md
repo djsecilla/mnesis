@@ -101,7 +101,7 @@ mnesis exposes its tools over the [Model Context Protocol](https://modelcontextp
 `wiki_ingest`, `wiki_query`, `wiki_get`, `wiki_file_back`, `wiki_list`,
 `wiki_rebuild`, `wiki_decay`, `wiki_review`, `wiki_resolve`, and the graph tools
 `wiki_entity`, `wiki_neighbors`, `wiki_traverse`, `wiki_impact`,
-`wiki_graph_stats`.
+`wiki_graph_stats`, `wiki_graph_lint`.
 
 **Run the server standalone** (stdio transport): `make run-mcp` (i.e.
 `uv run python -m mnesis.mcp_server`).

@@ -103,6 +103,28 @@ class GraphBackend(ABC):
         path and the connecting predicates. Depth-bounded, cycle-safe,
         deterministic."""
 
+    # -- maintenance (used by graph_lint; still no engine types) --
+    @abstractmethod
+    def all_entities(self) -> list[dict]:
+        """Every entity as ``{ref, type}``."""
+
+    @abstractmethod
+    def all_edges(self) -> list[dict]:
+        """Every edge (incl. demoted) as ``{id, s, p, o, source_pages,
+        assertion_count, confidence, demoted}`` — ``id`` is an opaque handle for
+        :meth:`update_edge`/:meth:`delete_edge`."""
+
+    @abstractmethod
+    def update_edge(
+        self, edge_id, *, confidence: float | None = None, demoted: bool | None = None,
+        source_pages: list[str] | None = None, assertion_count: int | None = None,
+    ) -> None:
+        """Update the given fields of an edge by its opaque ``id``."""
+
+    @abstractmethod
+    def delete_edge(self, edge_id) -> None:
+        """Delete an edge by its opaque ``id`` (used only to merge duplicates)."""
+
 
 # --- SQLite backend --------------------------------------------------------
 
@@ -329,6 +351,64 @@ class SqliteGraphBackend(GraphBackend):
             preds = [p for p in r["preds"].split("|") if p]
             results.append({"ref": r["node"], "depth": r["depth"], "path": path, "predicates": preds})
         return results
+
+    # -- maintenance --
+
+    def all_entities(self) -> list[dict]:
+        conn = self._connect()
+        try:
+            rows = conn.execute("SELECT ref, type FROM entities ORDER BY ref").fetchall()
+        finally:
+            conn.close()
+        return [{"ref": r["ref"], "type": r["type"]} for r in rows]
+
+    def all_edges(self) -> list[dict]:
+        conn = self._connect()
+        try:
+            rows = conn.execute("SELECT * FROM edges ORDER BY s, p, o, id").fetchall()
+        finally:
+            conn.close()
+        out = []
+        for r in rows:
+            d = self._edge_dict(r)
+            d["id"] = r["id"]
+            out.append(d)
+        return out
+
+    def update_edge(
+        self, edge_id, *, confidence: float | None = None, demoted: bool | None = None,
+        source_pages: list[str] | None = None, assertion_count: int | None = None,
+    ) -> None:
+        sets, params = [], []
+        if confidence is not None:
+            sets.append("confidence = ?")
+            params.append(confidence)
+        if demoted is not None:
+            sets.append("demoted = ?")
+            params.append(1 if demoted else 0)
+        if source_pages is not None:
+            sets.append("source_pages = ?")
+            params.append(json.dumps(sorted(source_pages)))
+        if assertion_count is not None:
+            sets.append("assertion_count = ?")
+            params.append(assertion_count)
+        if not sets:
+            return
+        params.append(edge_id)
+        conn = self._connect()
+        try:
+            conn.execute(f"UPDATE edges SET {', '.join(sets)} WHERE id = ?", params)
+            conn.commit()
+        finally:
+            conn.close()
+
+    def delete_edge(self, edge_id) -> None:
+        conn = self._connect()
+        try:
+            conn.execute("DELETE FROM edges WHERE id = ?", (edge_id,))
+            conn.commit()
+        finally:
+            conn.close()
 
 
 # --- Factory ---------------------------------------------------------------
