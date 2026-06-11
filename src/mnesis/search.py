@@ -51,6 +51,8 @@ class SearchHit:
     confidence: float  # cached [0,1] confidence
     final_score: float  # blended rank score (higher = better)
     status: str  # active | stale
+    graph_proximity: float = 0.0  # additive graph boost (Phase 3); 0 for keyword-only
+    grounding: dict | None = None  # for graph-reached hits: the connecting edge/page
 
 
 def _db_path() -> Path:

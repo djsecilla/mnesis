@@ -75,13 +75,15 @@ def wiki_ingest(text: str, source_ref: str) -> str:
 
 @mcp.tool()
 def wiki_query(query: str, limit: int = 10, include_stale: bool = False) -> str:
-    """Keyword-search the wiki, ranked by BM25 blended with confidence.
+    """Search the wiki: BM25 blended with confidence, augmented by the graph.
 
-    Hits show confidence and status; results are ordered by the blended score so
-    well-supported, fresh, often-read pages rise. Stale pages are excluded unless
-    ``include_stale=True``. Reading the top hits records access (reinforcement).
+    Results are ordered by a blended score (keyword match × confidence + a small
+    graph-proximity boost). When the query resolves to an entity, pages reachable
+    through the knowledge graph are folded in even if they lack the keyword, each
+    marked ``↳ graph`` and grounded by the connecting edge. Stale pages are
+    excluded unless ``include_stale=True``. Reading top hits records access.
     """
-    hits = search.search(query, limit, include_stale=include_stale)
+    hits = graph.graph_query(query, limit, include_stale=include_stale)
     if not hits:
         return f'no results for "{query}"'
     contradicted = _open_contradiction_ids()
@@ -90,8 +92,11 @@ def wiki_query(query: str, limit: int = 10, include_stale: bool = False) -> str:
         mark = "" if h.status == "active" else f" [{h.status}]"
         if h.id in contradicted:
             mark += " ⚠ contradiction under review"
+        if h.grounding is not None:
+            mark += " ↳ graph"
         lines.append(
-            f"{i}. {h.id} — {h.title}{mark} (conf {h.confidence:.2f}, score {h.final_score:.3f})"
+            f"{i}. {h.id} — {h.title}{mark} "
+            f"(conf {h.confidence:.2f}, graph {h.graph_proximity:.2f}, score {h.final_score:.3f})"
         )
         lines.append(f"   {h.snippet}")
     out = "\n".join(lines)
@@ -175,6 +180,28 @@ def wiki_rebuild() -> str:
         f"rebuilt search index from {n} page(s); "
         f"graph: {g['entities']} entities, {g['edges']} edges ({g['demoted']} demoted)"
     )
+
+
+@mcp.tool()
+def wiki_impact(entity: str, depth: int = 3) -> str:
+    """What would be affected by changing ``entity`` (a ``type:value`` ref).
+
+    Reverse-traverses ``depends_on``/``uses`` edges: returns the affected entities
+    with their dependency path back to ``entity``, the connecting predicate, edge
+    confidence, and the grounding pages. Demoted (stale-only) edges excluded.
+    """
+    affected = graph.impact(entity, depth=depth)
+    if not affected:
+        return f"nothing depends on or uses {entity}"
+    lines = [f"impact of changing {entity}:"]
+    for a in affected:
+        path = " -> ".join(a["path"])
+        pages = ", ".join(a["grounding_pages"])
+        lines.append(
+            f"  {a['ref']} (hop {a['hop']}, {a['predicate']}, conf {a['confidence']:.2f})"
+        )
+        lines.append(f"    path: {path}   [grounded by: {pages}]")
+    return "\n".join(lines)
 
 
 @mcp.tool()

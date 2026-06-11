@@ -24,12 +24,14 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import sqlite3
 from abc import ABC, abstractmethod
 from datetime import datetime
 from pathlib import Path
 
-from . import config, confidence, state, store, vocab
+from . import config, confidence, search, state, store, vocab
+from .search import SearchHit
 
 # Page-level structural predicates projected from frontmatter (between page nodes).
 PAGE_NODE_TYPE = "page"
@@ -380,3 +382,165 @@ def rebuild_graph(now: datetime | None = None) -> dict:
 
     backend.finalize()
     return backend.stats()
+
+
+# --- Graph-augmented query & impact ----------------------------------------
+
+_IMPACT_PREDICATES = ("depends_on", "uses")
+
+
+def _entity_refs_of(page: store.Page) -> list[str]:
+    """Entity refs a page declares: entity-typed tags + relation endpoints."""
+    refs: list[str] = []
+    for tag in page.tags:
+        try:
+            ref = vocab.normalize_ref(tag)
+        except ValueError:
+            continue
+        if ref not in refs:
+            refs.append(ref)
+    for rel in page.relations:
+        for ref in (rel.get("s"), rel.get("o")):
+            if ref and ref not in refs:
+                refs.append(ref)
+    return refs
+
+
+def resolve_entities(query: str, backend: GraphBackend, base_hits: list[SearchHit]) -> list[str]:
+    """Resolve free text to candidate entity refs.
+
+    Candidates are the entity refs declared by the query's top keyword hits whose
+    *value* shares a token with the query (so "redis" -> ``library:redis``), kept
+    only if they exist as graph nodes. No entity match -> empty list (the query
+    stays a plain keyword query).
+    """
+    tokens = set(re.findall(r"\w+", query.lower()))
+    if not tokens:
+        return []
+    resolved: list[str] = []
+    for hit in base_hits:
+        try:
+            page = store.read_page(hit.id)
+        except FileNotFoundError:
+            continue
+        for ref in _entity_refs_of(page):
+            value = ref.split(":", 1)[1]
+            if set(value.split("-")) & tokens and ref not in resolved:
+                if backend.get_entity(ref) is not None:
+                    resolved.append(ref)
+    return resolved
+
+
+def _graph_reached_pages(backend: GraphBackend, start_refs: list[str], depth: int) -> dict:
+    """BFS via ``neighbors`` (both directions) from ``start_refs``. Returns
+    ``page_id -> grounding`` for each page asserting a connecting edge, recording
+    the closest hop and the edge that connected it. Reaches the graph only through
+    the backend primitives; bounded by ``depth`` and cycle-safe via ``visited``."""
+    pages: dict[str, dict] = {}
+    visited = set(start_refs)
+    frontier = list(start_refs)
+    for hop in range(1, depth + 1):
+        nxt: list[str] = []
+        for ref in frontier:
+            for n in backend.neighbors(ref, direction="both"):
+                s, o = (ref, n["ref"]) if n["direction"] == "out" else (n["ref"], ref)
+                edge = {"s": s, "p": n["predicate"], "o": o}
+                for pid in n["source_pages"]:
+                    if pid not in pages:
+                        pages[pid] = {"hop": hop, "edge": edge, "source_page": pid}
+                if n["ref"] not in visited:
+                    visited.add(n["ref"])
+                    nxt.append(n["ref"])
+        frontier = nxt
+    return pages
+
+
+def _grounding_snippet(g: dict) -> str:
+    e = g["edge"]
+    return (
+        f"↳ via graph ({g['hop']} hop): {e['s']} -{e['p']}-> {e['o']} "
+        f"(edge asserted by {g['source_page']})"
+    )
+
+
+def graph_query(
+    query: str, limit: int = 10, depth: int | None = None, include_stale: bool = False
+) -> list[SearchHit]:
+    """Keyword search augmented with graph-reachable pages.
+
+    Runs the base BM25+confidence search, then — if the query resolves to an
+    entity — folds in pages reachable through the graph (depth-bounded), each
+    carrying its grounding (the connecting edge/page). Ranking adds a small
+    additive ``graph_proximity`` term that decays per hop. A query that resolves
+    to no entity returns the base results unchanged.
+    """
+    depth = config.GRAPH_QUERY_DEPTH if depth is None else depth
+    base = search.search(query, limit=limit, include_stale=include_stale)
+    backend = get_graph_backend()
+    entities = resolve_entities(query, backend, base)
+    if not entities:
+        return base  # plain keyword query — exactly as before
+
+    by_id = {h.id: h for h in base}
+    for pid, grounding in _graph_reached_pages(backend, entities, depth).items():
+        proximity = config.GRAPH_PROXIMITY_BASE * (
+            config.GRAPH_PROXIMITY_DECAY ** (grounding["hop"] - 1)
+        )
+        if pid in by_id:
+            hit = by_id[pid]
+            if proximity > hit.graph_proximity:
+                hit.graph_proximity = proximity
+                hit.grounding = grounding
+        else:
+            try:
+                page = store.read_page(pid)
+            except FileNotFoundError:
+                continue
+            if page.status != "active" and not include_stale:
+                continue
+            conf, _ = confidence.compute_confidence(page, access=state.get_access(pid))
+            by_id[pid] = SearchHit(
+                id=pid, title=page.title, snippet=_grounding_snippet(grounding),
+                bm25_score=0.0, confidence=conf, final_score=0.0, status=page.status,
+                graph_proximity=proximity, grounding=grounding,
+            )
+
+    hits = list(by_id.values())
+    for hit in hits:
+        hit.final_score += hit.graph_proximity  # additive boost on top of the bm25 blend
+    hits.sort(key=lambda h: (-h.final_score, h.bm25_score, h.id))
+    return hits[:limit]
+
+
+def impact(entity: str, depth: int = 3) -> list[dict]:
+    """Reverse-traverse ``depends_on``/``uses`` edges from ``entity``.
+
+    "Changing B affects whatever depends_on/uses B" — so this walks incoming
+    ``depends_on``/``uses`` edges to collect the affected entities, each with the
+    dependency ``path`` (affected -> ... -> entity), the connecting predicate, the
+    grounding pages, and the edge confidence. Demoted edges are excluded by
+    default (``neighbors`` filters them); depth-bounded and cycle-safe.
+    """
+    backend = get_graph_backend()
+    affected: list[dict] = []
+    visited = {entity}
+    frontier = [(entity, [entity])]
+    for hop in range(1, depth + 1):
+        nxt = []
+        for ref, chain in frontier:
+            for n in backend.neighbors(ref, direction="in"):
+                if n["predicate"] not in _IMPACT_PREDICATES or n["ref"] in visited:
+                    continue
+                visited.add(n["ref"])
+                new_chain = chain + [n["ref"]]
+                affected.append({
+                    "ref": n["ref"],
+                    "hop": hop,
+                    "predicate": n["predicate"],
+                    "path": list(reversed(new_chain)),  # affected -> ... -> entity
+                    "grounding_pages": n["source_pages"],
+                    "confidence": n["confidence"],
+                })
+                nxt.append((n["ref"], new_chain))
+        frontier = nxt
+    return affected

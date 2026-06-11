@@ -134,6 +134,12 @@ INACTIVITY_DAYS: dict[str, int] = {
 #: consistency; the playbook refers to it as MNESIS_GRAPH_BACKEND.)
 GRAPH_BACKEND: str = os.environ.get("WIKI_GRAPH_BACKEND", "sqlite")
 
+#: Graph-augmented query: how far to expand from a resolved entity, and the
+#: additive proximity boost (decaying per hop) folded into ranking.
+GRAPH_QUERY_DEPTH: int = _env_int("WIKI_GRAPH_QUERY_DEPTH", 2)
+GRAPH_PROXIMITY_BASE: float = _env_float("WIKI_GRAPH_PROXIMITY_BASE", 0.25)
+GRAPH_PROXIMITY_DECAY: float = _env_float("WIKI_GRAPH_PROXIMITY_DECAY", 0.5)
+
 
 def ensure_dirs() -> None:
     """Create the wiki directory tree on demand. Safe to call repeatedly."""

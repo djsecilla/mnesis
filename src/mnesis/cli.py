@@ -62,6 +62,11 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("list", help="list all pages")
     sub.add_parser("rebuild", help="rebuild the search index from Markdown")
     sub.add_parser("decay", help="recompute confidence and transition active<->stale")
+
+    p_impact = sub.add_parser("impact", help="what depends on/uses an entity (graph)")
+    p_impact.add_argument("entity", help="a type:value entity ref, e.g. library:redis")
+    p_impact.add_argument("--depth", type=int, default=3, help="reverse-traversal depth (default 3)")
+
     sub.add_parser("review", help="list open contradiction reviews")
 
     p_resolve = sub.add_parser("resolve", help="resolve a contradiction review")
@@ -92,6 +97,8 @@ def main(argv: list[str] | None = None) -> int:
         print(mcp_server.wiki_rebuild())
     elif args.command == "decay":
         print(mcp_server.wiki_decay())
+    elif args.command == "impact":
+        print(mcp_server.wiki_impact(args.entity, depth=args.depth))
     elif args.command == "review":
         print(mcp_server.wiki_review())
     elif args.command == "resolve":
