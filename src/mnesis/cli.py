@@ -67,6 +67,17 @@ def _build_parser() -> argparse.ArgumentParser:
     p_impact.add_argument("entity", help="a type:value entity ref, e.g. library:redis")
     p_impact.add_argument("--depth", type=int, default=3, help="reverse-traversal depth (default 3)")
 
+    p_entity = sub.add_parser("entity", help="inspect a graph entity and its edges")
+    p_entity.add_argument("ref", help="a type:value entity ref, e.g. library:redis")
+
+    p_neighbors = sub.add_parser("neighbors", help="adjacent entities of a graph entity")
+    p_neighbors.add_argument("ref", help="a type:value entity ref")
+    p_neighbors.add_argument("--pred", dest="predicate", default=None, help="filter by predicate")
+    p_neighbors.add_argument(
+        "--in", dest="incoming", action="store_true", help="incoming edges (default: outgoing)"
+    )
+
+    sub.add_parser("graph-stats", help="knowledge-graph node/edge counts")
     sub.add_parser("review", help="list open contradiction reviews")
 
     p_resolve = sub.add_parser("resolve", help="resolve a contradiction review")
@@ -99,6 +110,14 @@ def main(argv: list[str] | None = None) -> int:
         print(mcp_server.wiki_decay())
     elif args.command == "impact":
         print(mcp_server.wiki_impact(args.entity, depth=args.depth))
+    elif args.command == "entity":
+        print(mcp_server.wiki_entity(args.ref))
+    elif args.command == "neighbors":
+        print(mcp_server.wiki_neighbors(
+            args.ref, predicate=args.predicate, direction="in" if args.incoming else "out"
+        ))
+    elif args.command == "graph-stats":
+        print(mcp_server.wiki_graph_stats())
     elif args.command == "review":
         print(mcp_server.wiki_review())
     elif args.command == "resolve":

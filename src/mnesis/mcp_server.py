@@ -37,6 +37,14 @@ def _page_confidence(page: Page) -> float:
     return confidence.compute_confidence(page, access=state.get_access(page.id))[0]
 
 
+def _related_entities(page_id: str, page: Page | None = None) -> list[str]:
+    """Graph entity refs a page declares (best-effort; never raises on a query)."""
+    try:
+        return graph.related_entities(page or store.read_page(page_id))
+    except Exception:
+        return []
+
+
 def _heuristic_quality(answer: str) -> float:
     """Cheap stand-in quality score when the caller supplies none (CLAUDE.md §9).
 
@@ -99,6 +107,9 @@ def wiki_query(query: str, limit: int = 10, include_stale: bool = False) -> str:
             f"(conf {h.confidence:.2f}, graph {h.graph_proximity:.2f}, score {h.final_score:.3f})"
         )
         lines.append(f"   {h.snippet}")
+        related = _related_entities(h.id)
+        if related:
+            lines.append(f"   related entities: {', '.join(related)}")
     out = "\n".join(lines)
     # Reinforcement: record access for the surfaced top hits (cheap, never fails).
     for h in hits[:search._ACCESS_TOP_N]:
@@ -124,6 +135,9 @@ def wiki_get(page_id: str) -> str:
     header = f"[{page_id}] status: {page.status} | confidence: {_page_confidence(page):.2f}"
     if page_id in _open_contradiction_ids():
         header += " | ⚠ contradiction under review (see `wiki_review`)"
+    related = _related_entities(page_id, page)
+    if related:
+        header += f"\nrelated entities: {', '.join(related)}"
     md = path.read_text(encoding="utf-8")
     search.record_and_reindex(page_id)  # reinforcement on read
     return f"{header}\n\n{md}"
@@ -201,6 +215,81 @@ def wiki_impact(entity: str, depth: int = 3) -> str:
             f"  {a['ref']} (hop {a['hop']}, {a['predicate']}, conf {a['confidence']:.2f})"
         )
         lines.append(f"    path: {path}   [grounded by: {pages}]")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def wiki_entity(ref: str) -> str:
+    """Inspect a graph entity (a ``type:value`` ref): its type, the pages that
+    declare/assert it, and its typed edges with confidence and grounding pages.
+    Traversal/edges are confidence-weighted and exclude stale (demoted) edges by
+    default."""
+    ent = graph.entity(ref)
+    if ent is None:
+        return f"no such entity: {ref}"
+    lines = [f"{ref} (type: {ent['type']})"]
+    if ent["pages"]:
+        lines.append(f"grounded in pages: {', '.join(ent['pages'])}")
+    if not ent["edges"]:
+        lines.append("edges: (none)")
+    else:
+        lines.append("edges:")
+        for e in ent["edges"]:
+            tag = " [demoted]" if e["demoted"] else ""
+            lines.append(
+                f"  {e['s']} -{e['p']}-> {e['o']} "
+                f"(conf {e['confidence']:.2f}, {e['assertion_count']} src{tag}) "
+                f"[pages: {', '.join(e['source_pages'])}]"
+            )
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def wiki_neighbors(ref: str, predicate: str | None = None, direction: str = "out") -> str:
+    """Adjacent entities of ``ref`` via non-demoted edges. ``direction`` is
+    ``out``/``in``/``both``; optional ``predicate`` filter. Each result cites the
+    pages behind its edge."""
+    try:
+        ns = graph.neighbors(ref, predicate=predicate, direction=direction)
+    except ValueError as exc:
+        return str(exc)
+    if not ns:
+        return f"no neighbors for {ref}"
+    lines = [f"neighbors of {ref} ({direction}{', ' + predicate if predicate else ''}):"]
+    for n in ns:
+        arrow = "->" if n["direction"] == "out" else "<-"
+        lines.append(
+            f"  {arrow} {n['ref']} ({n['predicate']}, conf {n['confidence']:.2f}) "
+            f"[pages: {', '.join(n['source_pages'])}]"
+        )
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def wiki_traverse(ref: str, predicate: str | None = None, depth: int = 2) -> str:
+    """Entities reachable from ``ref`` within ``depth`` hops (out edges), with the
+    path and predicates. Cycle-safe, confidence-ordered upstream, excludes stale
+    (demoted) edges."""
+    rows = graph.traverse(ref, predicate=predicate, depth=depth)
+    if not rows:
+        return f"nothing reachable from {ref}"
+    lines = [f"reachable from {ref} (depth {depth}):"]
+    for r in rows:
+        path = " -> ".join(r["path"])
+        lines.append(f"  [{r['depth']}] {path}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def wiki_graph_stats() -> str:
+    """Knowledge-graph size: node and edge counts by type/predicate, plus the
+    demoted-edge count."""
+    s = graph.graph_stats()
+    lines = [f"entities: {s['entities']}   edges: {s['edges']}   demoted: {s['demoted']}"]
+    if s.get("entities_by_type"):
+        lines.append("by entity type: " + ", ".join(f"{t}={n}" for t, n in s["entities_by_type"].items()))
+    if s.get("edges_by_predicate"):
+        lines.append("by predicate: " + ", ".join(f"{p}={n}" for p, n in s["edges_by_predicate"].items()))
     return "\n".join(lines)
 
 

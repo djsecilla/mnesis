@@ -81,7 +81,8 @@ class GraphBackend(ABC):
 
     @abstractmethod
     def stats(self) -> dict:
-        """``{entities, edges, demoted}`` counts for the current graph."""
+        """Counts for the current graph: ``{entities, edges, demoted,
+        entities_by_type, edges_by_predicate}``."""
 
     # -- query --
     @abstractmethod
@@ -202,9 +203,27 @@ class SqliteGraphBackend(GraphBackend):
             entities = conn.execute("SELECT COUNT(*) FROM entities").fetchone()[0]
             edges = conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
             demoted = conn.execute("SELECT COUNT(*) FROM edges WHERE demoted = 1").fetchone()[0]
+            by_type = {
+                r["type"]: r["n"]
+                for r in conn.execute(
+                    "SELECT type, COUNT(*) AS n FROM entities GROUP BY type ORDER BY type"
+                )
+            }
+            by_pred = {
+                r["p"]: r["n"]
+                for r in conn.execute(
+                    "SELECT p, COUNT(*) AS n FROM edges GROUP BY p ORDER BY p"
+                )
+            }
         finally:
             conn.close()
-        return {"entities": entities, "edges": edges, "demoted": demoted}
+        return {
+            "entities": entities,
+            "edges": edges,
+            "demoted": demoted,
+            "entities_by_type": by_type,
+            "edges_by_predicate": by_pred,
+        }
 
     # -- query --
 
@@ -510,6 +529,39 @@ def graph_query(
         hit.final_score += hit.graph_proximity  # additive boost on top of the bm25 blend
     hits.sort(key=lambda h: (-h.final_score, h.bm25_score, h.id))
     return hits[:limit]
+
+
+# --- Thin module wrappers (the surface tools/CLI call) ---------------------
+# These route to the configured backend so callers (mcp_server, cli) never touch
+# an engine directly — the GraphBackend interface stays the single integration
+# point.
+
+
+def entity(ref: str) -> dict | None:
+    """``{type, pages, edges}`` for ``ref`` (or None)."""
+    return get_graph_backend().get_entity(ref)
+
+
+def neighbors(ref: str, predicate: str | None = None, direction: str = "out") -> list[dict]:
+    """Adjacent entities via non-demoted edges (see :meth:`GraphBackend.neighbors`)."""
+    return get_graph_backend().neighbors(ref, predicate=predicate, direction=direction)
+
+
+def traverse(ref: str, predicate: str | None = None, depth: int = 2) -> list[dict]:
+    """Entities reachable within ``depth`` hops, with paths (non-demoted edges)."""
+    return get_graph_backend().traverse(ref, predicate=predicate, depth=depth)
+
+
+def graph_stats() -> dict:
+    """Node/edge counts (totals, by type, by predicate, demoted)."""
+    return get_graph_backend().stats()
+
+
+def related_entities(page: store.Page) -> list[str]:
+    """The entity refs a page declares that exist as graph nodes (for grounding
+    a 'related entities' note on query/get results)."""
+    backend = get_graph_backend()
+    return [ref for ref in _entity_refs_of(page) if backend.get_entity(ref) is not None]
 
 
 def impact(entity: str, depth: int = 3) -> list[dict]:
