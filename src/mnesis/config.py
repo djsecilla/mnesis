@@ -140,6 +140,20 @@ GRAPH_QUERY_DEPTH: int = _env_int("MNESIS_GRAPH_QUERY_DEPTH", 2)
 GRAPH_PROXIMITY_BASE: float = _env_float("MNESIS_GRAPH_PROXIMITY_BASE", 0.25)
 GRAPH_PROXIMITY_DECAY: float = _env_float("MNESIS_GRAPH_PROXIMITY_DECAY", 0.5)
 
+# --- MCP server transport ---------------------------------------------------
+
+#: Transport for the MCP server: "stdio" (default; local Claude Code spawns it
+#: as a subprocess) or "http" (networked, for container deployment).
+MNESIS_MCP_TRANSPORT: str = os.environ.get("MNESIS_MCP_TRANSPORT", "stdio")
+
+#: HTTP-mode bind address/port (only used when transport is "http").
+MNESIS_MCP_HOST: str = os.environ.get("MNESIS_MCP_HOST", "0.0.0.0")
+MNESIS_MCP_PORT: int = _env_int("MNESIS_MCP_PORT", 8080)
+
+#: Optional bearer token for HTTP mode. If set, every tool call must present
+#: ``Authorization: Bearer <token>``. Empty = no auth (privileged endpoint).
+MNESIS_MCP_TOKEN: str = os.environ.get("MNESIS_MCP_TOKEN", "")
+
 
 def ensure_dirs() -> None:
     """Create the wiki directory tree on demand. Safe to call repeatedly."""

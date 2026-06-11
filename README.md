@@ -140,6 +140,20 @@ claude mcp add mnesis -- uv run python -m mnesis.mcp_server
 
 Set `ANTHROPIC_API_KEY` for real extraction, or `MNESIS_LLM_STUB=1` to run offline.
 
+**Networked (HTTP) transport.** For container/remote deployment, set
+`MNESIS_MCP_TRANSPORT=http` (default `stdio`). The server then serves streamable
+HTTP at `/mcp` on `MNESIS_MCP_HOST:MNESIS_MCP_PORT` (default `0.0.0.0:8080`),
+plus an unauthenticated `GET /health` returning quick stats (page count, index/
+graph present). If `MNESIS_MCP_TOKEN` is set, every tool call must send
+`Authorization: Bearer <token>`; if unset, the server logs a warning and the
+endpoint is unauthenticated — treat it as privileged (it can ingest and modify
+knowledge). Point a client at it with:
+
+```bash
+claude mcp add mnesis --transport http http://<host>:8080/mcp \
+  --header "Authorization: Bearer $MNESIS_MCP_TOKEN"
+```
+
 ## Verify the PoC
 
 Run top to bottom on a fresh clone; each step states what you should see.

@@ -1,4 +1,4 @@
-"""FastMCP server exposing the mnesis wiki tools over stdio.
+"""FastMCP server exposing the mnesis wiki tools.
 
 This is the agent-facing surface: Claude Code (and any MCP client) can ingest
 sources, query the index, fetch pages, and file synthesized answers back. The
@@ -9,17 +9,25 @@ Newly written pages are ``search.upsert``-ed into the index immediately, so a
 ``mnesis_file_back`` answer (or a fresh ingest) surfaces on the next
 ``mnesis_query`` — the compounding loop the PoC exists to demonstrate.
 
-Verified against mcp 1.27.x: ``mcp.server.fastmcp.FastMCP``, ``@mcp.tool()``,
-``mcp.run(transport="stdio")``.
+Two transports (selected by ``MNESIS_MCP_TRANSPORT``): **stdio** (default; local
+Claude Code spawns it as a subprocess — unchanged) and **http** (streamable
+HTTP for container deployment, with a ``GET /health`` endpoint and optional
+bearer-token auth). Verified against mcp 1.27.x: ``FastMCP``, ``@mcp.tool()``,
+``mcp.custom_route``, ``mcp.streamable_http_app()``, ``mcp.run()``.
 """
 
 from __future__ import annotations
 
+import logging
+
 from mcp.server.fastmcp import FastMCP
+from starlette.responses import JSONResponse
 
 from . import config, confidence, graph, graph_lint, ingest, lifecycle, search, state, store
 from .filters import scrub
 from .store import Page
+
+log = logging.getLogger(__name__)
 
 mcp = FastMCP("mnesis")
 
@@ -360,5 +368,71 @@ def mnesis_resolve(review_id: int, keep_id: str) -> str:
     return f"resolved review {review_id}: kept {keep_id}, superseded {other_id}"
 
 
+# --- HTTP transport: health endpoint, bearer auth, server bootstrap --------
+
+
+def _health_payload() -> dict:
+    """Cheap liveness + quick stats — no LLM call."""
+    return {
+        "status": "ok",
+        "pages": len(store.list_pages()),
+        "index_present": (config.INDEX_DIR / "wiki.db").exists(),
+        "graph_present": (config.INDEX_DIR / "graph.db").exists(),
+    }
+
+
+@mcp.custom_route("/health", methods=["GET"])
+async def _health(_request):
+    """Unauthenticated health probe (safe for load balancers)."""
+    return JSONResponse(_health_payload())
+
+
+class _BearerAuthMiddleware:
+    """ASGI middleware requiring ``Authorization: Bearer <token>`` on every HTTP
+    request except ``/health``. Installed only when a token is configured."""
+
+    def __init__(self, app, token: str) -> None:
+        self.app = app
+        self.token = token
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope.get("type") == "http" and scope.get("path") != "/health":
+            headers = dict(scope.get("headers") or [])
+            presented = headers.get(b"authorization", b"").decode()
+            if presented != f"Bearer {self.token}":
+                await JSONResponse({"error": "unauthorized"}, status_code=401)(
+                    scope, receive, send
+                )
+                return
+        await self.app(scope, receive, send)
+
+
+def build_http_app():
+    """Build the streamable-HTTP ASGI app: MCP at ``/mcp``, ``GET /health``, and
+    bearer auth when ``MNESIS_MCP_TOKEN`` is set. Tool functions are reused as-is."""
+    app = mcp.streamable_http_app()
+    if config.MNESIS_MCP_TOKEN:
+        app.add_middleware(_BearerAuthMiddleware, token=config.MNESIS_MCP_TOKEN)
+    return app
+
+
+def serve() -> None:
+    """Run the server using the transport selected by ``MNESIS_MCP_TRANSPORT``."""
+    if config.MNESIS_MCP_TRANSPORT == "http":
+        import uvicorn
+
+        if not config.MNESIS_MCP_TOKEN:
+            log.warning(
+                "MCP HTTP transport starting WITHOUT a bearer token "
+                "(MNESIS_MCP_TOKEN unset). This endpoint can ingest and modify "
+                "knowledge — treat it as privileged and restrict network access."
+            )
+        uvicorn.run(
+            build_http_app(), host=config.MNESIS_MCP_HOST, port=config.MNESIS_MCP_PORT
+        )
+    else:
+        mcp.run()  # stdio (default) — unchanged for local Claude Code
+
+
 if __name__ == "__main__":
-    mcp.run(transport="stdio")
+    serve()
