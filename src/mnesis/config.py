@@ -125,6 +125,15 @@ INACTIVITY_DAYS: dict[str, int] = {
     "bug": _env_int("WIKI_INACTIVITY_BUG", 14),
 }
 
+# --- Phase 3: knowledge graph -----------------------------------------------
+
+#: Which GraphBackend implementation to use. The graph is a rebuildable cache,
+#: so this is a low-lock-in choice: "sqlite" (embedded, default) today; a Tier-B
+#: backend (e.g. Postgres+AGE, Neo4j) implements the same interface and is
+#: selected here with no changes elsewhere. (Env prefix kept WIKI_* for codebase
+#: consistency; the playbook refers to it as MNESIS_GRAPH_BACKEND.)
+GRAPH_BACKEND: str = os.environ.get("WIKI_GRAPH_BACKEND", "sqlite")
+
 
 def ensure_dirs() -> None:
     """Create the wiki directory tree on demand. Safe to call repeatedly."""

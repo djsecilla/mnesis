@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from mcp.server.fastmcp import FastMCP
 
-from . import config, confidence, ingest, lifecycle, search, state, store
+from . import config, confidence, graph, ingest, lifecycle, search, state, store
 from .filters import scrub
 from .store import Page
 
@@ -167,9 +167,14 @@ def wiki_list() -> str:
 
 @mcp.tool()
 def wiki_rebuild() -> str:
-    """Rebuild the search index from the Markdown pages (cache projection)."""
+    """Rebuild the rebuildable caches from Markdown: the search index AND the
+    knowledge graph. The durable state store is never cleared."""
     n = search.rebuild()
-    return f"rebuilt index from {n} page(s)"
+    g = graph.rebuild_graph()
+    return (
+        f"rebuilt search index from {n} page(s); "
+        f"graph: {g['entities']} entities, {g['edges']} edges ({g['demoted']} demoted)"
+    )
 
 
 @mcp.tool()

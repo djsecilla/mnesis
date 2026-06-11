@@ -100,4 +100,4 @@ def test_get_and_list_and_rebuild(wiki):
     assert "no such page" in mcp_server.wiki_get("does-not-exist")
 
     assert pid in mcp_server.wiki_list()
-    assert "rebuilt index from 1 page" in mcp_server.wiki_rebuild()
+    assert "rebuilt search index from 1 page" in mcp_server.wiki_rebuild()
