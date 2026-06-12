@@ -50,6 +50,14 @@ export function SearchIcon(p: SVGProps<SVGSVGElement>) {
   );
 }
 
+export function PlusIcon(p: SVGProps<SVGSVGElement>) {
+  return (
+    <svg {...base} {...p}>
+      <path d="M12 5v14M5 12h14" />
+    </svg>
+  );
+}
+
 export function SunIcon(p: SVGProps<SVGSVGElement>) {
   return (
     <svg {...base} {...p}>

@@ -1,7 +1,7 @@
 import { Suspense, useEffect, useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 import CommandPalette from "./CommandPalette";
-import { ChatIcon, GraphIcon, PagesIcon, SearchIcon } from "./Icon";
+import { ChatIcon, GraphIcon, PagesIcon, PlusIcon, SearchIcon } from "./Icon";
 import ThemeToggle from "./ThemeToggle";
 
 const rail = [
@@ -28,6 +28,14 @@ export default function Shell() {
   return (
     <div className="flex h-screen bg-bg text-fg">
       <nav className="flex w-14 flex-col items-center gap-1 border-r border-border py-3">
+        <NavLink
+          to="/add"
+          title="Add to Mnesis"
+          aria-label="Add to Mnesis"
+          className="mb-1 flex h-9 w-9 items-center justify-center rounded-lg bg-accent text-accent-fg transition hover:opacity-90"
+        >
+          <PlusIcon />
+        </NavLink>
         <button
           onClick={() => setPaletteOpen(true)}
           className="rail-btn"

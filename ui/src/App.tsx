@@ -7,6 +7,7 @@ const GraphPage = lazy(() => import("./routes/GraphPage"));
 const PagesList = lazy(() => import("./routes/PagesList"));
 const PageDetail = lazy(() => import("./routes/PageDetail"));
 const ChatPage = lazy(() => import("./routes/ChatPage"));
+const AddPage = lazy(() => import("./routes/AddPage"));
 
 export default function App() {
   return (
@@ -17,6 +18,7 @@ export default function App() {
         <Route path="/pages" element={<PagesList />} />
         <Route path="/pages/:id" element={<PageDetail />} />
         <Route path="/chat" element={<ChatPage />} />
+        <Route path="/add" element={<AddPage />} />
         <Route path="*" element={<Navigate to="/pages" replace />} />
       </Route>
     </Routes>

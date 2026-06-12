@@ -119,3 +119,62 @@ export interface ChatDone {
   citations: string[];
   retrieval: RetrievalHit[];
 }
+
+// --- Ingestion (plan / apply) ----------------------------------------------
+
+export interface Redaction {
+  type: string;
+  kind: string;
+  count: number;
+}
+
+export interface DraftPage {
+  title: string;
+  summary_markdown: string;
+  body: string;
+  tags: string[];
+  relations: Relation[];
+  kind: string;
+}
+
+export interface RoutingCandidate {
+  page_id: string;
+  title: string;
+  relation_label: string;
+  confidence: number;
+}
+
+export type RoutingAction = "new" | "reinforce" | "supersede" | "contradict";
+
+export interface Routing {
+  action: RoutingAction;
+  target_page_id: string | null;
+  candidates: RoutingCandidate[];
+  auto_resolved: boolean;
+  margin: number | null;
+}
+
+export interface IngestPlan {
+  source_ref: string;
+  redacted_text: string;
+  redactions: Redaction[];
+  draft_page: DraftPage;
+  routing: Routing;
+  warnings: string[];
+}
+
+export interface IngestOverrides {
+  title?: string;
+  tags?: string[];
+  accepted_relations?: number[];
+  rejected_relations?: number[];
+  routing?: { action: string; target_page_id?: string | null };
+}
+
+export interface IngestResult {
+  action_taken: string;
+  page_id: string;
+  superseded_id: string | null;
+  review_id: number | null;
+  redaction_count: number;
+}

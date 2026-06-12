@@ -1,9 +1,12 @@
-import { apiGet, apiPost } from "./client";
+import { apiGet, apiPost, API_BASE, authHeaders } from "./client";
 import type {
   EntityData,
   FilebackResponse,
   GraphData,
   ImpactResponse,
+  IngestOverrides,
+  IngestPlan,
+  IngestResult,
   PageDetail,
   PagesResponse,
   SearchResponse,
@@ -45,3 +48,49 @@ export const getImpact = (ref: string, depth = 3) =>
 
 export const fileback = (question: string, answer: string) =>
   apiPost<FilebackResponse>(`/fileback`, { question, answer });
+
+// --- Ingestion: preview (side-effect-free) + commit ------------------------
+
+/** Surface the gateway's structured {code, message} errors as the thrown message. */
+async function unwrap<T>(res: Response): Promise<T> {
+  const body = await res.text();
+  const data = body ? JSON.parse(body) : null;
+  if (!res.ok) throw new Error(data?.message || data?.error || `${res.status} ${res.statusText}`);
+  return data as T;
+}
+
+export interface PreviewInput {
+  text?: string;
+  file?: File;
+  sourceRef?: string;
+}
+
+/** POST /api/ingest/preview — JSON for pasted text, multipart for a file. */
+export async function ingestPreview(input: PreviewInput): Promise<IngestPlan> {
+  if (input.file) {
+    const form = new FormData();
+    form.append("file", input.file);
+    if (input.sourceRef) form.append("source_ref", input.sourceRef);
+    return unwrap(
+      await fetch(`${API_BASE}/ingest/preview`, { method: "POST", headers: authHeaders(), body: form }),
+    );
+  }
+  return unwrap(
+    await fetch(`${API_BASE}/ingest/preview`, {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ text: input.text ?? "", source_ref: input.sourceRef }),
+    }),
+  );
+}
+
+/** POST /api/ingest/commit — apply a previewed plan with curation overrides. */
+export async function ingestCommit(plan: IngestPlan, overrides?: IngestOverrides): Promise<IngestResult> {
+  return unwrap(
+    await fetch(`${API_BASE}/ingest/commit`, {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ plan, overrides }),
+    }),
+  );
+}

@@ -5,7 +5,7 @@ import { getGraph, search } from "../api/endpoints";
 import { entityColor, entityTypeOf } from "../design/tokens";
 
 interface Item {
-  kind: "page" | "entity";
+  kind: "page" | "entity" | "action";
   key: string;
   label: string;
   sublabel: string;
@@ -43,6 +43,17 @@ export default function CommandPalette({ open, onClose }: { open: boolean; onClo
   });
 
   const items = useMemo<Item[]>(() => {
+    const ql0 = q.toLowerCase();
+    const actionItems: Item[] =
+      !q || "add to mnesis".includes(ql0)
+        ? [{
+            kind: "action",
+            key: "action:add",
+            label: "Add to Mnesis",
+            sublabel: "paste or upload a new source",
+            to: "/add",
+          }]
+        : [];
     const pageItems: Item[] = (pages.data?.hits ?? []).map((h) => ({
       kind: "page",
       key: `page:${h.id}`,
@@ -62,7 +73,7 @@ export default function CommandPalette({ open, onClose }: { open: boolean; onClo
         sublabel: `${n.type} · degree ${n.degree}`,
         to: `/graph?root=${encodeURIComponent(n.ref)}`,
       }));
-    return [...pageItems, ...entityItems];
+    return [...actionItems, ...pageItems, ...entityItems];
   }, [pages.data, graph.data, q]);
 
   useEffect(() => {
