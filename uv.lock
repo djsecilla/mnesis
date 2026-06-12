@@ -444,6 +444,7 @@ dependencies = [
     { name = "mcp" },
     { name = "pytest" },
     { name = "python-frontmatter" },
+    { name = "python-multipart" },
     { name = "pyyaml" },
 ]
 
@@ -453,6 +454,7 @@ requires-dist = [
     { name = "mcp" },
     { name = "pytest" },
     { name = "python-frontmatter" },
+    { name = "python-multipart" },
     { name = "pyyaml" },
 ]
 

@@ -13,6 +13,7 @@ dependencies = [
     "mcp",
     "python-frontmatter",
     "pyyaml",
+    "python-multipart",
     "pytest",
 ]
 

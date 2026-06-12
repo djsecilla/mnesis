@@ -165,6 +165,9 @@ MNESIS_MCP_PORT: int = _env_int("MNESIS_MCP_PORT", 8080)
 #: ``Authorization: Bearer <token>``. Empty = no auth (privileged endpoint).
 MNESIS_MCP_TOKEN: str = os.environ.get("MNESIS_MCP_TOKEN", "")
 
+#: Max bytes accepted by the ingestion upload endpoints (pasted text or file).
+MNESIS_MAX_UPLOAD_BYTES: int = _env_int("MNESIS_MAX_UPLOAD_BYTES", 2_000_000)
+
 
 def ensure_dirs() -> None:
     """Create the wiki directory tree on demand. Safe to call repeatedly."""

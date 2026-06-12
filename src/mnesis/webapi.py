@@ -16,13 +16,16 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
+from datetime import datetime, timezone
+from pathlib import Path
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 from sse_starlette.sse import EventSourceResponse
 
-from . import config, confidence, graph, llm, search, state, store
+from . import config, confidence, graph, ingest, llm, search, state, store
 
 # How many retrieved pages ground a chat answer.
 CHAT_TOP_N = 5
@@ -321,6 +324,235 @@ async def _chat(request: Request) -> EventSourceResponse:
     return EventSourceResponse(stream())
 
 
+# --- Ingestion (plan/apply over HTTP) ---------------------------------------
+
+
+def _err(code: str, message: str, status: int) -> JSONResponse:
+    """Structured error the UI can render: ``{code, message}``."""
+    return JSONResponse({"code": code, "message": message}, status_code=status)
+
+
+class _IngestInputError(Exception):
+    def __init__(self, code: str, message: str, status: int = 400) -> None:
+        self.code, self.message, self.status = code, message, status
+
+
+# Content-type -> text extractor. text/* is handled now; this is the extension
+# point for richer types: register a PDF/DOCX extractor here when added. Until
+# then those types are rejected with a friendly message (see ``_UNSUPPORTED``).
+def _extract_textlike(data: bytes) -> str:
+    return data.decode("utf-8", errors="replace")
+
+
+_TEXT_EXTRACTORS: dict[str, callable] = {
+    "text/markdown": _extract_textlike,
+    "text/x-markdown": _extract_textlike,
+    "text/plain": _extract_textlike,
+}
+_UNSUPPORTED: dict[str, str] = {
+    "application/pdf": "PDF",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "DOCX",
+    "application/msword": "DOC",
+}
+
+
+def _extract_upload(content_type: str | None, data: bytes) -> str:
+    """Dispatch an uploaded file to a text extractor by content-type."""
+    ct = (content_type or "").split(";")[0].strip().lower()
+    if ct in _UNSUPPORTED:
+        raise _IngestInputError(
+            "unsupported_type",
+            f"{_UNSUPPORTED[ct]} upload is not supported yet — only text/markdown for now.",
+            status=415,
+        )
+    if ct in _TEXT_EXTRACTORS:
+        return _TEXT_EXTRACTORS[ct](data)
+    if ct.startswith("text/") or ct in ("", "application/octet-stream"):
+        return _extract_textlike(data)  # treat unknown/plain blobs as text
+    raise _IngestInputError(
+        "unsupported_type", f"unsupported upload type: {ct} — only text/markdown for now.", status=415
+    )
+
+
+def _safe_source_ref(raw: str | None, fallback: str) -> str:
+    """A filesystem/git-safe source ref from a user value or filename stem."""
+    slug = store.slugify((raw or "").strip() or (fallback or "").strip())
+    if not slug:
+        slug = "source-" + datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
+    return slug
+
+
+async def _read_ingest_input(request: Request) -> tuple[str, str]:
+    """Resolve ``(text, source_ref)`` from a JSON body or a multipart upload,
+    enforcing the max-upload size and validating the content type."""
+    max_bytes = config.MNESIS_MAX_UPLOAD_BYTES
+    ctype = request.headers.get("content-type", "")
+
+    if ctype.startswith("multipart/form-data"):
+        form = await request.form()
+        upload = form.get("file")
+        if upload is None or not hasattr(upload, "read"):
+            raise _IngestInputError("missing_file", "multipart upload requires a 'file' part")
+        data = await upload.read()
+        if len(data) > max_bytes:
+            raise _IngestInputError(
+                "payload_too_large", f"upload is {len(data)} bytes; limit is {max_bytes}", status=413
+            )
+        text = _extract_upload(getattr(upload, "content_type", None), data)
+        ref = _safe_source_ref(form.get("source_ref"), Path(getattr(upload, "filename", "") or "").stem)
+        return text, ref
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise _IngestInputError("invalid_json", "request body must be JSON or multipart/form-data")
+    text = body.get("text")
+    if not isinstance(text, str) or not text.strip():
+        raise _IngestInputError("missing_text", "'text' is required")
+    if len(text.encode("utf-8")) > max_bytes:
+        raise _IngestInputError(
+            "payload_too_large", f"text is {len(text.encode('utf-8'))} bytes; limit is {max_bytes}", status=413
+        )
+    return text, _safe_source_ref(body.get("source_ref"), "pasted")
+
+
+async def _ingest_preview(request: Request) -> JSONResponse:
+    """Side-effect-free preview: returns the IngestPlan (calls plan_ingest only)."""
+    try:
+        text, ref = await _read_ingest_input(request)
+    except _IngestInputError as e:
+        return _err(e.code, e.message, e.status)
+    return JSONResponse(ingest.plan_ingest(text, ref))
+
+
+async def _ingest_commit(request: Request) -> JSONResponse:
+    """Apply a previously previewed plan (+ optional overrides): returns the result."""
+    try:
+        body = await request.json()
+    except Exception:
+        return _err("invalid_json", "request body must be JSON", 400)
+    plan = body.get("plan")
+    if not isinstance(plan, dict) or "draft_page" not in plan or "source_ref" not in plan:
+        return _err("invalid_plan", "a valid ingest plan is required", 400)
+    overrides = body.get("overrides")
+    try:
+        result = ingest.apply_ingest(plan, overrides if isinstance(overrides, dict) else None)
+    except ValueError as e:
+        return _err("invalid_override", str(e), 400)
+    return JSONResponse(result)
+
+
+# --- Sources (provenance) ---------------------------------------------------
+
+
+def _pages_by_source() -> dict[str, list[store.Page]]:
+    mapping: dict[str, list[store.Page]] = {}
+    for p in store.list_pages():
+        for ref in p.sources:
+            mapping.setdefault(ref, []).append(p)
+    return mapping
+
+
+def _source_ingested_at(path: Path) -> str | None:
+    """The git add-time of the source file (its ingestion), with an mtime fallback."""
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(config.SOURCES_DIR), "log", "--diff-filter=A", "-1",
+             "--format=%cI", "--", str(path)],
+            capture_output=True, text=True, timeout=5,
+        )
+        if out.stdout.strip():
+            return out.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat()
+    except OSError:
+        return None
+
+
+async def _list_sources(request: Request) -> JSONResponse:
+    by_source = _pages_by_source()
+    config.SOURCES_DIR.mkdir(parents=True, exist_ok=True)
+    items = []
+    for path in sorted(config.SOURCES_DIR.glob("*.md")):
+        ref = path.stem
+        items.append({
+            "id": ref,
+            "ingested_at": _source_ingested_at(path),
+            "pages": [{"id": p.id, "title": p.title} for p in by_source.get(ref, [])],
+        })
+    return JSONResponse({"sources": items, "total": len(items)})
+
+
+async def _get_source(request: Request) -> JSONResponse:
+    ref = request.path_params["source_id"]
+    if "/" in ref or "\\" in ref or ref in {"", ".", ".."}:
+        return _err("invalid_source", "invalid source id", 400)
+    path = config.SOURCES_DIR / f"{ref}.md"
+    if not path.exists():
+        return _err("not_found", f"no such source: {ref}", 404)
+    by_source = _pages_by_source()
+    # The stored text was redacted at ingest time, so it carries no raw values.
+    return JSONResponse({
+        "id": ref,
+        "ingested_at": _source_ingested_at(path),
+        "text": path.read_text(encoding="utf-8"),
+        "pages": [{"id": p.id, "title": p.title} for p in by_source.get(ref, [])],
+    })
+
+
+# --- Reviews (contradiction queue) ------------------------------------------
+
+
+def _review_page(pid: str) -> dict:
+    try:
+        page = store.read_page(pid)
+        return {"id": pid, "title": page.title, "confidence": round(_conf(page), 4)}
+    except (FileNotFoundError, ValueError):
+        return {"id": pid, "title": None, "confidence": None}
+
+
+async def _list_reviews(request: Request) -> JSONResponse:
+    reviews = [
+        {
+            "id": r["id"],
+            "page_a": _review_page(r["page_a"]),
+            "page_b": _review_page(r["page_b"]),
+            "detail": r["detail"],
+        }
+        for r in state.list_open_reviews()
+    ]
+    return JSONResponse({"reviews": reviews, "total": len(reviews)})
+
+
+async def _resolve_review(request: Request) -> JSONResponse:
+    from . import mcp_server  # reuse the exact resolve path (lazy: avoids import cycle)
+
+    try:
+        review_id = int(request.path_params["review_id"])
+    except (ValueError, TypeError):
+        return _err("invalid_review", "review id must be an integer", 400)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    keep = (body.get("keep_page_id") or "").strip()
+    if not keep:
+        return _err("missing_keep", "keep_page_id is required", 400)
+
+    msg = mcp_server.mnesis_resolve(review_id, keep)
+    if msg.startswith("resolved review"):
+        superseded = msg.rsplit("superseded ", 1)[-1].strip() if "superseded " in msg else None
+        return JSONResponse(
+            {"resolved": True, "review_id": review_id, "kept": keep,
+             "superseded": superseded, "message": msg}
+        )
+    if msg.startswith("no open review"):
+        return _err("not_found", msg, 404)
+    return _err("invalid_keep", msg, 400)
+
+
 # --- Mounting ---------------------------------------------------------------
 
 API_ROUTES = [
@@ -332,6 +564,12 @@ API_ROUTES = [
     Route("/api/impact/{ref:path}", _impact, methods=["GET"]),
     Route("/api/chat", _chat, methods=["POST"]),
     Route("/api/fileback", _fileback, methods=["POST"]),
+    Route("/api/ingest/preview", _ingest_preview, methods=["POST"]),
+    Route("/api/ingest/commit", _ingest_commit, methods=["POST"]),
+    Route("/api/sources", _list_sources, methods=["GET"]),
+    Route("/api/sources/{source_id}", _get_source, methods=["GET"]),
+    Route("/api/reviews", _list_reviews, methods=["GET"]),
+    Route("/api/reviews/{review_id}/resolve", _resolve_review, methods=["POST"]),
 ]
 
 
