@@ -44,7 +44,26 @@ SAMPLE_SOURCES: list[tuple[str, str]] = [
         "tag{project:billing} tag{library:postgresql} "
         "rel{project:billing|uses|library:postgresql}",
     ),
+    # A later source updating the billing fact: same claim subject, marked to
+    # supersede. Ingest stales the original and links both ways, so the corpus
+    # exercises the supersession lifecycle (active winner + stale predecessor).
+    (
+        "billing-notes-update",
+        "The billing service stores invoices in PostgreSQL. relation:supersedes "
+        "It now runs on a managed Aurora PostgreSQL cluster. "
+        "tag{project:billing} tag{library:postgresql} "
+        "rel{project:billing|uses|library:postgresql}",
+    ),
 ]
+
+# A synthesized answer to file back, so the corpus also contains a `digest`
+# page (with its originating question) alongside ingested `fact` pages.
+SAMPLE_DIGEST: tuple[str, str] = (
+    "What does Project Atlas depend on?",
+    "Project Atlas depends on the authentication migration, which in turn "
+    "depends on the Redis cache. Sarah owns that migration, so changes to "
+    "Redis or the auth work should be coordinated with her.",
+)
 
 
 def main() -> None:
@@ -58,6 +77,19 @@ def main() -> None:
         page = ingest.ingest_source(text, source_ref)
         print(f"  seeded {source_ref} -> {page.id}")
         created += 1
+
+    # File back a synthesized answer once, so the corpus has a digest page.
+    # Guard on the digest kind already existing to keep re-seeding a no-op.
+    if not store.list_pages(kind="digest"):
+        from . import mcp_server  # lazy: pulls FastMCP only when seeding
+
+        question, answer = SAMPLE_DIGEST
+        result = mcp_server.mnesis_file_back(question, answer, 0.9)
+        print(f"  filed digest -> {result}")
+        created += 1
+    else:
+        print("  skip digest (already filed)")
+        skipped += 1
 
     pages = search.rebuild()
     g = graph.rebuild_graph()

@@ -79,3 +79,25 @@ body {
     @apply w-full rounded-lg border border-border bg-elev px-3 py-2 text-fg placeholder:text-muted focus:border-accent focus:outline-none;
   }
 }
+
+/* Typography (react-markdown) — bind the `prose` palette to our shared tokens so
+   it reads well in both themes without a per-view color fork. */
+.prose {
+  --tw-prose-body: var(--fg);
+  --tw-prose-headings: var(--fg);
+  --tw-prose-lead: var(--muted);
+  --tw-prose-links: var(--accent);
+  --tw-prose-bold: var(--fg);
+  --tw-prose-counters: var(--muted);
+  --tw-prose-bullets: var(--border);
+  --tw-prose-hr: var(--border);
+  --tw-prose-quotes: var(--muted);
+  --tw-prose-quote-borders: var(--border);
+  --tw-prose-captions: var(--muted);
+  --tw-prose-code: var(--fg);
+  --tw-prose-pre-code: var(--fg);
+  --tw-prose-pre-bg: var(--bg-elev);
+  --tw-prose-th-borders: var(--border);
+  --tw-prose-td-borders: var(--border);
+}
+
