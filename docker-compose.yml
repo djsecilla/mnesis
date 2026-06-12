@@ -67,8 +67,9 @@ services:
     ports:
       - "${MNESIS_UI_PORT:-3000}:80"
     healthcheck:
-      # nginx:alpine ships busybox wget; probe the served index.
-      test: ["CMD-SHELL", "wget -q --spider http://localhost/ || exit 1"]
+      # nginx:alpine ships busybox wget; probe the served index over IPv4
+      # (busybox resolves "localhost" to ::1 first, which our server need not bind).
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1/ || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
