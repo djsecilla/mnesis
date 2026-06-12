@@ -2,7 +2,7 @@
 # All targets use uv; the test/demo targets run fully offline (stub LLM).
 
 .PHONY: help setup test demo demo-phase2 demo-phase3 run-mcp rebuild decay review graph-stats graph-lint \
-        docker-build docker-up docker-down docker-logs docker-cli docker-seed docker-demo
+        docker-build docker-up docker-down docker-logs docker-cli docker-seed docker-demo ui-dev
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -44,17 +44,20 @@ graph-lint: ## Check graph consistency (use ARGS=--fix to apply safe fixes)
 
 # --- Docker / compose -------------------------------------------------------
 
-docker-build: ## Build the container image
+docker-build: ## Build the container images (mnesis + web UI)
 	docker compose build
 
-docker-up: ## Start the core stack (detached); volume persists across down
+docker-up: ## Start the stack incl. Web UI (detached); volume persists across down
 	docker compose up -d
 
 docker-down: ## Stop the stack (volume KEPT; use `docker compose down -v` to wipe)
 	docker compose down
 
-docker-logs: ## Tail the mnesis service logs
-	docker compose logs -f mnesis
+docker-logs: ## Tail the mnesis + mnesis-ui service logs
+	docker compose logs -f mnesis mnesis-ui
+
+ui-dev: ## Run the Vite dev server against a running mnesis (http://localhost:5173)
+	cd ui && npm install && npm run dev
 
 docker-cli: ## Run a CLI command in the running container, e.g. ARGS='query "redis"'
 	docker compose exec -T mnesis mnesis $(ARGS)

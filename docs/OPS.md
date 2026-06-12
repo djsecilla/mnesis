@@ -83,13 +83,30 @@ docker compose exec -T mnesis sh -c 'rm -f /data/mnesis/.index/wiki.db /data/mne
 
 ## Health checks
 
-- **Container**: `docker compose ps` shows `mnesis` as `healthy` (the compose
-  healthcheck probes `GET /health`).
+- **Container**: `docker compose ps` shows `mnesis` **and** `mnesis-ui` as
+  `healthy` (mnesis probes `GET /health`; the UI probes its served index).
 - **HTTP** (unauthenticated, safe to probe): `curl http://<host>:8080/health` →
   `{"status":"ok","pages":N,"index_present":true,"graph_present":true}`.
-- **Logs**: `make docker-logs` (or `docker compose logs -f mnesis`).
+- **UI through the proxy**: `curl http://<host>:3000/` returns the app shell;
+  `curl http://<host>:3000/api/pages` returns JSON (nginx adds the bearer token
+  server-side, so no `Authorization` header is needed from the client).
+- **Logs**: `make docker-logs` (tails `mnesis` + `mnesis-ui`).
 - **Graph consistency**: `make docker-cli ARGS="graph-lint"` (report-only) or
   `ARGS="graph-lint --fix"`.
+
+## Web UI (`mnesis-ui`)
+
+The `mnesis-ui` service is a static nginx container: it serves the SPA and
+reverse-proxies `/api` (+ the SSE chat stream, with buffering off) to `mnesis`
+on the internal network. It is **stateless** — no volume, nothing to back up —
+so it can be rebuilt or removed at any time with zero data loss (`docker compose
+up -d --build mnesis-ui`, or `docker compose rm -sf mnesis-ui`); all state lives
+in mnesis. Ports: host `${MNESIS_UI_PORT:-3000}` → container `80`. **Token
+model:** when `MNESIS_MCP_TOKEN` is set it is injected into proxied `/api`
+requests server-side, so the browser never holds it; the host/network is the
+trust boundary (per-user auth is a future iteration). Rotating the token only
+needs the UI recreated alongside mnesis (`docker compose up -d --force-recreate
+mnesis mnesis-ui`) so nginx re-reads the new value.
 
 ## Rotating `MNESIS_MCP_TOKEN`
 

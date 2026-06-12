@@ -217,6 +217,31 @@ make docker-demo                              # run the latest-phase demo inside
 data (pages, sources, `.git`, `state.db`) lives on the `mnesis-data` volume and
 survives `docker compose down`; only `docker compose down -v` wipes it.
 
+### Web UI
+
+A plain `docker compose up` also brings up **`mnesis-ui`** — a static nginx
+container serving the browser app and reverse-proxying `/api` (and the SSE chat
+stream) to the `mnesis` service. After `make docker-up && make docker-seed`,
+open **http://localhost:3000** (`MNESIS_UI_PORT`) and browse:
+
+| URL | View |
+|---|---|
+| `/` → `/graph` | knowledge graph of seeded entities |
+| `/pages` · `/pages/:id` | page index and reader |
+| `/chat` | grounded chat — streams a cited answer through the proxy |
+
+The browser talks **only** to `mnesis-ui`; it reaches mnesis over the internal
+compose network, so the `mnesis` API port does not need host exposure for the UI
+(it stays published only for host-side agents on `/mcp`). **Auth model:** when
+`MNESIS_MCP_TOKEN` is set, nginx injects `Authorization: Bearer <token>` on
+proxied `/api` requests **server-side**, so the browser never handles the token.
+The tradeoff: on this trusted-host deployment anyone who can reach the UI port
+reaches the API with the proxy's privileges — the host/network is the trust
+boundary; per-user auth is a future iteration. The UI container is **stateless**
+(no volume) — all state lives in mnesis, so it is safe to rebuild or remove
+anytime. For local UI development against a running mnesis, `make ui-dev` runs
+the Vite dev server (proxies `/api` to `localhost:8080`).
+
 **Optional profiles** (not started by a plain `up`):
 - `docker compose --profile local-llm up -d` — on-host inference (see above); set
   `MNESIS_LLM_PROVIDER=local` in `.env` so sources never leave the box.

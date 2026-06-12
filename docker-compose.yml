@@ -25,7 +25,11 @@ services:
       MNESIS_LLM_PROVIDER: ${MNESIS_LLM_PROVIDER:-anthropic}
       MNESIS_LLM_BASE_URL: ${MNESIS_LLM_BASE_URL:-http://ollama:11434}
     ports:
-      # host ${MNESIS_MCP_PORT:-8080} -> container 8080
+      # host ${MNESIS_MCP_PORT:-8080} -> container 8080.
+      # The Web UI does NOT need this published — the browser talks only to the
+      # mnesis-ui proxy, which reaches mnesis over the internal compose network.
+      # It stays published so host-side agents can connect to the MCP endpoint at
+      # http://localhost:8080/mcp; drop this line if no host agents connect.
       - "${MNESIS_MCP_PORT:-8080}:8080"
     volumes:
       - mnesis-data:/data/mnesis         # pages, sources, .git, and .index
@@ -40,6 +44,35 @@ services:
       timeout: 5s
       retries: 5
       start_period: 15s
+
+  # --- Web UI: static nginx serving the SPA + proxying /api to mnesis ----------
+  # Started by a plain `docker compose up` (no profile). The browser talks ONLY
+  # to this service; it reverse-proxies /api (and the SSE chat stream) to the
+  # mnesis service over the internal network, injecting the bearer token
+  # server-side. Stateless: no volume — all knowledge lives in mnesis.
+  mnesis-ui:
+    build: ./ui
+    image: mnesis-ui:latest
+    restart: unless-stopped
+    depends_on:
+      mnesis:
+        condition: service_healthy
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # When set, nginx adds `Authorization: Bearer <token>` to proxied /api
+      # requests so the browser never holds the token (see ui/nginx.conf).
+      MNESIS_MCP_TOKEN: ${MNESIS_MCP_TOKEN:-}
+    ports:
+      - "${MNESIS_UI_PORT:-3000}:80"
+    healthcheck:
+      # nginx:alpine ships busybox wget; probe the served index.
+      test: ["CMD-SHELL", "wget -q --spider http://localhost/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   # --- local-llm profile: opt-in local-first inference (data isolation) --------
   # NOT started by a plain `docker compose up`. Bring it up with:
