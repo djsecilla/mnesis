@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 import CommandPalette from "./CommandPalette";
 import { ChatIcon, GraphIcon, PagesIcon, SearchIcon } from "./Icon";
@@ -54,7 +54,9 @@ export default function Shell() {
       </nav>
 
       <main className="flex-1 overflow-auto">
-        <Outlet />
+        <Suspense fallback={<div className="p-8 text-muted">Loading…</div>}>
+          <Outlet />
+        </Suspense>
       </main>
 
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />

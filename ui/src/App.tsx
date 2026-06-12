@@ -1,9 +1,12 @@
+import { lazy } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import Shell from "./components/Shell";
-import ChatPage from "./routes/ChatPage";
-import GraphPage from "./routes/GraphPage";
-import PageDetail from "./routes/PageDetail";
-import PagesList from "./routes/PagesList";
+
+// Lazy-loaded routes — keeps the initial bundle small (cytoscape only loads on /graph).
+const GraphPage = lazy(() => import("./routes/GraphPage"));
+const PagesList = lazy(() => import("./routes/PagesList"));
+const PageDetail = lazy(() => import("./routes/PageDetail"));
+const ChatPage = lazy(() => import("./routes/ChatPage"));
 
 export default function App() {
   return (

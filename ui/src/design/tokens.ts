@@ -32,3 +32,36 @@ export type Status = (typeof STATUSES)[number];
 export function isMutedStatus(status: string): boolean {
   return status !== "active";
 }
+
+// ── Runtime token resolution (for the Cytoscape canvas, which needs concrete
+//    colors). Still the SAME tokens — read live from the CSS custom properties,
+//    so the graph re-themes with the rest of the app on dark/light toggle.
+
+export function resolveCssVar(name: string): string {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+export function entityColorValue(type: string): string {
+  const known = (ENTITY_TYPES as readonly string[]).includes(type);
+  return resolveCssVar(`--entity-${known ? type : "page"}`);
+}
+
+export interface ThemeColors {
+  fg: string;
+  muted: string;
+  border: string;
+  accent: string;
+  bg: string;
+  elev: string;
+}
+
+export function themeColors(): ThemeColors {
+  return {
+    fg: resolveCssVar("--fg"),
+    muted: resolveCssVar("--muted"),
+    border: resolveCssVar("--border"),
+    accent: resolveCssVar("--accent"),
+    bg: resolveCssVar("--bg"),
+    elev: resolveCssVar("--bg-elev"),
+  };
+}
