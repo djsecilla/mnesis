@@ -178,3 +178,28 @@ export interface IngestResult {
   review_id: number | null;
   redaction_count: number;
 }
+
+// --- Sources (provenance) --------------------------------------------------
+
+export interface SourcePageRef {
+  id: string;
+  title: string;
+}
+
+export interface SourceSummary {
+  id: string;
+  ingested_at: string | null;
+  pages: SourcePageRef[];
+}
+
+export interface SourcesResponse {
+  sources: SourceSummary[];
+  total: number;
+}
+
+export interface SourceDetail {
+  id: string;
+  ingested_at: string | null;
+  text: string;
+  pages: SourcePageRef[];
+}

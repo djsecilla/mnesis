@@ -44,16 +44,14 @@ export default function CommandPalette({ open, onClose }: { open: boolean; onClo
 
   const items = useMemo<Item[]>(() => {
     const ql0 = q.toLowerCase();
-    const actionItems: Item[] =
-      !q || "add to mnesis".includes(ql0)
-        ? [{
-            kind: "action",
-            key: "action:add",
-            label: "Add to Mnesis",
-            sublabel: "paste or upload a new source",
-            to: "/add",
-          }]
-        : [];
+    const ACTIONS = [
+      { key: "action:add", label: "Add to Mnesis", sublabel: "paste or upload a new source", to: "/add" },
+      { key: "action:batch", label: "Add several", sublabel: "batch ingest multiple files", to: "/add/batch" },
+      { key: "action:sources", label: "Sources", sublabel: "what you fed in", to: "/sources" },
+    ];
+    const actionItems: Item[] = ACTIONS.filter(
+      (a) => !q || a.label.toLowerCase().includes(ql0),
+    ).map((a) => ({ kind: "action", ...a }));
     const pageItems: Item[] = (pages.data?.hits ?? []).map((h) => ({
       kind: "page",
       key: `page:${h.id}`,

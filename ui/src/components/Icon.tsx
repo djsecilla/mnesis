@@ -58,6 +58,15 @@ export function PlusIcon(p: SVGProps<SVGSVGElement>) {
   );
 }
 
+export function SourcesIcon(p: SVGProps<SVGSVGElement>) {
+  return (
+    <svg {...base} {...p}>
+      <path d="M3 7l9-4 9 4-9 4-9-4z" />
+      <path d="M3 12l9 4 9-4M3 17l9 4 9-4" />
+    </svg>
+  );
+}
+
 export function SunIcon(p: SVGProps<SVGSVGElement>) {
   return (
     <svg {...base} {...p}>

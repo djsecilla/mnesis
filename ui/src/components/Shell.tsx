@@ -1,12 +1,13 @@
 import { Suspense, useEffect, useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 import CommandPalette from "./CommandPalette";
-import { ChatIcon, GraphIcon, PagesIcon, PlusIcon, SearchIcon } from "./Icon";
+import { ChatIcon, GraphIcon, PagesIcon, PlusIcon, SearchIcon, SourcesIcon } from "./Icon";
 import ThemeToggle from "./ThemeToggle";
 
 const rail = [
   { to: "/graph", label: "Graph", Icon: GraphIcon },
   { to: "/pages", label: "Pages", Icon: PagesIcon },
+  { to: "/sources", label: "Sources", Icon: SourcesIcon },
   { to: "/chat", label: "Chat", Icon: ChatIcon },
 ];
 

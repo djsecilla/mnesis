@@ -10,6 +10,8 @@ import type {
   PageDetail,
   PagesResponse,
   SearchResponse,
+  SourceDetail,
+  SourcesResponse,
 } from "./types";
 
 function qs(params: object): string {
@@ -94,3 +96,9 @@ export async function ingestCommit(plan: IngestPlan, overrides?: IngestOverrides
     }),
   );
 }
+
+// --- Sources ----------------------------------------------------------------
+
+export const listSources = () => apiGet<SourcesResponse>(`/sources`);
+
+export const getSource = (id: string) => apiGet<SourceDetail>(`/sources/${encodeURIComponent(id)}`);
