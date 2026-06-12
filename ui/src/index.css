@@ -1,0 +1,81 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ──────────────────────────────────────────────────────────────────────────
+   Design tokens — the single source of truth for color (shared by graph,
+   pages, and chat). Theme is driven entirely by these CSS custom properties;
+   the dark/light toggle and the ONE accent color are the only knobs.
+   ────────────────────────────────────────────────────────────────────────── */
+:root,
+[data-theme="dark"] {
+  --bg: #0b0b0d; /* near-black */
+  --bg-elev: #15151a;
+  --fg: #ededf2; /* high-contrast text */
+  --muted: #8b8b96;
+  --border: #262630;
+
+  --accent: #f97316; /* warm orange — re-theme the whole app by changing this */
+  --accent-fg: #15110a;
+
+  /* entity-type colors (person/project/library/concept/file/decision) */
+  --entity-person: #fbbf24;
+  --entity-project: #f97316;
+  --entity-library: #38bdf8;
+  --entity-concept: #a78bfa;
+  --entity-file: #34d399;
+  --entity-decision: #f472b6;
+  --entity-page: #8b8b96;
+
+  color-scheme: dark;
+}
+
+[data-theme="light"] {
+  --bg: #ffffff;
+  --bg-elev: #f6f6f8;
+  --fg: #17171b;
+  --muted: #62626d;
+  --border: #e5e5ea;
+
+  --accent: #ea580c;
+  --accent-fg: #ffffff;
+
+  --entity-person: #b45309;
+  --entity-project: #c2410c;
+  --entity-library: #0369a1;
+  --entity-concept: #6d28d9;
+  --entity-file: #047857;
+  --entity-decision: #be185d;
+  --entity-page: #62626d;
+
+  color-scheme: light;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: theme("fontFamily.sans");
+  -webkit-font-smoothing: antialiased;
+}
+
+@layer components {
+  .rail-btn {
+    @apply flex h-10 w-10 items-center justify-center rounded-lg text-muted transition-colors hover:bg-elev hover:text-fg;
+  }
+  .rail-active {
+    @apply bg-elev text-accent;
+  }
+  .card {
+    @apply rounded-lg border border-border bg-elev;
+  }
+  .input {
+    @apply w-full rounded-lg border border-border bg-elev px-3 py-2 text-fg placeholder:text-muted focus:border-accent focus:outline-none;
+  }
+}
