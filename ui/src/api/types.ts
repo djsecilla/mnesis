@@ -104,7 +104,18 @@ export interface FilebackResponse {
   reason?: string;
 }
 
+export interface RetrievalHit {
+  id: string;
+  title: string;
+  kind: string;
+  status: string;
+  confidence: number;
+  bm25_score: number;
+  graph_proximity: number;
+  final_score: number;
+}
+
 export interface ChatDone {
   citations: string[];
-  retrieval: { id: string; final_score: number }[];
+  retrieval: RetrievalHit[];
 }

@@ -6,6 +6,15 @@ export interface ChatHistoryItem {
   text: string;
 }
 
+export class ChatError extends Error {
+  status?: number;
+  constructor(message: string, status?: number) {
+    super(message);
+    this.name = "ChatError";
+    this.status = status;
+  }
+}
+
 export interface ChatHandlers {
   onToken?: (token: string) => void;
   onDone?: (done: ChatDone) => void;
@@ -28,7 +37,7 @@ export async function streamChat(
       body: JSON.stringify({ message, history }),
     });
     if (!res.ok || !res.body) {
-      throw new Error(`chat failed: ${res.status} ${res.statusText}`);
+      throw new ChatError(`chat failed: ${res.status} ${res.statusText}`, res.status);
     }
 
     const reader = res.body.getReader();

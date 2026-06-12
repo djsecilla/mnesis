@@ -257,9 +257,16 @@ def _chunks(text: str):
 
 def _grounded_answer(message: str, pages: list[store.Page]) -> str:
     if config.MNESIS_LLM_STUB:
-        # Deterministic, offline: ground in the top page and cite all retrieved ids.
-        cites = " ".join(f"[[{p.id}]]" for p in pages)
-        return f"Based on the wiki: {pages[0].title} {cites}"
+        # Deterministic, offline: a developed answer that restates each retrieved
+        # page's claim (so it is genuinely grounded — every sentence is cited) and
+        # is long enough to clear the file-back quality heuristic, exercising the
+        # full compounding loop offline.
+        lead = pages[0].title.rstrip(".")
+        sentences = [f"Based on the wiki, {lead} [[{pages[0].id}]]."]
+        for p in pages[1:]:
+            sentences.append(f"Relatedly, {p.title.rstrip('.').lower()} [[{p.id}]].")
+        sentences.append("This answer is synthesized only from the cited wiki pages above.")
+        return " ".join(sentences)
     context = "\n\n".join(f"[[{p.id}]] {p.title}\n{p.body}" for p in pages)
     user = f"Question: {message}\n\nPAGES:\n{context}"
     return llm.complete(GROUNDED_SYSTEM_PROMPT, user)
@@ -290,9 +297,25 @@ async def _chat(request: Request) -> EventSourceResponse:
         for chunk in _chunks(answer):
             yield {"event": "token", "data": chunk}
 
-        valid = {p.id for p in pages}
+        page_by_id = {p.id: p for p in pages}
+        valid = set(page_by_id)
         cited = list(dict.fromkeys(c for c in _CITE_RE.findall(answer) if c in valid))
-        retrieval = [{"id": h.id, "final_score": round(h.final_score, 4)} for h in hits]
+        # Report the grounding with component scores — visible honesty about
+        # where the answer came from (kind/title sourced from the loaded page).
+        retrieval = [
+            {
+                "id": h.id,
+                "title": h.title,
+                "kind": page_by_id[h.id].kind,
+                "status": h.status,
+                "confidence": round(h.confidence, 4),
+                "bm25_score": round(h.bm25_score, 4),
+                "graph_proximity": round(h.graph_proximity, 4),
+                "final_score": round(h.final_score, 4),
+            }
+            for h in hits
+            if h.id in page_by_id
+        ]
         yield {"event": "done", "data": json.dumps({"citations": cited, "retrieval": retrieval})}
 
     return EventSourceResponse(stream())

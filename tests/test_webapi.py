@@ -192,6 +192,8 @@ def test_chat_streams_and_cites_existing_pages(client):
     existing = {p.id for p in store.list_pages()}
     assert set(done["citations"]) <= existing            # cite only pages that exist
     assert done["retrieval"]                              # hits used reported
+    hit = done["retrieval"][0]                            # grounding carries component scores
+    assert set(hit) >= {"id", "title", "kind", "status", "confidence", "bm25_score", "graph_proximity", "final_score"}
 
 
 def test_chat_says_nothing_when_no_pages(client):
