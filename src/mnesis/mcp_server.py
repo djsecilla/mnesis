@@ -408,9 +408,14 @@ class _BearerAuthMiddleware:
 
 
 def build_http_app():
-    """Build the streamable-HTTP ASGI app: MCP at ``/mcp``, ``GET /health``, and
-    bearer auth when ``MNESIS_MCP_TOKEN`` is set. Tool functions are reused as-is."""
+    """Build the streamable-HTTP ASGI app: MCP at ``/mcp``, the REST+SSE gateway
+    at ``/api`` (web UI), ``GET /health``, and bearer auth when ``MNESIS_MCP_TOKEN``
+    is set (guards ``/mcp`` and ``/api``; ``/health`` stays open). Tool functions
+    and core modules are reused as-is."""
+    from . import webapi  # lazy: webapi imports mcp_server, avoid an import cycle
+
     app = mcp.streamable_http_app()
+    webapi.mount_api(app)
     if config.MNESIS_MCP_TOKEN:
         app.add_middleware(_BearerAuthMiddleware, token=config.MNESIS_MCP_TOKEN)
     return app

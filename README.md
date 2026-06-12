@@ -154,6 +154,13 @@ claude mcp add mnesis --transport http http://<host>:8080/mcp \
   --header "Authorization: Bearer $MNESIS_MCP_TOKEN"
 ```
 
+**Web UI gateway.** The same HTTP app also serves a browser-friendly REST + SSE
+API under `/api` (thin adapters over the same internals as the MCP tools): read
+endpoints for pages, search, graph, entity, and impact, a grounded streaming
+`POST /api/chat` (answers only from retrieved pages, cites them as `[[page-id]]`),
+and `POST /api/fileback`. `/api/*` shares the bearer-token auth (`MNESIS_MCP_TOKEN`);
+`/health` stays open.
+
 **Local-first inference (opt-in).** By default mnesis uses Anthropic (or the
 offline stub). For a privacy-preserving deployment where **sources never leave
 the host**, switch the provider to a local model server via the `local-llm`
