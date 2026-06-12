@@ -16,6 +16,19 @@ Pipeline contract (CLAUDE.md §7), strictly in order:
 
 Confidence is consulted to auto-resolve clear-margin contradictions. A page is
 never silently deleted — losers go ``stale`` via supersede, or are queued.
+
+**Plan / apply split (G7).** The pipeline is exposed as two steps so a UI can
+preview before committing:
+
+  * ``plan_ingest(raw_text, source_ref) -> IngestPlan`` runs scrub + extract +
+    classify and returns a plain, serializable dict. It performs **zero writes
+    and zero commits** — not even persisting the source.
+  * ``apply_ingest(plan, overrides=None) -> IngestResult`` honours overrides
+    (edited title/tags, rejected relations, a forced routing) and performs the
+    writes (persist source, routed page write, commit, reindex).
+
+``ingest_source`` is just ``plan_ingest`` followed by ``apply_ingest``, so CLI
+and MCP behaviour is unchanged.
 """
 
 from __future__ import annotations
@@ -23,6 +36,8 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections import Counter
+from dataclasses import dataclass
 
 from . import config, confidence, llm, search, state, store, vocab
 from .filters import scrub
@@ -179,36 +194,69 @@ def _validate_relations(raw_relations) -> tuple[list[dict], list[dict]]:
     return valid, dropped
 
 
-def _page_from_extraction(redacted: str, source_ref: str) -> Page:
-    """Build the candidate new ``fact`` page (not yet written) from a source.
+def _extract_draft(redacted: str, source_ref: str) -> tuple[dict, list[str]]:
+    """Extract the side-effect-free **draft** page from a redacted source.
 
-    Extracts entities (tags) and typed relations, normalizing/validating both;
-    invalid triples are dropped and reported to the log (CLAUDE.md §7), never
-    written.
+    Returns ``(draft, warnings)`` where ``draft`` has the serializable keys
+    ``{title, summary_markdown, body, tags, relations, kind}`` — entities are
+    normalized refs and relations are validated triples (invalid ones dropped and
+    logged, never written, CLAUDE.md §7). No page is created and nothing written.
     """
+    warnings: list[str] = []
     data = _extract(redacted, source_ref)
     if data is None:
         first_line = next((ln.strip() for ln in redacted.splitlines() if ln.strip()), source_ref)
         title = first_line[:80] or source_ref
         body = f"{redacted.strip()}\n\nSource: {source_ref}. (Extraction fell back to raw source.)"
-        tags: list[str] = []
-        relations: list[dict] = []
-    else:
-        title = data["title"].strip()
-        body = _build_body(data, source_ref)
-        tags = _normalize_tags(data.get("tags"))
-        relations, dropped = _validate_relations(data.get("relations"))
-        for d in dropped:
-            log.warning("ingest %s: dropped invalid relation %r — %s",
-                        source_ref, d["triple"], d["reason"])
-        # Every entity that an edge touches should appear as a tag.
-        for rel in relations:
-            for ref in (rel["s"], rel["o"]):
-                if ref not in tags:
-                    tags.append(ref)
+        warnings.append("extraction fell back to a minimal page (LLM output was not parseable)")
+        return {"title": title, "summary_markdown": "", "body": body,
+                "tags": [], "relations": [], "kind": "fact"}, warnings
 
-    return Page(id=store.make_id(title), title=title, body=body, sources=[source_ref],
-                tags=tags, relations=relations, kind="fact")
+    title = data["title"].strip()
+    summary = (data.get("summary_markdown") or "").strip()
+    body = _build_body(data, source_ref)
+    tags = _normalize_tags(data.get("tags"))
+    relations, dropped = _validate_relations(data.get("relations"))
+    for d in dropped:
+        log.warning("ingest %s: dropped invalid relation %r — %s",
+                    source_ref, d["triple"], d["reason"])
+        warnings.append(f"dropped invalid relation {d['triple']!r}: {d['reason']}")
+    # Every entity that an edge touches should appear as a tag.
+    for rel in relations:
+        for ref in (rel["s"], rel["o"]):
+            if ref not in tags:
+                tags.append(ref)
+
+    return {"title": title, "summary_markdown": summary, "body": body,
+            "tags": tags, "relations": relations, "kind": "fact"}, warnings
+
+
+def _draft_to_page(draft: dict, source_ref: str) -> Page:
+    """Build the candidate ``Page`` (not yet written) from a draft dict + ref."""
+    return Page(
+        id=store.make_id(draft["title"]),
+        title=draft["title"],
+        body=draft["body"],
+        sources=[source_ref],
+        tags=list(draft.get("tags") or []),
+        relations=[dict(r) for r in (draft.get("relations") or [])],
+        kind=draft.get("kind", "fact"),
+    )
+
+
+# --- Redaction reporting (no values, ever) ---------------------------------
+
+
+def _aggregate_redactions(findings: list[dict]) -> list[dict]:
+    """Aggregate scrub findings into ``[{type, kind, count}]`` — never any value."""
+    counts = Counter((f["type"], f["kind"]) for f in findings)
+    return [{"type": t, "kind": k, "count": n} for (t, k), n in sorted(counts.items())]
+
+
+def _secret_warnings(findings: list[dict]) -> list[str]:
+    """One warning per distinct secret kind detected (the value is never named)."""
+    kinds = sorted({f["kind"] for f in findings if f.get("type") == "secret"})
+    return [f"secret material was detected and redacted before extraction: {k}" for k in kinds]
 
 
 # --- Classification --------------------------------------------------------
@@ -248,6 +296,16 @@ def _classify(new_page: Page, candidate: Page, redacted: str) -> str:
 
 
 # --- Lifecycle actions -----------------------------------------------------
+
+
+@dataclass
+class _Outcome:
+    """The result of a routed write: the resulting page + what happened to it."""
+
+    page: Page
+    action: str  # new | reinforce | supersede | contradict
+    superseded_id: str | None = None
+    review_id: int | None = None
 
 
 def _confidence(page: Page) -> float:
@@ -297,13 +355,14 @@ def _supersede(winner: Page, loser_id: str) -> Page:
     return winner
 
 
-def _contradict(new_page: Page, old: Page) -> Page:
+def _contradict(new_page: Page, old: Page) -> _Outcome:
     """Conflict with no textual winner: resolve by confidence margin, else coexist."""
     conf_new, conf_old = _confidence(new_page), _confidence(old)
     margin = config.AUTO_RESOLVE_MARGIN
 
     if conf_new - conf_old >= margin:
-        return _supersede(new_page, old.id)  # new clearly wins
+        _supersede(new_page, old.id)  # new clearly wins -> auto-resolved
+        return _Outcome(new_page, "supersede", superseded_id=old.id)
     if conf_old - conf_new >= margin:
         # old clearly wins: write the new page, then stale it under the old.
         store.write_page(new_page)
@@ -311,46 +370,177 @@ def _contradict(new_page: Page, old: Page) -> Page:
         search.upsert(old)
         loser = store.read_page(new_page.id)
         search.upsert(loser)
-        return loser
+        return _Outcome(loser, "supersede", superseded_id=new_page.id)
 
     # No clear winner: both coexist, cross-link contradicts, queue for review.
     new_page.contradicts.append(old.id)
     old.contradicts.append(new_page.id)
     store.write_page(new_page)
     store.write_page(old, message=f"mnesis: contradicts {old.id} <-> {new_page.id}")
-    state.enqueue_contradiction(
+    review_id = state.enqueue_contradiction(
         new_page.id, old.id, f"'{new_page.title}' conflicts with '{old.title}'"
     )
     search.upsert(new_page)
     search.upsert(old)
-    return new_page
+    return _Outcome(new_page, "contradict", review_id=review_id)
 
 
-# --- Pipeline entry point --------------------------------------------------
+def _apply_action(action: str, new_page: Page, target: Page | None, source_ref: str) -> _Outcome:
+    """Execute one routed write via the Phase-2 lifecycle helpers."""
+    if action == "new":
+        return _Outcome(_create(new_page), "new")
+    if action == "reinforce":
+        return _Outcome(_reinforce(target, source_ref, new_page), "reinforce")
+    if action == "supersede":
+        _supersede(new_page, target.id)
+        return _Outcome(new_page, "supersede", superseded_id=target.id)
+    if action == "contradict":
+        return _contradict(new_page, target)
+    raise ValueError(f"unknown routing action: {action!r}")
+
+
+# --- Routing (the classification decision, no writes) ----------------------
+
+# classifier label -> routing action verb
+_LABEL_TO_ACTION = {"reinforces": "reinforce", "supersedes": "supersede",
+                    "contradicts": "contradict"}
+
+
+def _plan_routing(new_page: Page, redacted: str) -> dict:
+    """Decide the lifecycle action against existing candidates — **no writes**.
+
+    Mirrors the Phase-2 loop: classify candidates in search order and stop at the
+    first non-``unrelated`` label. Records every candidate it evaluated (with the
+    label and current confidence) for the preview.
+    """
+    candidates_info: list[dict] = []
+    chosen_label: str | None = None
+    chosen: Page | None = None
+    for candidate in _find_candidates(new_page):
+        label = _classify(new_page, candidate, redacted)
+        candidates_info.append({
+            "page_id": candidate.id,
+            "title": candidate.title,
+            "relation_label": label,
+            "confidence": round(_confidence(candidate), 4),
+        })
+        if label in _LABEL_TO_ACTION:
+            chosen_label, chosen = label, candidate
+            break  # first relation wins (Phase-2 behaviour)
+
+    routing: dict = {
+        "action": "new",
+        "target_page_id": None,
+        "candidates": candidates_info,
+        "auto_resolved": False,
+        "margin": None,
+    }
+    if chosen is None:
+        return routing
+    routing["action"] = _LABEL_TO_ACTION[chosen_label]
+    routing["target_page_id"] = chosen.id
+    if chosen_label == "contradicts":
+        # Preview whether the margin will auto-resolve into a supersede.
+        diff = _confidence(new_page) - _confidence(chosen)
+        routing["margin"] = round(diff, 4)
+        routing["auto_resolved"] = abs(diff) >= config.AUTO_RESOLVE_MARGIN
+    return routing
+
+
+# --- Pipeline entry points -------------------------------------------------
+
+
+def plan_ingest(raw_text: str, source_ref: str) -> dict:
+    """Plan an ingest **without any writes** (scrub + extract + classify).
+
+    Returns a plain, serializable ``IngestPlan`` dict (see module docstring). The
+    redacted text is carried in ``redacted_text`` for ``apply_ingest``; the raw
+    secret/PII values are never included anywhere. Performs zero commits — a
+    previewed-then-abandoned source leaves nothing on disk.
+    """
+    redacted, findings = scrub(raw_text)
+    draft, warnings = _extract_draft(redacted, source_ref)
+    warnings = _secret_warnings(findings) + warnings
+    new_page = _draft_to_page(draft, source_ref)
+    routing = _plan_routing(new_page, redacted)
+    return {
+        "source_ref": source_ref,
+        "redacted_text": redacted,
+        "redactions": _aggregate_redactions(findings),
+        "draft_page": draft,
+        "routing": routing,
+        "warnings": warnings,
+    }
+
+
+def _apply_overrides(draft: dict, overrides: dict) -> dict:
+    """Return a copy of ``draft`` with edited title/tags and rejected relations
+    applied. ``rejected_relations`` / ``accepted_relations`` are index lists into
+    ``draft['relations']``."""
+    out = dict(draft)
+    if str(overrides.get("title", "")).strip():
+        out["title"] = str(overrides["title"]).strip()
+    if "tags" in overrides:
+        out["tags"] = _normalize_tags(overrides["tags"])
+    rels = list(draft.get("relations") or [])
+    if "accepted_relations" in overrides:
+        keep = set(overrides["accepted_relations"] or [])
+        rels = [r for i, r in enumerate(rels) if i in keep]
+    elif overrides.get("rejected_relations"):
+        drop = set(overrides["rejected_relations"])
+        rels = [r for i, r in enumerate(rels) if i not in drop]
+    out["relations"] = rels
+    return out
+
+
+def apply_ingest(plan: dict, overrides: dict | None = None) -> dict:
+    """Apply a plan: persist the source and perform the routed write.
+
+    ``overrides`` (optional) may carry an edited ``title``/``tags``, dropped
+    relations (``rejected_relations``/``accepted_relations`` index lists), and a
+    forced ``routing`` ``{action, target_page_id}``. A forced non-``new`` target
+    must exist. Returns an ``IngestResult`` dict.
+    """
+    overrides = overrides or {}
+    source_ref = plan["source_ref"]
+    redacted = plan["redacted_text"]
+
+    draft = _apply_overrides(plan["draft_page"], overrides)
+    new_page = _draft_to_page(draft, source_ref)
+
+    # Effective routing: a forced override wins over the planned decision.
+    forced = overrides.get("routing")
+    if forced:
+        action = forced.get("action")
+        target_id = forced.get("target_page_id")
+        if action not in ("new", "reinforce", "supersede", "contradict"):
+            raise ValueError(f"invalid forced routing action: {action!r}")
+        if action != "new" and not (target_id and store.page_exists(target_id)):
+            raise ValueError(f"forced {action} target does not exist: {target_id!r}")
+    else:
+        action = (plan.get("routing") or {}).get("action", "new")
+        target_id = (plan.get("routing") or {}).get("target_page_id")
+
+    # Persist the redacted source for provenance (committed by the store).
+    store.write_source(source_ref, redacted)
+
+    target = store.read_page(target_id) if (action != "new" and target_id) else None
+    outcome = _apply_action(action, new_page, target, source_ref)
+
+    return {
+        "action_taken": outcome.action,
+        "page_id": outcome.page.id,
+        "superseded_id": outcome.superseded_id,
+        "review_id": outcome.review_id,
+        "redaction_count": sum(r["count"] for r in plan.get("redactions") or []),
+    }
 
 
 def ingest_source(raw_text: str, source_ref: str) -> Page:
-    """Run the full relation-aware pipeline for one source. Returns the resulting
-    page (the new page, or the existing page in the reinforce case)."""
-    # 1. Scrub first — proceed with the redacted text only.
-    redacted, _findings = scrub(raw_text)
+    """Run the full relation-aware pipeline for one source (plan then apply).
 
-    # 2. Persist the redacted source for provenance (committed by the store).
-    store.write_source(source_ref, redacted)
-
-    # 3. Extract the candidate page (not yet written).
-    new_page = _page_from_extraction(redacted, source_ref)
-
-    # 4. Classify against existing candidates and route to a lifecycle action.
-    for candidate in _find_candidates(new_page):
-        label = _classify(new_page, candidate, redacted)
-        if label == "reinforces":
-            return _reinforce(candidate, source_ref, new_page)
-        if label == "supersedes":
-            return _supersede(new_page, candidate.id)
-        if label == "contradicts":
-            return _contradict(new_page, candidate)
-        # "unrelated" -> keep checking other candidates
-
-    # No relation found -> create a fresh page (Phase-1 behaviour).
-    return _create(new_page)
+    Returns the resulting page (the new page, or the existing page in the
+    reinforce case) — unchanged from the prior one-shot behaviour."""
+    plan = plan_ingest(raw_text, source_ref)
+    result = apply_ingest(plan)
+    return store.read_page(result["page_id"])

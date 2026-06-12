@@ -158,6 +158,8 @@ The pipeline contract (`ingest.py`), in order:
 
 A contradicted page is **never silently deleted** — it is superseded (→ `stale`) or queued for review. Reinforcement resets the retention clock; a mere read (access) does not.
 
+**Plan / apply split (preview-then-commit).** The pipeline is exposed as two steps so a surface can preview before committing: `plan_ingest(raw_text, source_ref) -> IngestPlan` runs scrub + extract + classify and performs **zero writes and zero commits** (it does not even persist the source — a previewed-then-abandoned source leaves nothing on disk); `apply_ingest(plan, overrides=None) -> IngestResult` honours overrides (edited `title`/`tags`, `rejected_relations`/`accepted_relations`, a forced `routing` `{action, target_page_id}` whose non-`new` target must exist) and performs the writes via the same Phase-2 routing. `IngestPlan`/`overrides`/`IngestResult` are plain serializable dicts (they cross the HTTP boundary for the UI). The one-shot `ingest_source()` is exactly `plan_ingest` then `apply_ingest`, so CLI/MCP behaviour is unchanged.
+
 ---
 
 ## 8. Retrieval contract
