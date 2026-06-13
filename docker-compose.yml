@@ -24,6 +24,9 @@ services:
       # it is ignored unless the provider is "local".
       MNESIS_LLM_PROVIDER: ${MNESIS_LLM_PROVIDER:-anthropic}
       MNESIS_LLM_BASE_URL: ${MNESIS_LLM_BASE_URL:-http://ollama:11434}
+      # Upload limit enforced by the ingestion endpoints; mnesis-ui mirrors it
+      # into nginx's client_max_body_size so the two agree.
+      MNESIS_MAX_UPLOAD_BYTES: ${MNESIS_MAX_UPLOAD_BYTES:-2000000}
     ports:
       # host ${MNESIS_MCP_PORT:-8080} -> container 8080.
       # The Web UI does NOT need this published — the browser talks only to the
@@ -64,6 +67,9 @@ services:
       # When set, nginx adds `Authorization: Bearer <token>` to proxied /api
       # requests so the browser never holds the token (see ui/nginx.conf).
       MNESIS_MCP_TOKEN: ${MNESIS_MCP_TOKEN:-}
+      # Aligns nginx's client_max_body_size with the backend's upload limit so
+      # multipart uploads pass through the proxy (entrypoint adds headroom).
+      MNESIS_MAX_UPLOAD_BYTES: ${MNESIS_MAX_UPLOAD_BYTES:-2000000}
     ports:
       - "${MNESIS_UI_PORT:-3000}:80"
     healthcheck:

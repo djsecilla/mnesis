@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { Link } from "react-router-dom";
 import type { IngestOverrides, IngestPlan, Redaction, RoutingAction } from "../api/types";
 import { entityColor, entityTypeOf } from "../design/tokens";
@@ -67,13 +68,22 @@ export function IngestReview({
   plan,
   curation,
   onChange,
+  autoFocusTitle = false,
 }: {
   plan: IngestPlan;
   curation: Curation;
   onChange: (patch: Partial<Curation>) => void;
+  autoFocusTitle?: boolean;
 }) {
   const { action: effAction, target: effTarget } = effectiveRouting(plan, curation);
   const needsConfirm = effAction === "supersede";
+
+  // Move focus to the title once a preview lands, so review starts at the most
+  // likely first edit without reaching for the mouse.
+  const titleRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (autoFocusTitle) titleRef.current?.focus();
+  }, [autoFocusTitle]);
 
   function addTag() {
     const t = curation.tagDraft.trim();
@@ -97,6 +107,7 @@ export function IngestReview({
       <div className="space-y-2">
         <label className="text-xs uppercase tracking-wide text-muted">Title</label>
         <input
+          ref={titleRef}
           value={curation.title}
           onChange={(e) => onChange({ title: e.target.value })}
           className="input w-full py-2 text-base"

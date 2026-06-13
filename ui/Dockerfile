@@ -17,10 +17,14 @@ RUN npm run build
 FROM nginx:alpine AS runtime
 # Server config: SPA fallback + /api proxy with SSE-friendly settings.
 COPY nginx.conf /etc/nginx/conf.d/default.conf
-# Startup hook (runs before nginx) that injects the bearer token server-side when
-# MNESIS_MCP_TOKEN is set; seed an empty include so the config is valid regardless.
+# Startup hooks (run before nginx): inject the bearer token server-side when
+# MNESIS_MCP_TOKEN is set, and align client_max_body_size with the upload limit.
+# Seed sane default includes so the config is valid even before the hooks run.
 COPY docker-entrypoint.d/40-mnesis-auth.sh /docker-entrypoint.d/40-mnesis-auth.sh
-RUN chmod +x /docker-entrypoint.d/40-mnesis-auth.sh && : > /etc/nginx/auth_header.conf
+COPY docker-entrypoint.d/41-mnesis-upload.sh /docker-entrypoint.d/41-mnesis-upload.sh
+RUN chmod +x /docker-entrypoint.d/40-mnesis-auth.sh /docker-entrypoint.d/41-mnesis-upload.sh \
+    && : > /etc/nginx/auth_header.conf \
+    && printf 'client_max_body_size 3145728;\n' > /etc/nginx/client_max_body.conf
 # The built assets (config.js ships in the bundle with a same-origin /api base).
 COPY --from=build /app/dist /usr/share/nginx/html
 

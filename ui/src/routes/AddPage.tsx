@@ -128,7 +128,7 @@ export default function AddPage() {
 
           {plan && curation && (
             <section className="space-y-5 border-t border-border pt-5">
-              <IngestReview plan={plan} curation={curation} onChange={(p) => setCuration((c) => ({ ...c!, ...p }))} />
+              <IngestReview plan={plan} curation={curation} onChange={(p) => setCuration((c) => ({ ...c!, ...p }))} autoFocusTitle />
               <div className="flex items-center gap-3 border-t border-border pt-4">
                 <button
                   onClick={() => commit.mutate()}

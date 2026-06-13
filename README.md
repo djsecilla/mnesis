@@ -224,11 +224,18 @@ container serving the browser app and reverse-proxying `/api` (and the SSE chat
 stream) to the `mnesis` service. After `make docker-up && make docker-seed`,
 open **http://localhost:3000** (`MNESIS_UI_PORT`) and browse:
 
+The UI is a full **read + write** human surface (alongside the CLI and the MCP
+tools for agents):
+
 | URL | View |
 |---|---|
 | `/` → `/graph` | knowledge graph of seeded entities |
 | `/pages` · `/pages/:id` | page index and reader |
 | `/chat` | grounded chat — streams a cited answer through the proxy |
+| `/add` | **Add to Mnesis** — paste/upload one source, preview, curate, commit |
+| `/add/batch` | **Add several** — multi-file queue, per-item review, commit-all |
+| `/sources` | **Sources** — what you fed in, and the page(s) it became |
+| `/review` | **Review** — resolve queued contradictions (rail badge shows the count) |
 
 The browser talks **only** to `mnesis-ui`; it reaches mnesis over the internal
 compose network, so the `mnesis` API port does not need host exposure for the UI
@@ -241,6 +248,18 @@ boundary; per-user auth is a future iteration. The UI container is **stateless**
 (no volume) — all state lives in mnesis, so it is safe to rebuild or remove
 anytime. For local UI development against a running mnesis, `make ui-dev` runs
 the Vite dev server (proxies `/api` to `localhost:8080`).
+
+**Governance (ingestion).** Writes are deliberate and auditable. Sensitive data
+is **redacted at the ingestion boundary before anything is stored** (§2.2) and
+the preview shows *what* was redacted — counts and types only, never the values.
+**Every commit is human-confirmed**: the preview is side-effect-free, nothing is
+written until you click commit, and a supersede (which marks another page stale)
+requires an explicit confirmation. Canonical page **editing is intentionally not
+offered** in the UI — knowledge changes only through the disciplined
+plan→apply ingestion path (create / reinforce / supersede / contradict) and
+contradiction resolution, so **every write is a git commit** (the audit trail).
+Uploads are bounded by `MNESIS_MAX_UPLOAD_BYTES`; `mnesis-ui` mirrors that into
+nginx's `client_max_body_size` so multipart uploads pass through the proxy.
 
 **Optional profiles** (not started by a plain `up`):
 - `docker compose --profile local-llm up -d` — on-host inference (see above); set
