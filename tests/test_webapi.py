@@ -180,6 +180,25 @@ def test_entity_and_impact(client):
     assert "decision:auth-migration" in refs  # depends_on redis
 
 
+def test_entity_panel_payload_is_enriched(client):
+    # One call returns everything the floating panel needs.
+    ent = client.get("/api/entity/library:redis", headers=AUTH).json()
+    assert set(ent) >= {"ref", "type", "confidence", "summary", "sources", "tags", "related"}
+    # Provenance: declaring pages ranked, each with kind + confidence + snippet.
+    assert ent["sources"], "expected declaring pages"
+    src = ent["sources"][0]
+    assert set(src) >= {"id", "title", "kind", "confidence", "snippet"}
+    assert all(s["id"] in {p.id for p in store.list_pages()} for s in ent["sources"])
+    # Co-occurring entity tags (type:value), redis excluded; bounded.
+    assert "library:redis" not in ent["tags"]
+    assert "decision:auth-migration" in ent["tags"]  # co-occurs on the auth page
+    assert len(ent["tags"]) <= 8 and all(":" in t for t in ent["tags"])
+    # Related = typed-edge neighbours with predicate + direction, demoted excluded.
+    assert ent["related"] and all(
+        {"ref", "type", "predicate", "direction", "confidence"} <= set(r) for r in ent["related"]
+    )
+
+
 # --- chat (SSE) -------------------------------------------------------------
 
 

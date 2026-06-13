@@ -76,11 +76,32 @@ export interface GraphData {
   edges: GraphEdge[];
 }
 
+export interface EntitySource {
+  id: string;
+  title: string;
+  kind: string;
+  confidence: number;
+  snippet: string;
+}
+
+export interface RelatedEntity {
+  ref: string;
+  type: string;
+  predicate: string;
+  direction: string; // "out" (ref -> entity) | "in" (entity -> ref)
+  confidence: number;
+}
+
 export interface EntityData {
   ref: string;
   type: string;
-  pages: string[];
-  edges: GraphEdge[];
+  confidence?: number | null;
+  summary: string;
+  sources: EntitySource[];
+  tags: string[];
+  related: RelatedEntity[];
+  pages: string[]; // back-compat (edge source pages)
+  edges: GraphEdge[]; // back-compat (page reader reads edge confidence)
 }
 
 export interface ImpactItem {

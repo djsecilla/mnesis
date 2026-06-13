@@ -187,6 +187,26 @@ export default function GraphPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showDemoted]);
 
+  // Keep the selected node clear of the floating panel (anchored top-right): if it
+  // would sit under the card, gently pan it left. Centered/focused nodes land at
+  // mid-canvas (clear of the right card), so this only nudges tapped right-side nodes.
+  useEffect(() => {
+    const cy = cyRef.current;
+    const cont = containerRef.current;
+    if (!cy || !cont || !selected) return;
+    const id = setTimeout(() => {
+      const n = cy.getElementById(selected);
+      if (n.empty()) return;
+      const pos = n.renderedPosition();
+      const cardLeft = cont.clientWidth - 320 - 24; // panel width + right margin
+      if (pos.x > cardLeft - 30) {
+        cy.animate({ panBy: { x: -(pos.x - (cardLeft - 90)), y: 0 } }, { duration: 250 });
+      }
+    }, 380); // after any center/focus animation settles
+    return () => clearTimeout(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected]);
+
   // ── impact mode ───────────────────────────────────────────────────────────
   useEffect(() => {
     const cy = cyRef.current;
@@ -247,8 +267,7 @@ export default function GraphPage() {
   const empty = base.data && base.data.nodes.length === 0;
 
   return (
-    <div className="flex h-full">
-      <div className="relative flex-1">
+    <div className="relative h-full">
         {/* toolbar */}
         <div className="absolute left-3 top-3 z-10 flex items-center gap-2">
           <input
@@ -314,22 +333,23 @@ export default function GraphPage() {
         )}
 
         <div ref={containerRef} className="h-full w-full" />
-      </div>
 
-      {selected && (
-        <GraphPanel
-          refName={selected}
-          onClose={() => {
-            setSelected(null);
-            setImpactRef(null);
-          }}
-          onExpand={expand}
-          impactActive={impactRef === selected}
-          onToggleImpact={() => setImpactRef((r) => (r === selected ? null : selected))}
-          impact={impactData}
-          impactLoading={impactLoading}
-        />
-      )}
+        {/* Floating overlay — sits over the canvas; does not reflow it. */}
+        {selected && (
+          <GraphPanel
+            refName={selected}
+            onClose={() => {
+              setSelected(null);
+              setImpactRef(null);
+            }}
+            onExpand={expand}
+            onFocus={focusEntity}
+            impactActive={impactRef === selected}
+            onToggleImpact={() => setImpactRef((r) => (r === selected ? null : selected))}
+            impact={impactData}
+            impactLoading={impactLoading}
+          />
+        )}
     </div>
   );
 }

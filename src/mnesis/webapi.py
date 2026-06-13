@@ -18,6 +18,7 @@ import json
 import logging
 import re
 import subprocess
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -26,7 +27,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 from sse_starlette.sse import EventSourceResponse
 
-from . import config, confidence, graph, ingest, llm, search, state, store
+from . import config, confidence, graph, ingest, llm, search, state, store, vocab
 
 log = logging.getLogger(__name__)
 
@@ -233,12 +234,79 @@ async def _graph(request: Request) -> JSONResponse:
     return JSONResponse(_build_subgraph(qp.get("root") or None, depth, include_demoted))
 
 
+def _first_paragraph(body: str, limit: int) -> str:
+    """First prose paragraph of a page body (skips the trailing 'Source:' line)."""
+    for para in body.split("\n\n"):
+        p = " ".join(para.split())
+        if p and not p.lower().startswith("source:"):
+            return p[:limit]
+    return ""
+
+
+def _is_entity_tag(tag: str) -> bool:
+    i = tag.find(":")
+    return i > 0 and tag[:i] in vocab.ENTITY_TYPES
+
+
 async def _entity(request: Request) -> JSONResponse:
+    """Panel-ready entity detail in ONE call: summary, ranked sources (provenance),
+    co-occurring entity tags, and typed-edge neighbours. Thin — reuses graph +
+    store + confidence; `pages`/`edges` are kept for back-compat (the page reader
+    looks up edge confidence via this endpoint)."""
     ref = request.path_params["ref"]
     ent = graph.entity(ref)
     if ent is None:
         return JSONResponse({"error": f"no such entity: {ref}"}, status_code=404)
-    return JSONResponse({"ref": ref, **ent})
+
+    # Declaring/mentioning pages: any page tagging this entity (a superset of the
+    # edge source-pages, since ingest tags every edge endpoint). Ranked by confidence.
+    declaring = [p for p in store.list_pages() if ref in p.tags]
+    declaring.sort(key=_conf, reverse=True)
+
+    active = [p for p in declaring if p.status == "active"]
+    summary = _first_paragraph(active[0].body, 280) if active else ""
+
+    sources = [
+        {"id": p.id, "title": p.title, "kind": p.kind,
+         "confidence": round(_conf(p), 4), "snippet": _first_paragraph(p.body, 140)}
+        for p in declaring[:8]
+    ]
+
+    # Co-occurring entity tags across declaring pages, top ~8 by frequency.
+    counts: Counter = Counter()
+    for p in declaring:
+        for t in p.tags:
+            if t != ref and _is_entity_tag(t):
+                counts[t] += 1
+    tags = [t for t, _ in counts.most_common(8)]
+
+    # Typed-edge neighbours (demoted excluded), each with predicate + direction.
+    related = []
+    for e in ent["edges"]:
+        if e["demoted"]:
+            continue
+        if e["s"] == ref:
+            other, direction = e["o"], "out"
+        elif e["o"] == ref:
+            other, direction = e["s"], "in"
+        else:
+            continue
+        otype = other.split(":", 1)[0] if ":" in other else "concept"
+        related.append({"ref": other, "type": otype, "predicate": e["p"],
+                        "direction": direction, "confidence": round(e["confidence"], 4)})
+    related = related[:12]
+
+    return JSONResponse({
+        "ref": ref,
+        "type": ent["type"],
+        "confidence": round(_conf(declaring[0]), 4) if declaring else None,
+        "summary": summary,
+        "sources": sources,
+        "tags": tags,
+        "related": related,
+        "pages": ent["pages"],   # back-compat
+        "edges": ent["edges"],   # back-compat (page reader reads edge confidence)
+    })
 
 
 async def _impact(request: Request) -> JSONResponse:
