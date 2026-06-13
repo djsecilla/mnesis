@@ -1,4 +1,4 @@
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { ingestCommit, ingestPreview } from "../api/endpoints";
@@ -16,6 +16,7 @@ export default function AddPage() {
   const [plan, setPlan] = useState<IngestPlan | null>(null);
   const [curation, setCuration] = useState<Curation | null>(null);
   const [result, setResult] = useState<IngestResult | null>(null);
+  const qc = useQueryClient();
 
   const preview = useMutation({
     mutationFn: () =>
@@ -29,7 +30,13 @@ export default function AddPage() {
 
   const commit = useMutation({
     mutationFn: () => ingestCommit(plan!, buildOverrides(curation!)),
-    onSuccess: (r) => setResult(r),
+    onSuccess: (r) => {
+      setResult(r);
+      // The new write is on the server; refresh every view that reflects it.
+      for (const key of [["pages"], ["graph"], ["palette-graph"], ["sources"], ["reviews"]]) {
+        qc.invalidateQueries({ queryKey: key });
+      }
+    },
   });
 
   function reset() {

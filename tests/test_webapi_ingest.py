@@ -96,6 +96,18 @@ def test_commit_writes_outcome(client):
     assert store.page_exists(result["page_id"])
 
 
+def test_commit_refreshes_the_graph(client):
+    # A source with an entity/relation should appear in the graph right after
+    # commit (the commit endpoint rebuilds the graph cache, not just the index).
+    before = {n["ref"] for n in client.get("/api/graph", headers=AUTH).json()["nodes"]}
+    assert "library:kafka" not in before
+    text = "Zeta streams events with Kafka. rel{project:zeta|uses|library:kafka}"
+    plan = client.post("/api/ingest/preview", json={"text": text}, headers=AUTH).json()
+    client.post("/api/ingest/commit", json={"plan": plan}, headers=AUTH)
+    after = {n["ref"] for n in client.get("/api/graph", headers=AUTH).json()["nodes"]}
+    assert {"project:zeta", "library:kafka"} <= after
+
+
 # --- upload validation ------------------------------------------------------
 
 

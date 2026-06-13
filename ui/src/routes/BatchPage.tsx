@@ -1,3 +1,4 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { ingestCommit, ingestPreview, type PreviewInput } from "../api/endpoints";
@@ -48,6 +49,7 @@ export default function BatchPage() {
   const nextId = useRef(1);
   const itemsRef = useRef(items);
   itemsRef.current = items;
+  const qc = useQueryClient();
 
   function update(id: number, patch: Partial<Item>) {
     setItems((prev) => prev.map((it) => (it.id === id ? { ...it, ...patch } : it)));
@@ -97,6 +99,9 @@ export default function BatchPage() {
     try {
       const result = await ingestCommit(item.plan, buildOverrides(item.curation));
       update(item.id, { status: "committed", result });
+      for (const key of [["pages"], ["graph"], ["palette-graph"], ["sources"], ["reviews"]]) {
+        qc.invalidateQueries({ queryKey: key });
+      }
     } catch (e) {
       update(item.id, { status: "error", error: (e as Error).message });
     }

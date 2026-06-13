@@ -44,9 +44,11 @@ function ReviewCard({ review }: { review: Review }) {
   const resolve = useMutation({
     mutationFn: (keepId: string) => resolveReview(review.id, keepId),
     onSuccess: () => {
-      // The queue, the page list, and both pages' cached state are now stale.
+      // The queue, the page list, the graph, and both pages' cached state are stale.
       qc.invalidateQueries({ queryKey: ["reviews"] });
       qc.invalidateQueries({ queryKey: ["pages"] });
+      qc.invalidateQueries({ queryKey: ["graph"] });
+      qc.invalidateQueries({ queryKey: ["palette-graph"] });
       qc.invalidateQueries({ queryKey: ["page", review.page_a.id] });
       qc.invalidateQueries({ queryKey: ["page", review.page_b.id] });
     },

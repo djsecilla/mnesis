@@ -15,6 +15,7 @@ Chat is grounded: it answers ONLY from retrieved wiki pages, cites them inline a
 from __future__ import annotations
 
 import json
+import logging
 import re
 import subprocess
 from datetime import datetime, timezone
@@ -27,8 +28,23 @@ from sse_starlette.sse import EventSourceResponse
 
 from . import config, confidence, graph, ingest, llm, search, state, store
 
+log = logging.getLogger(__name__)
+
 # How many retrieved pages ground a chat answer.
 CHAT_TOP_N = 5
+
+
+def _refresh_graph() -> None:
+    """Rebuild the graph cache after a UI write so newly-ingested entities and
+    relations (and supersession demotions) show up in the graph view. Ingest
+    updates the search index incrementally but not the graph; the graph is
+    otherwise only rebuilt by ``mnesis rebuild``. Best-effort: a failure here
+    never fails the write — the page is already committed and a later
+    ``rebuild`` recovers the graph."""
+    try:
+        graph.rebuild_graph()
+    except Exception:  # noqa: BLE001 — never let cache refresh break a committed write
+        log.warning("graph rebuild after write failed; run `mnesis rebuild`", exc_info=True)
 # Bounds on the /api/graph payload.
 _MAX_NODES = 60
 _MAX_OVERVIEW_NODES = 40
@@ -439,6 +455,7 @@ async def _ingest_commit(request: Request) -> JSONResponse:
         result = ingest.apply_ingest(plan, overrides if isinstance(overrides, dict) else None)
     except ValueError as e:
         return _err("invalid_override", str(e), 400)
+    _refresh_graph()  # so the new page's entities/relations appear in the graph
     return JSONResponse(result)
 
 
@@ -544,6 +561,7 @@ async def _resolve_review(request: Request) -> JSONResponse:
     msg = mcp_server.mnesis_resolve(review_id, keep)
     if msg.startswith("resolved review"):
         superseded = msg.rsplit("superseded ", 1)[-1].strip() if "superseded " in msg else None
+        _refresh_graph()  # the superseded page's edges are now demoted
         return JSONResponse(
             {"resolved": True, "review_id": review_id, "kept": keep,
              "superseded": superseded, "message": msg}
