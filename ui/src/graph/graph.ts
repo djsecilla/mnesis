@@ -61,6 +61,12 @@ export function toElements(graph: GraphData): ElementDefinition[] {
 
 export function stylesheet(): StylesheetStyle[] {
   const c = themeColors();
+  // Respect prefers-reduced-motion: keep the state change, skip the animation.
+  const reduced =
+    typeof window !== "undefined" &&
+    window.matchMedia &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const dur = (reduced ? "0s" : "120ms") as unknown as number;
   return [
     {
       selector: "node",
@@ -76,6 +82,8 @@ export function stylesheet(): StylesheetStyle[] {
         "text-margin-y": 4,
         "min-zoomed-font-size": 8,
         "border-width": 0,
+        "transition-property": "opacity",
+        "transition-duration": dur,
       },
     },
     {
@@ -101,6 +109,8 @@ export function stylesheet(): StylesheetStyle[] {
         "text-background-opacity": 0.85,
         "text-background-padding": "1",
         "min-zoomed-font-size": 7,
+        "transition-property": "opacity, width",
+        "transition-duration": dur,
       },
     },
     {
@@ -126,6 +136,42 @@ export function stylesheet(): StylesheetStyle[] {
         "target-arrow-color": c.accent,
         width: 4,
         opacity: 1,
+      },
+    },
+
+    // ── Focus-on-hover (transient; distinct from impact's .dim/.hl and from
+    //    :selected, so selection is never lost while hovering). ──────────────
+    // Everything outside the hovered neighbourhood fades back but stays readable.
+    {
+      selector: ".hover-dim",
+      style: { opacity: 0.12, "text-opacity": 0.12 },
+    },
+    {
+      selector: "edge.hover-dim",
+      style: { opacity: 0.05, "text-opacity": 0 },
+    },
+    // The hovered node: accent ring, on top, full opacity.
+    {
+      selector: "node.hovered",
+      style: {
+        "border-width": 4,
+        "border-color": c.accent,
+        opacity: 1,
+        "text-opacity": 1,
+        "z-index": 999,
+      },
+    },
+    // Its edges: thicker, full opacity, predicate label revealed.
+    {
+      selector: "edge.hover-edge",
+      style: {
+        "line-color": c.accent,
+        "target-arrow-color": c.accent,
+        width: 4,
+        opacity: 1,
+        "text-opacity": 1,
+        "min-zoomed-font-size": 0,
+        "z-index": 998,
       },
     },
   ];

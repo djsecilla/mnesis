@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import cytoscape, { type Core, type EventObject } from "cytoscape";
+import cytoscape, { type Core, type EventObject, type NodeSingular } from "cytoscape";
 import fcose from "cytoscape-fcose";
 import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
@@ -70,6 +70,37 @@ export default function GraphPage() {
         setImpactRef(null);
       }
     });
+
+    // ── Focus-on-hover (pointer only; mouseover/mouseout never fire on touch) ──
+    // Visual classes ONLY — no layout, no refetch. Transient: always restores on
+    // mouseout. A short coalescing timer means moving directly between nodes never
+    // flashes back to the full graph (no flicker). Selection (:selected) is kept
+    // un-dimmed so the panel's node stays visible while previewing elsewhere.
+    let hoverClearTimer: ReturnType<typeof setTimeout> | null = null;
+    function applyHover(node: NodeSingular) {
+      cy.batch(() => {
+        cy.elements().removeClass("hovered hover-edge").addClass("hover-dim");
+        node.closedNeighborhood().removeClass("hover-dim"); // node + adj nodes + edges
+        node.addClass("hovered");
+        node.connectedEdges().removeClass("hover-dim").addClass("hover-edge");
+        cy.elements(":selected").removeClass("hover-dim"); // selection persists
+      });
+    }
+    function clearHover() {
+      cy.batch(() => cy.elements().removeClass("hover-dim hovered hover-edge"));
+    }
+    cy.on("mouseover", "node", (e: EventObject) => {
+      if (hoverClearTimer) {
+        clearTimeout(hoverClearTimer);
+        hoverClearTimer = null;
+      }
+      applyHover(e.target as NodeSingular);
+    });
+    cy.on("mouseout", "node", () => {
+      if (hoverClearTimer) clearTimeout(hoverClearTimer);
+      hoverClearTimer = setTimeout(clearHover, 30);
+    });
+
     cyRef.current = cy;
 
     // Re-theme the canvas when the app theme changes (same shared tokens).
@@ -77,6 +108,7 @@ export default function GraphPage() {
     obs.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
 
     return () => {
+      if (hoverClearTimer) clearTimeout(hoverClearTimer);
       obs.disconnect();
       cy.destroy();
       cyRef.current = null;
