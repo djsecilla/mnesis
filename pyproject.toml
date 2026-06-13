@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "anthropic",
+    "httpx",
     "mcp",
     "python-frontmatter",
     "pyyaml",
@@ -19,6 +20,7 @@ dependencies = [
 
 [project.scripts]
 mnesis = "mnesis.cli:main"
+mnesis-agent = "mnesis_agent.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
