@@ -2,6 +2,15 @@
 // CSS custom properties (src/index.css); this module maps entity types/status to
 // them so every view styles entities and status the same way.
 
+// ── Brand mark ──────────────────────────────────────────────────────────────
+// The active logo variant. This is the SINGLE source of truth: change this one
+// line to swap the in-app logo everywhere (rail, lockups, loading states).
+// NOTE: when you change this, also update the favicon <link> in index.html to
+// the matching /favicon-<variant>.svg (favicons render without CSS, so they are
+// referenced by file, not by this constant).
+export type BrandMark = "graph-m" | "compounding" | "constellation";
+export const BRAND_MARK: BrandMark = "graph-m";
+
 export const ENTITY_TYPES = [
   "person",
   "project",

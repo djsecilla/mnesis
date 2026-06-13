@@ -4,6 +4,7 @@ import { NavLink, Outlet } from "react-router-dom";
 import { listReviews } from "../api/endpoints";
 import CommandPalette from "./CommandPalette";
 import { ChatIcon, GraphIcon, PagesIcon, PlusIcon, ReviewIcon, SearchIcon, SourcesIcon } from "./Icon";
+import Logo from "./Logo";
 import ThemeToggle from "./ThemeToggle";
 
 const rail = [
@@ -53,6 +54,14 @@ export default function Shell() {
   return (
     <div className="flex h-screen bg-bg text-fg">
       <nav className="flex w-14 flex-col items-center gap-1 border-r border-border py-3">
+        <NavLink
+          to="/graph"
+          title="mnesis — home"
+          aria-label="mnesis — home"
+          className="mb-2 flex h-9 w-9 items-center justify-center text-fg"
+        >
+          <Logo size={26} />
+        </NavLink>
         <NavLink
           to="/add"
           title="Add to Mnesis"
