@@ -18,15 +18,19 @@ services:
       MNESIS_ROOT: /data/mnesis
       MNESIS_MCP_HOST: 0.0.0.0
       MNESIS_MCP_PORT: "8080"            # internal bind; the HOST port is set via `ports`
-      # Inference provider (default anthropic/stub). To run local-first inference,
-      # set MNESIS_LLM_PROVIDER=local in .env and bring the stack up with
-      # `--profile local-llm`. The base URL targets the `ollama` service below;
-      # it is ignored unless the provider is "local".
+      # Inference provider (default anthropic/stub). For local-first inference,
+      # set MNESIS_LLM_PROVIDER=local in .env and run Ollama (or any OpenAI-
+      # compatible server) on the HOST — the base URL below reaches it via
+      # host.docker.internal. It is ignored unless the provider is "local".
       MNESIS_LLM_PROVIDER: ${MNESIS_LLM_PROVIDER:-anthropic}
-      MNESIS_LLM_BASE_URL: ${MNESIS_LLM_BASE_URL:-http://ollama:11434}
+      MNESIS_LLM_BASE_URL: ${MNESIS_LLM_BASE_URL:-http://host.docker.internal:11434}
       # Upload limit enforced by the ingestion endpoints; mnesis-ui mirrors it
       # into nginx's client_max_body_size so the two agree.
       MNESIS_MAX_UPLOAD_BYTES: ${MNESIS_MAX_UPLOAD_BYTES:-2000000}
+    # Make the host reachable as host.docker.internal on Linux too (Docker
+    # Desktop provides it automatically; harmless to declare explicitly).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       # host ${MNESIS_MCP_PORT:-8080} -> container 8080.
       # The Web UI does NOT need this published — the browser talks only to the
@@ -81,41 +85,14 @@ services:
       retries: 5
       start_period: 10s
 
-  # --- local-llm profile: opt-in local-first inference (data isolation) --------
-  # NOT started by a plain `docker compose up`. Bring it up with:
-  #   docker compose --profile local-llm up -d
-  # and set MNESIS_LLM_PROVIDER=local (and MNESIS_LLM_MODEL=<an ollama tag>) in .env.
-  ollama:
-    image: ollama/ollama:latest
-    profiles: ["local-llm"]
-    restart: unless-stopped
-    volumes:
-      - ollama-models:/root/.ollama     # model weights persist here
-    healthcheck:
-      test: ["CMD", "ollama", "list"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 10s
-
-  # One-shot: wait for the server, then pull the configured model into the volume.
-  ollama-init:
-    image: ollama/ollama:latest
-    profiles: ["local-llm"]
-    depends_on:
-      - ollama
-    environment:
-      OLLAMA_HOST: http://ollama:11434
-    entrypoint: ["/bin/sh", "-lc"]
-    # Default to a SMALL model that fits modest hardware; override via MNESIS_LLM_MODEL.
-    # Retry the pull: large models can hit a client deadline on the final manifest
-    # step even after the blob downloads; a retry resumes from cache and completes.
-    command:
-      - 'until ollama list >/dev/null 2>&1; do echo "waiting for ollama..."; sleep 2; done;
-         m="${MNESIS_LLM_MODEL:-llama3.2:1b}";
-         for i in 1 2 3 4 5; do ollama pull "$$m" && break; echo "pull attempt $$i failed; retrying..."; sleep 3; done;
-         ollama list && echo "model ready"'
-    restart: "no"
+  # --- local-first inference (opt-in) ------------------------------------------
+  # mnesis can run inference on a LOCAL model server instead of Anthropic — set
+  # MNESIS_LLM_PROVIDER=local in .env (and MNESIS_LLM_MODEL=<an Ollama tag>).
+  # We use the HOST's Ollama (or any OpenAI-compatible server) rather than a
+  # container: the base URL http://host.docker.internal:11434 (above) reaches it,
+  # so there is no Ollama service here and no model-weights volume to manage.
+  # Sources still never leave the machine. Ensure Ollama is running on the host
+  # (`ollama serve`) and the model is pulled (`ollama pull <tag>`).
 
   # --- maintenance profile: periodic upkeep sidecar ---------------------------
   # NOT started by a plain `up`. Bring it up with:
@@ -162,6 +139,5 @@ services:
 
 volumes:
   mnesis-data:
-  ollama-models:             # (local-llm) model weights; created only with the profile
   # postgres-data:           # (Tier-B) uncomment alongside the postgres service
   # qdrant-data:             # (Tier-B) uncomment alongside the qdrant service

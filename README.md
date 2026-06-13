@@ -163,21 +163,28 @@ and `POST /api/fileback`. `/api/*` shares the bearer-token auth (`MNESIS_MCP_TOK
 
 **Local-first inference (opt-in).** By default mnesis uses Anthropic (or the
 offline stub). For a privacy-preserving deployment where **sources never leave
-the host**, switch the provider to a local model server via the `local-llm`
-compose profile. In `.env` set `MNESIS_LLM_PROVIDER=local`,
-`MNESIS_LLM_MODEL=llama3.2:1b` (a small default — change as you like), and blank
-`MNESIS_LLM_STUB`, then:
+the host**, point mnesis at a local model server you run on the host — your own
+**Ollama** (or any OpenAI-compatible API). mnesis does **not** run an Ollama
+container; it reaches the host server at `host.docker.internal`.
 
 ```bash
-docker compose --profile local-llm up -d
+# 1. On the host: run Ollama and pull a model.
+ollama serve            # if not already running
+ollama pull llama3.2:3b
+
+# 2. In .env:
+#      MNESIS_LLM_PROVIDER=local
+#      MNESIS_LLM_MODEL=llama3.2:3b
+#      MNESIS_LLM_STUB=0
+#      MNESIS_LLM_BASE_URL=http://host.docker.internal:11434   (the default)
+# 3. Recreate the service to pick up the env:
+docker compose up -d --force-recreate mnesis
 ```
 
-This starts an `ollama` service (model weights on the `ollama-models` volume), a
-one-shot job that pulls the configured model, and points `llm.py` at
-`http://ollama:11434`. With this profile, **ingestion and extraction make no
-external inference calls** — no Anthropic request, no API key needed. A plain
-`docker compose up` does **not** start the model service (profile-gated); the
-default Anthropic/stub behaviour is unchanged.
+With `provider=local`, **ingestion and extraction make no external inference
+calls** — no Anthropic request, no API key needed; mnesis calls the host model's
+`/v1/chat/completions`. The default Anthropic/stub behaviour is unchanged when
+`provider` is left at `anthropic`.
 
 **Maintenance sidecar (opt-in).** The wiki needs periodic upkeep — decay, graph
 lint, cache freshness. Until Phase 4 moves these into the app as event hooks,
@@ -261,9 +268,10 @@ contradiction resolution, so **every write is a git commit** (the audit trail).
 Uploads are bounded by `MNESIS_MAX_UPLOAD_BYTES`; `mnesis-ui` mirrors that into
 nginx's `client_max_body_size` so multipart uploads pass through the proxy.
 
+**Local-first inference** is configured via `.env` (`MNESIS_LLM_PROVIDER=local`,
+pointing at the host's Ollama) — see above; no profile or extra container.
+
 **Optional profiles** (not started by a plain `up`):
-- `docker compose --profile local-llm up -d` — on-host inference (see above); set
-  `MNESIS_LLM_PROVIDER=local` in `.env` so sources never leave the box.
 - `docker compose --profile maintenance up -d` — periodic decay / graph-lint /
   rebuild upkeep (see above).
 
