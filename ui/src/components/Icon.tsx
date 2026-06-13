@@ -67,6 +67,15 @@ export function SourcesIcon(p: SVGProps<SVGSVGElement>) {
   );
 }
 
+export function ReviewIcon(p: SVGProps<SVGSVGElement>) {
+  return (
+    <svg {...base} {...p}>
+      <path d="M10.3 4.3 2.5 18a1.5 1.5 0 0 0 1.3 2.2h16.4a1.5 1.5 0 0 0 1.3-2.2L13.7 4.3a1.5 1.5 0 0 0-2.6 0z" />
+      <path d="M12 9v4M12 16.5v.5" />
+    </svg>
+  );
+}
+
 export function SunIcon(p: SVGProps<SVGSVGElement>) {
   return (
     <svg {...base} {...p}>

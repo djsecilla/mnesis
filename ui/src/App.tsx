@@ -10,6 +10,7 @@ const ChatPage = lazy(() => import("./routes/ChatPage"));
 const AddPage = lazy(() => import("./routes/AddPage"));
 const BatchPage = lazy(() => import("./routes/BatchPage"));
 const SourcesPage = lazy(() => import("./routes/SourcesPage"));
+const ReviewPage = lazy(() => import("./routes/ReviewPage"));
 
 export default function App() {
   return (
@@ -23,6 +24,7 @@ export default function App() {
         <Route path="/add" element={<AddPage />} />
         <Route path="/add/batch" element={<BatchPage />} />
         <Route path="/sources" element={<SourcesPage />} />
+        <Route path="/review" element={<ReviewPage />} />
         <Route path="*" element={<Navigate to="/pages" replace />} />
       </Route>
     </Routes>

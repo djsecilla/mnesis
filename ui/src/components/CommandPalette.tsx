@@ -48,6 +48,7 @@ export default function CommandPalette({ open, onClose }: { open: boolean; onClo
       { key: "action:add", label: "Add to Mnesis", sublabel: "paste or upload a new source", to: "/add" },
       { key: "action:batch", label: "Add several", sublabel: "batch ingest multiple files", to: "/add/batch" },
       { key: "action:sources", label: "Sources", sublabel: "what you fed in", to: "/sources" },
+      { key: "action:review", label: "Review contradictions", sublabel: "resolve conflicting pages", to: "/review" },
     ];
     const actionItems: Item[] = ACTIONS.filter(
       (a) => !q || a.label.toLowerCase().includes(ql0),

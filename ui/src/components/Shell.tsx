@@ -1,7 +1,9 @@
+import { useQuery } from "@tanstack/react-query";
 import { Suspense, useEffect, useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
+import { listReviews } from "../api/endpoints";
 import CommandPalette from "./CommandPalette";
-import { ChatIcon, GraphIcon, PagesIcon, PlusIcon, SearchIcon, SourcesIcon } from "./Icon";
+import { ChatIcon, GraphIcon, PagesIcon, PlusIcon, ReviewIcon, SearchIcon, SourcesIcon } from "./Icon";
 import ThemeToggle from "./ThemeToggle";
 
 const rail = [
@@ -10,6 +12,28 @@ const rail = [
   { to: "/sources", label: "Sources", Icon: SourcesIcon },
   { to: "/chat", label: "Chat", Icon: ChatIcon },
 ];
+
+function ReviewRailLink() {
+  // Open-contradiction count, polled so the badge reflects new conflicts and
+  // clears as they are resolved (resolving invalidates this query immediately).
+  const { data } = useQuery({ queryKey: ["reviews"], queryFn: listReviews, refetchInterval: 30_000 });
+  const count = data?.total ?? 0;
+  return (
+    <NavLink
+      to="/review"
+      title={`Review${count ? ` (${count} open)` : ""}`}
+      aria-label="Review"
+      className={({ isActive }) => `rail-btn relative ${isActive ? "rail-active" : ""}`}
+    >
+      <ReviewIcon />
+      {count > 0 && (
+        <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-amber-500 px-1 text-[10px] font-medium text-black">
+          {count}
+        </span>
+      )}
+    </NavLink>
+  );
+}
 
 export default function Shell() {
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -57,6 +81,7 @@ export default function Shell() {
             <Icon />
           </NavLink>
         ))}
+        <ReviewRailLink />
         <div className="mt-auto">
           <ThemeToggle />
         </div>

@@ -203,3 +203,31 @@ export interface SourceDetail {
   text: string;
   pages: SourcePageRef[];
 }
+
+// --- Reviews (contradiction queue) -----------------------------------------
+
+export interface ReviewPageRef {
+  id: string;
+  title: string | null;
+  confidence: number | null;
+}
+
+export interface Review {
+  id: number;
+  page_a: ReviewPageRef;
+  page_b: ReviewPageRef;
+  detail: string;
+}
+
+export interface ReviewsResponse {
+  reviews: Review[];
+  total: number;
+}
+
+export interface ResolveResponse {
+  resolved: boolean;
+  review_id: number;
+  kept: string;
+  superseded: string | null;
+  message: string;
+}

@@ -9,6 +9,8 @@ import type {
   IngestResult,
   PageDetail,
   PagesResponse,
+  ResolveResponse,
+  ReviewsResponse,
   SearchResponse,
   SourceDetail,
   SourcesResponse,
@@ -102,3 +104,10 @@ export async function ingestCommit(plan: IngestPlan, overrides?: IngestOverrides
 export const listSources = () => apiGet<SourcesResponse>(`/sources`);
 
 export const getSource = (id: string) => apiGet<SourceDetail>(`/sources/${encodeURIComponent(id)}`);
+
+// --- Reviews (contradiction queue) -----------------------------------------
+
+export const listReviews = () => apiGet<ReviewsResponse>(`/reviews`);
+
+export const resolveReview = (id: number, keepPageId: string) =>
+  apiPost<ResolveResponse>(`/reviews/${id}/resolve`, { keep_page_id: keepPageId });
