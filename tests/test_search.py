@@ -60,6 +60,23 @@ def test_rebuild_and_search_top_hit(wiki):
     hits = search.search("redis caching")
     assert hits, "expected at least one hit"
     assert hits[0].id == "atlas-redis-cache"
+
+
+def test_natural_language_question_retrieves_pages(wiki):
+    """Questions must not require every word to appear (OR + prefix, stopwords
+    dropped) — otherwise chat/search would say "nothing in the wiki" for real
+    questions. Regression for the implicit-AND retrieval bug."""
+    _seed_three_pages()
+    search.rebuild()
+
+    # A full question whose function words appear on no page still finds Atlas.
+    hits = search.search("What does Project Atlas use for caching?")
+    assert hits and hits[0].id == "atlas-redis-cache"
+
+    # Multi-term query where not every term is present still recalls the page,
+    # and a morphological variant (postgres -> postgresql) matches via prefix.
+    hits = search.search("billing service postgres")
+    assert any(h.id == "billing-postgres" for h in hits)
     assert hits[0].snippet  # non-empty snippet
 
 

@@ -203,6 +203,21 @@ def test_chat_says_nothing_when_no_pages(client):
     assert "does not contain" in _sse_answer(r.text)
 
 
+def test_chat_degrades_gracefully_when_llm_unavailable(client, monkeypatch):
+    # When the answer model fails (e.g. no API credits), the stream must not crash:
+    # it reports llm_unavailable and still surfaces the retrieved pages.
+    def boom(*_a, **_k):
+        raise RuntimeError("credit balance too low")
+
+    monkeypatch.setattr(webapi, "_grounded_answer", boom)
+    r = client.post("/api/chat", json={"message": "redis", "history": []}, headers=AUTH)
+    assert r.status_code == 200
+    done = _sse_done(r.text)
+    assert done["error"] == "llm_unavailable"
+    assert done["citations"] == []
+    assert done["retrieval"], "retrieved pages still reported so the user sees grounding"
+
+
 # --- fileback ---------------------------------------------------------------
 
 

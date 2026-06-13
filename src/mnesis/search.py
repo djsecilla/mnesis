@@ -161,12 +161,36 @@ def record_and_reindex(page_id: str) -> None:
         pass
 
 
+# A minimal English stopword set so natural-language questions ("what does X
+# use?") don't force every page to contain function words. BM25's IDF already
+# down-weights common terms; dropping these sharpens recall and ranking.
+_STOPWORDS = frozenset(
+    """
+    a an the of to in on at by for from into with as is are was were be been being
+    do does did what which who whom whose how why when where whether
+    this that these those it its and or not no me my we our you your i
+    about tell show give find list please can could would should
+    """.split()
+)
+
+
 def _to_match_query(query: str) -> str | None:
-    """Build a safe FTS5 MATCH expression: alnum tokens, quoted, implicit AND."""
+    """Build a safe FTS5 MATCH expression for keyword/NL retrieval.
+
+    Tokens are **OR-ed and prefix-matched**, so a natural-language question
+    retrieves the relevant pages instead of requiring *every* word to appear, and
+    morphological variants match (``postgres`` -> ``postgresql``, ``auth`` ->
+    ``authentication``). Each token is quoted to neutralize FTS5 operators (``or``,
+    ``near``, …); BM25 then ranks pages matching more — and rarer — terms highest,
+    so precision lives in the ranking rather than in an all-or-nothing filter.
+    """
     tokens = re.findall(r"\w+", query.lower())
     if not tokens:
         return None
-    return " ".join(f'"{t}"' for t in tokens)
+    content = [t for t in tokens if len(t) > 1 and t not in _STOPWORDS]
+    if not content:  # query was all stopwords/short tokens — fall back to them
+        content = [t for t in tokens if len(t) > 1] or tokens
+    return " OR ".join(f'"{t}"*' for t in content)
 
 
 def search(query: str, limit: int = 10, include_stale: bool = False) -> list[SearchHit]:

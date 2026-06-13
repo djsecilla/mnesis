@@ -303,6 +303,24 @@ async def _chat(request: Request) -> EventSourceResponse:
         except (FileNotFoundError, ValueError):
             continue
 
+    # Build the grounding (with component scores) once — used by both the answer
+    # and the LLM-unavailable paths so the user always sees what was retrieved.
+    page_by_id = {p.id: p for p in pages}
+    retrieval = [
+        {
+            "id": h.id,
+            "title": h.title,
+            "kind": page_by_id[h.id].kind,
+            "status": h.status,
+            "confidence": round(h.confidence, 4),
+            "bm25_score": round(h.bm25_score, 4),
+            "graph_proximity": round(h.graph_proximity, 4),
+            "final_score": round(h.final_score, 4),
+        }
+        for h in hits
+        if h.id in page_by_id
+    ]
+
     async def stream():
         if not pages:
             # Never answer from model memory: no pages -> say so, zero citations.
@@ -312,29 +330,28 @@ async def _chat(request: Request) -> EventSourceResponse:
             yield {"event": "done", "data": json.dumps({"citations": [], "retrieval": []})}
             return
 
-        answer = _grounded_answer(message, pages)
+        try:
+            answer = _grounded_answer(message, pages)
+        except Exception:  # noqa: BLE001 — degrade gracefully on any LLM failure
+            # The model is unreachable (no API credits, network, etc.). Don't crash
+            # the stream: tell the user plainly, and still surface the retrieved
+            # pages so it's clear the wiki data WAS considered.
+            log.warning("grounded answer failed; LLM unavailable", exc_info=True)
+            note = (
+                "Found relevant pages in the wiki, but the configured answer model "
+                "is currently unavailable, so there is no synthesized answer. The "
+                "grounding below shows what was retrieved."
+            )
+            for chunk in _chunks(note):
+                yield {"event": "token", "data": chunk}
+            yield {"event": "done", "data": json.dumps(
+                {"citations": [], "retrieval": retrieval, "error": "llm_unavailable"})}
+            return
+
         for chunk in _chunks(answer):
             yield {"event": "token", "data": chunk}
-
-        page_by_id = {p.id: p for p in pages}
         valid = set(page_by_id)
         cited = list(dict.fromkeys(c for c in _CITE_RE.findall(answer) if c in valid))
-        # Report the grounding with component scores — visible honesty about
-        # where the answer came from (kind/title sourced from the loaded page).
-        retrieval = [
-            {
-                "id": h.id,
-                "title": h.title,
-                "kind": page_by_id[h.id].kind,
-                "status": h.status,
-                "confidence": round(h.confidence, 4),
-                "bm25_score": round(h.bm25_score, 4),
-                "graph_proximity": round(h.graph_proximity, 4),
-                "final_score": round(h.final_score, 4),
-            }
-            for h in hits
-            if h.id in page_by_id
-        ]
         yield {"event": "done", "data": json.dumps({"citations": cited, "retrieval": retrieval})}
 
     return EventSourceResponse(stream())
