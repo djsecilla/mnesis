@@ -193,12 +193,17 @@ def _build_subgraph(root: str | None, depth: int, include_demoted: bool) -> dict
             frontier = nxt
         node_refs = seen
     else:
-        # Overview: prefer high-degree entities, bounded.
+        # Overview: rank ALL entities by edge-degree, then take the top N. Edge-
+        # connected entities come first; if there is room (or no edges at all),
+        # isolated entities are included too — so a knowledge base whose pages
+        # carry entity tags but no relations still renders nodes rather than a
+        # misleading "No graph yet" blank.
         deg: dict[str, int] = {}
         for e in edges:
             deg[e["s"]] = deg.get(e["s"], 0) + 1
             deg[e["o"]] = deg.get(e["o"], 0) + 1
-        node_refs = set(sorted(deg, key=lambda r: (-deg[r], r))[:_MAX_OVERVIEW_NODES])
+        ranked = sorted(types, key=lambda r: (-deg.get(r, 0), r))
+        node_refs = set(ranked[:_MAX_OVERVIEW_NODES])
 
     sub_edges = [e for e in edges if e["s"] in node_refs and e["o"] in node_refs]
 

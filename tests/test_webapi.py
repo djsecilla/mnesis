@@ -172,6 +172,22 @@ def test_graph_subgraph_respects_include_demoted(client):
     assert overview["root"] is None and overview["nodes"]
 
 
+def test_graph_overview_includes_isolated_entities(client):
+    # A page with entity tags but NO relations contributes only isolated nodes
+    # (0 edges). The overview must still surface them, so a knowledge base of
+    # entities-without-relations doesn't render a misleading empty graph.
+    store.write_page(Page(
+        id="iso-note", title="Isolated note about kafka", body="A standalone note.",
+        tags=["library:kafka", "concept:streaming"], relations=[],
+    ))
+    graph.rebuild_graph()
+    overview = client.get("/api/graph", headers=AUTH).json()
+    refs = {n["ref"] for n in overview["nodes"]}
+    assert "library:kafka" in refs        # isolated entity appears…
+    degrees = {n["ref"]: n["degree"] for n in overview["nodes"]}
+    assert degrees["library:kafka"] == 0  # …with no edges
+
+
 def test_entity_and_impact(client):
     ent = client.get("/api/entity/library:redis", headers=AUTH).json()
     assert ent["type"] == "library" and ent["edges"]
