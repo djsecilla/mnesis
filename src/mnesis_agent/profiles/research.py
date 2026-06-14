@@ -55,4 +55,5 @@ RESEARCH = Archetype(
     max_input_tokens=80_000,
     context_limit=8,
     entry_mode="batch",
+    allow_local_tools=True,   # the only profile that may use opt-in local tools
 )

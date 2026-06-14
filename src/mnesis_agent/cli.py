@@ -16,7 +16,9 @@ import logging
 import sys
 
 from . import config
+from .audit import default_audit_log
 from .daemon import IngestDaemon, IngestOutcome
+from .local_tools import build_local_tool_source
 from .memory import GroundedAgentResult
 from .profiles import ASSISTANT, INGEST_DAEMON, RESEARCH
 from .runner import build_registry, confirm_and_file, extract_digest_id, run_archetype
@@ -48,7 +50,8 @@ def _banner() -> None:
 
 
 async def _assistant_repl() -> None:
-    registry = build_registry()
+    registry = build_registry()  # local tools off: assistant can't use them anyway
+    audit = default_audit_log()
     _banner()
     print("Mnesis assistant. Ask a question, or Ctrl-D / 'exit' to quit.")
     while True:
@@ -62,7 +65,7 @@ async def _assistant_repl() -> None:
                 break
             continue
 
-        result = await run_archetype(ASSISTANT, line, registry)
+        result = await run_archetype(ASSISTANT, line, registry, audit=audit)
         print("\n" + format_answer(result))
 
         # propose-only: surface a file-back proposal for the human to confirm.
@@ -86,9 +89,16 @@ def cmd_assistant(_args: argparse.Namespace) -> int:
 
 
 async def _research_run(goal: str) -> int:
-    registry = build_registry()
+    # Opt-in local tools (e.g. web_search) are added only if configured, and
+    # are usable only by research (the policy layer enforces this).
+    local = build_local_tool_source()
+    registry = build_registry(local_tools=local)
+    local_names = local.tool_names() if local is not None else frozenset()
+    audit = default_audit_log()
     _banner()
-    result = await run_archetype(RESEARCH, goal, registry)
+    result = await run_archetype(
+        RESEARCH, goal, registry, audit=audit, local_tool_names=local_names
+    )
     print(format_answer(result))
 
     digest_id = extract_digest_id(result)

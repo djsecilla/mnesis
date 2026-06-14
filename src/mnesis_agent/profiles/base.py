@@ -45,6 +45,9 @@ class Archetype:
 
     entry_mode: EntryMode = "interactive"
 
+    #: Whether this profile may use opt-in local tools (A6). Only research does.
+    allow_local_tools: bool = False
+
 
 def to_memory_profile(arch: Archetype) -> MemoryProfile:
     """Project an Archetype onto the MemoryProfile the grounded loop consumes."""
