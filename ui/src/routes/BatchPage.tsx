@@ -1,121 +1,49 @@
-import { useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { ingestCommit, ingestPreview, type PreviewInput } from "../api/endpoints";
-import type { IngestPlan, IngestResult } from "../api/types";
+import { type PreviewInput } from "../api/endpoints";
+import { batchStore, useBatchItems, type BatchItem } from "../batch/store";
 import {
-  buildOverrides,
   commitBlocked,
   effectiveRouting,
   IngestReview,
-  initCuration,
   Spinner,
 } from "../components/IngestReview";
-import type { Curation } from "../components/IngestReview";
 import { successMessage } from "./AddPage";
 
-type Status = "queued" | "previewing" | "ready" | "committing" | "committed" | "error";
-
-interface Item {
-  id: number;
-  name: string;
-  input: PreviewInput;
-  status: Status;
-  plan?: IngestPlan;
-  curation?: Curation;
-  result?: IngestResult;
-  error?: string;
-  expanded: boolean;
-}
-
-const PREVIEW_CONCURRENCY = 3;
-
-async function runPool(tasks: Array<() => Promise<void>>, limit: number): Promise<void> {
-  let i = 0;
-  await Promise.all(
-    Array.from({ length: Math.min(limit, tasks.length) }, async () => {
-      while (i < tasks.length) await tasks[i++]();
-    }),
-  );
-}
-
 export default function BatchPage() {
-  const [items, setItems] = useState<Item[]>([]);
+  // The queue + its processing live in the module-level store, so jobs keep
+  // running across navigation. Only these input fields are ephemeral page state.
+  const items = useBatchItems();
   const [text, setText] = useState("");
   const [pasteName, setPasteName] = useState("");
   const [dragOver, setDragOver] = useState(false);
-  const [committingAll, setCommittingAll] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
-  const nextId = useRef(1);
-  const itemsRef = useRef(items);
-  itemsRef.current = items;
-  const qc = useQueryClient();
-
-  function update(id: number, patch: Partial<Item>) {
-    setItems((prev) => prev.map((it) => (it.id === id ? { ...it, ...patch } : it)));
-  }
-
-  async function previewItem(id: number, input: PreviewInput) {
-    update(id, { status: "previewing", error: undefined });
-    try {
-      const plan = await ingestPreview(input);
-      update(id, { status: "ready", plan, curation: initCuration(plan) });
-    } catch (e) {
-      update(id, { status: "error", error: (e as Error).message });
-    }
-  }
-
-  function enqueue(entries: Array<{ name: string; input: PreviewInput }>) {
-    if (entries.length === 0) return;
-    const startEmpty = itemsRef.current.length === 0;
-    const newItems: Item[] = entries.map((e, idx) => ({
-      id: nextId.current++,
-      name: e.name,
-      input: e.input,
-      status: "queued",
-      expanded: startEmpty && idx === 0, // auto-expand the first when starting fresh
-    }));
-    setItems((prev) => [...prev, ...newItems]);
-    void runPool(newItems.map((it) => () => previewItem(it.id, it.input)), PREVIEW_CONCURRENCY);
-  }
 
   function addFiles(files: FileList | null) {
     if (!files) return;
-    enqueue(Array.from(files).map((f) => ({ name: f.name, input: { file: f, sourceRef: f.name.replace(/\.[^.]+$/, "") } })));
+    batchStore.enqueue(
+      Array.from(files).map((f) => ({
+        name: f.name,
+        input: { file: f, sourceRef: f.name.replace(/\.[^.]+$/, "") } as PreviewInput,
+      })),
+    );
   }
 
   function addPaste() {
     const t = text.trim();
     if (!t) return;
     const name = pasteName.trim() || t.split("\n")[0].slice(0, 40) || "pasted source";
-    enqueue([{ name, input: { text: t, sourceRef: pasteName.trim() || undefined } }]);
+    batchStore.enqueue([{ name, input: { text: t, sourceRef: pasteName.trim() || undefined } }]);
     setText("");
     setPasteName("");
   }
 
-  async function commitItem(item: Item) {
-    if (!item.plan || !item.curation) return;
-    update(item.id, { status: "committing", error: undefined });
-    try {
-      const result = await ingestCommit(item.plan, buildOverrides(item.curation));
-      update(item.id, { status: "committed", result });
-      for (const key of [["pages"], ["graph"], ["palette-graph"], ["sources"], ["reviews"]]) {
-        qc.invalidateQueries({ queryKey: key });
-      }
-    } catch (e) {
-      update(item.id, { status: "error", error: (e as Error).message });
-    }
-  }
-
-  async function commitAll() {
-    const ready = itemsRef.current.filter((it) => it.status === "ready" && it.plan && it.curation && !commitBlocked(it.plan, it.curation));
-    setCommittingAll(true);
-    await runPool(ready.map((it) => () => commitItem(it)), PREVIEW_CONCURRENCY);
-    setCommittingAll(false);
-  }
-
   const summary = summarize(items);
-  const readyCount = items.filter((it) => it.status === "ready" && it.plan && it.curation && !commitBlocked(it.plan, it.curation)).length;
+  const readyCount = items.filter(
+    (it) => it.status === "ready" && it.plan && it.curation && !commitBlocked(it.plan, it.curation),
+  ).length;
+  const anyCommitting = items.some((it) => it.status === "committing");
+  const finishedCount = items.filter((it) => it.status === "committed").length;
 
   return (
     <div className="mx-auto max-w-2xl p-8">
@@ -124,6 +52,7 @@ export default function BatchPage() {
           <h1 className="text-2xl font-semibold tracking-tight">Add several</h1>
           <p className="mt-1 text-sm text-muted">
             Drop multiple files or add pastes. Each previews on its own — review and commit when ready.
+            Jobs keep running if you browse away.
           </p>
         </div>
         <Link to="/add" className="shrink-0 whitespace-nowrap text-sm text-accent hover:underline">← Single source</Link>
@@ -169,16 +98,26 @@ export default function BatchPage() {
       {/* queue */}
       {items.length > 0 && (
         <section className="mt-6">
-          <div className="mb-3 flex items-center justify-between border-t border-border pt-4">
+          <div className="mb-3 flex items-center justify-between gap-3 border-t border-border pt-4">
             <span className="text-sm text-muted">{summary}</span>
-            <button
-              onClick={commitAll}
-              disabled={readyCount === 0 || committingAll}
-              className="inline-flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-accent-fg disabled:opacity-50"
-            >
-              {committingAll && <Spinner />}
-              Commit all ({readyCount})
-            </button>
+            <div className="flex items-center gap-2">
+              {finishedCount > 0 && (
+                <button
+                  onClick={() => batchStore.clearFinished()}
+                  className="rounded-lg border border-border px-3 py-2 text-sm text-muted hover:border-accent hover:text-fg"
+                >
+                  Clear committed
+                </button>
+              )}
+              <button
+                onClick={() => batchStore.commitAll()}
+                disabled={readyCount === 0 || anyCommitting}
+                className="inline-flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-accent-fg disabled:opacity-50"
+              >
+                {anyCommitting && <Spinner />}
+                Commit all ({readyCount})
+              </button>
+            </div>
           </div>
 
           <ul className="space-y-2">
@@ -192,9 +131,9 @@ export default function BatchPage() {
                       open page →
                     </Link>
                   )}
-                  {(item.status === "ready") && item.plan && item.curation && (
+                  {item.status === "ready" && item.plan && item.curation && (
                     <button
-                      onClick={() => commitItem(item)}
+                      onClick={() => batchStore.commit(item.id)}
                       disabled={commitBlocked(item.plan, item.curation)}
                       className="rounded border border-border px-2 py-0.5 text-xs hover:border-accent disabled:opacity-40"
                     >
@@ -202,10 +141,10 @@ export default function BatchPage() {
                     </button>
                   )}
                   {item.status !== "committing" && item.status !== "committed" && (
-                    <button onClick={() => setItems((p) => p.filter((x) => x.id !== item.id))} className="text-muted hover:text-fg" title="remove">×</button>
+                    <button onClick={() => batchStore.remove(item.id)} className="text-muted hover:text-fg" title="remove">×</button>
                   )}
                   {item.plan && (
-                    <button onClick={() => update(item.id, { expanded: !item.expanded })} className="text-muted hover:text-fg" title="expand">
+                    <button onClick={() => batchStore.toggleExpanded(item.id)} className="text-muted hover:text-fg" title="expand">
                       {item.expanded ? "▾" : "▸"}
                     </button>
                   )}
@@ -220,7 +159,7 @@ export default function BatchPage() {
                     <IngestReview
                       plan={item.plan}
                       curation={item.curation}
-                      onChange={(patch) => update(item.id, { curation: { ...item.curation!, ...patch } })}
+                      onChange={(patch) => batchStore.updateCuration(item.id, patch)}
                     />
                   </div>
                 )}
@@ -237,7 +176,7 @@ export default function BatchPage() {
   );
 }
 
-function StatusChip({ item }: { item: Item }) {
+function StatusChip({ item }: { item: BatchItem }) {
   if (item.status === "queued" || item.status === "previewing")
     return <span className="inline-flex items-center gap-1.5 text-xs text-muted"><Spinner /> previewing</span>;
   if (item.status === "committing")
@@ -261,7 +200,7 @@ function StatusChip({ item }: { item: Item }) {
   );
 }
 
-function summarize(items: Item[]): string {
+function summarize(items: BatchItem[]): string {
   let previewing = 0, ready = 0, conflict = 0, committed = 0, error = 0;
   for (const it of items) {
     if (it.status === "queued" || it.status === "previewing" || it.status === "committing") previewing++;
@@ -271,7 +210,7 @@ function summarize(items: Item[]): string {
     else ready++;
   }
   const parts: string[] = [];
-  if (previewing) parts.push(`${previewing} previewing`);
+  if (previewing) parts.push(`${previewing} working`);
   if (ready) parts.push(`${ready} ready`);
   if (conflict) parts.push(`${conflict} conflict`);
   if (committed) parts.push(`${committed} committed`);

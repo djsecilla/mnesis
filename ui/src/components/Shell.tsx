@@ -2,8 +2,10 @@ import { useQuery } from "@tanstack/react-query";
 import { Suspense, useEffect, useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 import { listReviews } from "../api/endpoints";
+import { activeBatchCount, useBatchItems } from "../batch/store";
 import CommandPalette from "./CommandPalette";
 import { ChatIcon, GraphIcon, PagesIcon, PlusIcon, ReviewIcon, SearchIcon, SourcesIcon } from "./Icon";
+import { Spinner } from "./IngestReview";
 import Logo, { BrandSplash } from "./Logo";
 import ThemeToggle from "./ThemeToggle";
 
@@ -36,6 +38,24 @@ function ReviewRailLink() {
   );
 }
 
+function BatchIndicator() {
+  // Surfaces background batch-ingestion work that keeps running off-page, with
+  // a one-click way back to it. Hidden when nothing is processing.
+  const items = useBatchItems();
+  const active = activeBatchCount(items);
+  if (active === 0) return null;
+  return (
+    <NavLink
+      to="/add/batch"
+      title="Batch ingestion in progress — click to view"
+      className="inline-flex items-center gap-1.5 rounded-full border border-border bg-elev px-2.5 py-1 text-xs text-muted hover:border-accent hover:text-fg"
+    >
+      <Spinner />
+      <span className="tabular-nums">{active} ingesting…</span>
+    </NavLink>
+  );
+}
+
 export default function Shell() {
   const [paletteOpen, setPaletteOpen] = useState(false);
 
@@ -63,7 +83,10 @@ export default function Shell() {
         >
           <Logo lockup size={34} />
         </NavLink>
-        <ThemeToggle />
+        <div className="flex items-center gap-3">
+          <BatchIndicator />
+          <ThemeToggle />
+        </div>
       </header>
 
       <div className="flex flex-1 overflow-hidden">
