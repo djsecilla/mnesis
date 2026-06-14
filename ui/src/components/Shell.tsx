@@ -54,14 +54,14 @@ export default function Shell() {
   return (
     <div className="flex h-screen flex-col bg-bg text-fg">
       {/* Brand header — persistent across every page. The lockup is home. */}
-      <header className="flex h-12 shrink-0 items-center justify-between border-b border-border px-3">
+      <header className="flex h-14 shrink-0 items-center justify-between border-b border-border px-4">
         <NavLink
           to="/graph"
           title="mnesis — home"
           aria-label="mnesis — home"
           className="flex items-center rounded-md text-fg transition-opacity hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
         >
-          <Logo lockup size={24} />
+          <Logo lockup size={34} />
         </NavLink>
         <ThemeToggle />
       </header>
