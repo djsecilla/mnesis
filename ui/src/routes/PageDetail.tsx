@@ -1,4 +1,5 @@
 import { useQueries, useQuery } from "@tanstack/react-query";
+import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { getEntity, getPage } from "../api/endpoints";
 import { EntityChip, KindBadge, RelationChip, StatusBadge } from "../components/Badges";
@@ -13,8 +14,46 @@ function PageLink({ id }: { id: string }) {
   );
 }
 
+/** Link a source ref to its full stored text (Sources view), or out if it's a URL. */
+function SourceRef({ refName }: { refName: string }) {
+  const isUrl = /^https?:\/\//i.test(refName);
+  if (isUrl) {
+    return (
+      <a href={refName} target="_blank" rel="noreferrer" className="text-accent hover:underline">
+        {refName}
+      </a>
+    );
+  }
+  return (
+    <Link to={`/sources?source=${encodeURIComponent(refName)}`} className="text-accent hover:underline">
+      {refName}
+    </Link>
+  );
+}
+
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      onClick={async () => {
+        try {
+          await navigator.clipboard.writeText(text);
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1500);
+        } catch {
+          /* clipboard unavailable — no-op */
+        }
+      }}
+      className="rounded border border-border px-2 py-0.5 text-xs text-muted hover:border-accent hover:text-fg"
+    >
+      {copied ? "Copied" : "Copy"}
+    </button>
+  );
+}
+
 export default function PageDetail() {
   const { id = "" } = useParams();
+  const [showRaw, setShowRaw] = useState(false);
   const { data, isLoading, error } = useQuery({
     queryKey: ["page", id],
     queryFn: () => getPage(id),
@@ -79,7 +118,17 @@ export default function PageDetail() {
           <StatusBadge status={String(fm.status)} />
           <ConfidenceMeter value={data.confidence} breakdown={data.breakdown} />
           {Array.isArray(fm.sources) && fm.sources.length > 0 && (
-            <span>sources: {(fm.sources as string[]).join(", ")}</span>
+            <span className="flex flex-wrap items-center gap-x-1.5">
+              {/* digest sources are the page ids it was synthesized from; fact/note
+                  sources are the original ingested source files. */}
+              {kind === "digest" ? "synthesized from:" : "sources:"}
+              {(fm.sources as string[]).map((s, i) => (
+                <span key={s}>
+                  {i > 0 && <span className="text-muted/50">·</span>}{" "}
+                  {kind === "digest" ? <PageLink id={s} /> : <SourceRef refName={s} />}
+                </span>
+              ))}
+            </span>
           )}
           <span>confirmed {String(fm.last_confirmed).slice(0, 10)}</span>
           {data.id !== String(fm.title) && <span className="text-muted/70">{data.id}</span>}
@@ -118,8 +167,33 @@ export default function PageDetail() {
         </div>
       )}
 
-      {/* Body */}
-      <Markdown body={data.body} />
+      {/* Body — rendered prose, or the full canonical .md (frontmatter + body) */}
+      <div className="mb-3 flex items-center gap-2">
+        <div className="inline-flex overflow-hidden rounded-lg border border-border text-xs">
+          <button
+            onClick={() => setShowRaw(false)}
+            className={`px-2.5 py-1 ${!showRaw ? "bg-elev text-fg" : "text-muted hover:text-fg"}`}
+          >
+            Rendered
+          </button>
+          <button
+            onClick={() => setShowRaw(true)}
+            className={`border-l border-border px-2.5 py-1 ${showRaw ? "bg-elev text-fg" : "text-muted hover:text-fg"}`}
+            title="The full canonical Markdown stored on disk (frontmatter + body)"
+          >
+            Raw .md
+          </button>
+        </div>
+        {showRaw && <CopyButton text={data.raw} />}
+      </div>
+
+      {showRaw ? (
+        <pre className="overflow-auto whitespace-pre-wrap rounded-lg border border-border bg-elev p-4 text-xs leading-relaxed text-fg">
+          {data.raw}
+        </pre>
+      ) : (
+        <Markdown body={data.body} />
+      )}
 
       {data.supersedes && (
         <p className="mt-6 text-xs text-muted">

@@ -1,12 +1,16 @@
 import { useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { getSource, listSources } from "../api/endpoints";
 
 export default function SourcesPage() {
   const { data, isLoading, error } = useQuery({ queryKey: ["sources"], queryFn: listSources });
   const [filter, setFilter] = useState("");
-  const [selected, setSelected] = useState<string | null>(null);
+  // Selection is URL-driven (?source=<id>) so a page can deep-link to its source.
+  const [params, setParams] = useSearchParams();
+  const selected = params.get("source");
+  const select = (id: string) =>
+    setParams(selected === id ? {} : { source: id }, { replace: true });
 
   const sources = data?.sources ?? [];
   const filtered = useMemo(() => {
@@ -39,7 +43,7 @@ export default function SourcesPage() {
           {filtered.map((s) => (
             <li key={s.id}>
               <button
-                onClick={() => setSelected(s.id)}
+                onClick={() => select(s.id)}
                 className={`flex w-full flex-col items-start gap-1 py-3 text-left ${selected === s.id ? "text-fg" : ""}`}
               >
                 <span className="flex w-full items-center gap-2">
