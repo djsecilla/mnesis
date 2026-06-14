@@ -52,7 +52,7 @@ export default function BatchPage() {
           <h1 className="text-2xl font-semibold tracking-tight">Add several</h1>
           <p className="mt-1 text-sm text-muted">
             Drop multiple files or add pastes. Each previews on its own — review and commit when ready.
-            Jobs keep running if you browse away.
+            Jobs keep running if you browse away; pasted sources also survive a reload (dropped files don't).
           </p>
         </div>
         <Link to="/add" className="shrink-0 whitespace-nowrap text-sm text-accent hover:underline">← Single source</Link>

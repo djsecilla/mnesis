@@ -42,6 +42,9 @@ const COMMIT_CONCURRENCY = 3;
 // Read-side caches refreshed after each successful commit.
 const INVALIDATE_KEYS = [["pages"], ["graph"], ["palette-graph"], ["sources"], ["reviews"]];
 
+// localStorage key for the persisted queue (bump the suffix on a schema change).
+const STORAGE_KEY = "mnesis.batch.queue.v1";
+
 type Listener = () => void;
 
 class BatchStore {
@@ -53,6 +56,11 @@ class BatchStore {
   private previewActive = 0;
   private commitQueue: number[] = [];
   private commitActive = 0;
+  private persistTimer: ReturnType<typeof setTimeout> | null = null;
+
+  constructor() {
+    this.rehydrate(); // restore a queue persisted before a reload, and resume work
+  }
 
   // ── external-store contract (useSyncExternalStore) ───────────────────────
   subscribe = (cb: Listener): (() => void) => {
@@ -69,9 +77,93 @@ class BatchStore {
   private setItems(next: BatchItem[]) {
     this.items = next; // new reference each mutation -> stable snapshot when unchanged
     this.emit();
+    this.schedulePersist();
   }
   private patch(id: number, p: Partial<BatchItem>) {
     this.setItems(this.items.map((it) => (it.id === id ? { ...it, ...p } : it)));
+  }
+
+  // ── persistence (survives a full page reload) ────────────────────────────
+  // Only text-bearing items are persisted: a dropped File is a live handle that
+  // can't be reconstructed across a reload (the browser won't re-open it by
+  // path), so file items are intentionally not restored. In-flight statuses are
+  // normalized on restore and unfinished previews are re-issued.
+  private schedulePersist() {
+    if (typeof localStorage === "undefined") return;
+    if (this.persistTimer) clearTimeout(this.persistTimer);
+    this.persistTimer = setTimeout(() => {
+      this.persistTimer = null;
+      this.persist();
+    }, 250); // coalesce rapid mutations (preview pump, curation edits)
+  }
+
+  private persist() {
+    try {
+      const items = this.items
+        .filter((it) => it.input.text != null) // text-only; files can't be restored
+        .map((it) => ({
+          id: it.id,
+          name: it.name,
+          input: { text: it.input.text, sourceRef: it.input.sourceRef },
+          status: it.status,
+          plan: it.plan,
+          curation: it.curation,
+          result: it.result,
+          error: it.error,
+          expanded: it.expanded,
+        }));
+      if (items.length === 0) {
+        localStorage.removeItem(STORAGE_KEY);
+        return;
+      }
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ v: 1, nextId: this.nextId, items }));
+    } catch {
+      // Quota exceeded / serialization issue — persistence is best-effort; the
+      // in-session queue keeps working regardless.
+    }
+  }
+
+  private rehydrate() {
+    if (typeof localStorage === "undefined") return;
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return;
+      const data = JSON.parse(raw);
+      if (!data || data.v !== 1 || !Array.isArray(data.items)) return;
+
+      const restored: BatchItem[] = data.items.map((s: BatchItem): BatchItem => {
+        // In-flight statuses can't carry across a reload. A previewing/queued
+        // item with a plan already finished -> ready; without one -> re-queue.
+        // A committing item is left as ready so the user re-commits deliberately
+        // (we never auto-re-commit, to avoid duplicate writes).
+        let status: BatchStatus = s.status;
+        if (status === "previewing" || status === "queued") status = s.plan ? "ready" : "queued";
+        else if (status === "committing") status = s.plan && s.curation ? "ready" : "queued";
+        return {
+          id: s.id,
+          name: s.name,
+          input: { text: s.input?.text, sourceRef: s.input?.sourceRef },
+          status,
+          plan: s.plan,
+          curation: s.curation,
+          result: s.result,
+          error: s.error,
+          expanded: !!s.expanded,
+        };
+      });
+
+      this.items = restored; // set directly; avoid an immediate re-persist
+      this.nextId =
+        typeof data.nextId === "number"
+          ? data.nextId
+          : Math.max(0, ...restored.map((i) => i.id)) + 1;
+
+      // Re-issue previews that hadn't completed before the reload.
+      restored.filter((it) => it.status === "queued").forEach((it) => this.previewQueue.push(it.id));
+      this.pumpPreview();
+    } catch {
+      // Corrupt storage — start fresh rather than crash.
+    }
   }
 
   // ── queue management ─────────────────────────────────────────────────────
