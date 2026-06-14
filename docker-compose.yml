@@ -18,6 +18,10 @@ services:
       MNESIS_ROOT: /data/mnesis
       MNESIS_MCP_HOST: 0.0.0.0
       MNESIS_MCP_PORT: "8080"            # internal bind; the HOST port is set via `ports`
+      # DNS-rebinding-protection Host allowlist. Default permits the internal
+      # service name (so the dockerized agent at mnesis:8080 isn't 421'd) plus
+      # localhost (host-side agents). Override in .env to add more names.
+      MNESIS_MCP_ALLOWED_HOSTS: ${MNESIS_MCP_ALLOWED_HOSTS:-mnesis:*,localhost:*,127.0.0.1:*}
       # Inference provider (default anthropic/stub). For local-first inference,
       # set MNESIS_LLM_PROVIDER=local in .env and run Ollama (or any OpenAI-
       # compatible server) on the HOST — the base URL below reaches it via
@@ -85,6 +89,69 @@ services:
       retries: 5
       start_period: 10s
 
+  # --- runtime agent: the ingest-daemon (profile: agent) -----------------------
+  # NOT started by a plain `up`. Bring it up with:
+  #   docker compose --profile agent up -d
+  # A separately-deployable MCP CLIENT of mnesis (it never imports the core and
+  # holds no knowledge state): it reaches Mnesis ONLY over the MCP endpoint on
+  # the internal compose network, so Mnesis's own governance (redaction,
+  # contradiction review) still gates every write — the agent merely calls the
+  # tool. It watches /watch and ingests new files via mnesis_ingest; run logs go
+  # to a volume (knowledge stays in mnesis). The same service definition backs
+  # the one-off `make agent-research` / `make agent-assistant` (docker compose
+  # run --rm mnesis-agent agent <research|assistant> ...).
+  mnesis-agent:
+    build: .
+    image: mnesis:latest
+    profiles: ["agent"]
+    command: agent ingest-daemon --watch /watch --poll-interval ${MNESIS_AGENT_POLL_INTERVAL:-5}
+    restart: unless-stopped
+    depends_on:
+      mnesis:
+        condition: service_healthy
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # Reach Mnesis over the internal network only (no published port needed).
+      MNESIS_MCP_URL: ${MNESIS_AGENT_MCP_URL:-http://mnesis:8080/mcp}
+      # Must match the server's token so the bearer-authenticated /mcp accepts us.
+      MNESIS_MCP_TOKEN: ${MNESIS_MCP_TOKEN:-}
+      # Inference provider for the interactive archetypes (the ingest-daemon does
+      # NOT call an LLM — extraction runs server-side in mnesis). Mirrors the core
+      # stack: set MNESIS_LLM_PROVIDER=local in .env for fully-local, on-prem
+      # inference via host Ollama (no external calls).
+      MNESIS_LLM_PROVIDER: ${MNESIS_LLM_PROVIDER:-anthropic}
+      MNESIS_LLM_MODEL: ${MNESIS_LLM_MODEL:-claude-sonnet-4-6}
+      MNESIS_LLM_BASE_URL: ${MNESIS_LLM_BASE_URL:-http://host.docker.internal:11434}
+      MNESIS_LLM_STUB: ${MNESIS_LLM_STUB:-}
+      # Append-only JSONL run audit (statuses + ids only — never values).
+      MNESIS_AGENT_AUDIT_DIR: /data/agent_runs
+      # Optional in-process local tools (e.g. web_search) — off unless set; only
+      # the research profile may ever use them.
+      MNESIS_AGENT_ENABLE_LOCAL_TOOLS: ${MNESIS_AGENT_ENABLE_LOCAL_TOOLS:-}
+    # Reach the host's Ollama as host.docker.internal when provider=local.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      # Drop files here on the host to ingest them. Read-only: the daemon only
+      # reads — it ingests via MCP and never modifies the watch dir.
+      - ${MNESIS_AGENT_WATCH_DIR:-./agent_watch}:/watch:ro
+      # Run audit (logs only). Knowledge state lives in mnesis, not here.
+      - mnesis-agent-runs:/data/agent_runs
+    healthcheck:
+      # No port to probe; "healthy" means the daemon can reach mnesis over the
+      # internal network. /health is unauthenticated; python is already present.
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://mnesis:8080/health', timeout=3).status==200 else 1)"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
   # --- local-first inference (opt-in) ------------------------------------------
   # mnesis can run inference on a LOCAL model server instead of Anthropic — set
   # MNESIS_LLM_PROVIDER=local in .env (and MNESIS_LLM_MODEL=<an Ollama tag>).
@@ -139,5 +206,6 @@ services:
 
 volumes:
   mnesis-data:
+  mnesis-agent-runs:         # agent run audit (JSONL); created with --profile agent
   # postgres-data:           # (Tier-B) uncomment alongside the postgres service
   # qdrant-data:             # (Tier-B) uncomment alongside the qdrant service

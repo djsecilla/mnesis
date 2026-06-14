@@ -2,7 +2,8 @@
 # All targets use uv; the test/demo targets run fully offline (stub LLM).
 
 .PHONY: help setup test demo demo-phase2 demo-phase3 run-mcp rebuild decay review graph-stats graph-lint \
-        docker-build docker-up docker-down docker-logs docker-cli docker-seed docker-demo ui-dev
+        docker-build docker-up docker-down docker-logs docker-cli docker-seed docker-demo ui-dev \
+        agent-up agent-down agent-logs agent-research agent-assistant
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -70,3 +71,20 @@ docker-demo: ## Run the latest-phase demo inside the container (offline, self-co
 	echo "running scripts/$$d.py in the container"; \
 	docker compose run --rm -e MNESIS_LLM_STUB=1 -v "$(PWD)/scripts:/scripts:ro" \
 		--entrypoint python mnesis "/scripts/$$d.py"
+
+# --- Agent layer ------------------------------------------------------------
+
+agent-up: ## Start the ingest-daemon agent alongside mnesis (docker compose --profile agent)
+	docker compose --profile agent up -d
+
+agent-down: ## Stop the agent service (mnesis stays up)
+	docker compose rm -sf mnesis-agent
+
+agent-logs: ## Tail the ingest-daemon logs
+	docker compose logs -f mnesis-agent
+
+agent-research: ## Bounded research investigation against the running stack: make agent-research GOAL="what uses redis"
+	docker compose run --rm mnesis-agent agent research "$(GOAL)"
+
+agent-assistant: ## Interactive grounded assistant REPL against the running stack
+	docker compose run --rm mnesis-agent agent assistant

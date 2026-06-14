@@ -29,7 +29,36 @@ from .store import Page
 
 log = logging.getLogger(__name__)
 
-mcp = FastMCP("mnesis")
+
+def _transport_security():
+    """Build TransportSecuritySettings from ``MNESIS_MCP_ALLOWED_HOSTS``.
+
+    Returns ``None`` when the env is unset (keep FastMCP's secure default —
+    localhost only). When set, DNS-rebinding protection stays ON but the listed
+    hosts (and their http/https origins) are accepted, so a networked client
+    that reaches the server by service name (``mnesis:8080``) is not rejected
+    with 421. The python MCP client sends no Origin header, so origins matter
+    only for browser callers.
+    """
+    raw = config.MNESIS_MCP_ALLOWED_HOSTS.strip()
+    if not raw:
+        return None
+    hosts = [h.strip() for h in raw.split(",") if h.strip()]
+    origins: list[str] = []
+    for h in hosts:
+        origins.append(f"http://{h}")
+        origins.append(f"https://{h}")
+    from mcp.server.transport_security import TransportSecuritySettings
+
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=hosts,
+        allowed_origins=origins,
+    )
+
+
+_ts = _transport_security()
+mcp = FastMCP("mnesis", transport_security=_ts) if _ts else FastMCP("mnesis")
 
 
 def _open_contradiction_ids() -> set[str]:
@@ -74,19 +103,30 @@ def _digest_body(answer: str, sources: list[str]) -> str:
 def mnesis_ingest(text: str, source_ref: str) -> str:
     """Filter, extract, and write a source as a canonical fact page.
 
-    Returns the created page's id, title, tags, and how many secrets/PII were
-    redacted at the boundary.
+    Returns the resulting page's id, title, tags, the routing **action**
+    (new / reinforce / supersede / contradict — decided by Mnesis, not the
+    caller), how many secrets/PII were redacted at the boundary, and — when the
+    routing produced them — the superseded page id and/or the contradiction
+    review id. The action/review lines let an automated client (e.g. the ingest
+    daemon) report the outcome without forcing any resolution.
     """
-    _, findings = scrub(text)  # for the redaction count in the summary
-    page = ingest.ingest_source(text, source_ref)
+    plan = ingest.plan_ingest(text, source_ref)
+    result = ingest.apply_ingest(plan)  # the rich IngestResult (routing + ids)
+    page = store.read_page(result["page_id"])
     search.upsert(page)
     tags = ", ".join(page.tags) if page.tags else "(none)"
-    return (
-        f"ingested page: {page.id}\n"
-        f"title: {page.title}\n"
-        f"tags: {tags}\n"
-        f"redactions: {len(findings)}"
-    )
+    lines = [
+        f"ingested page: {page.id}",
+        f"title: {page.title}",
+        f"tags: {tags}",
+        f"action: {result['action_taken']}",
+        f"redactions: {result['redaction_count']}",
+    ]
+    if result.get("superseded_id"):
+        lines.append(f"superseded: {result['superseded_id']}")
+    if result.get("review_id") is not None:
+        lines.append(f"review: {result['review_id']}")
+    return "\n".join(lines)
 
 
 @mcp.tool()

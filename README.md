@@ -274,6 +274,8 @@ pointing at the host's Ollama) — see above; no profile or extra container.
 **Optional profiles** (not started by a plain `up`):
 - `docker compose --profile maintenance up -d` — periodic decay / graph-lint /
   rebuild upkeep (see above).
+- `docker compose --profile agent up -d` — the **ingest-daemon** agent (see
+  [Agent layer](#agent-layer) below).
 
 ### Connect Claude Code
 
@@ -290,6 +292,85 @@ repo ships [`.mcp.json`](.mcp.json), so running `claude` from the project root
 auto-discovers the server over **stdio** (it spawns `.venv/bin/python -m
 mnesis.mcp_server`; run `make setup` first). stdio = local subprocess, no port,
 no token; HTTP = networked, token-guarded. Same tools either way.
+
+## Agent layer
+
+mnesis ships a **runtime agent** (`mnesis_agent`, console script `mnesis-agent`)
+that uses the knowledge base as long-term memory. It is a *separately-deployable
+client*: it reaches mnesis **only over the MCP endpoint** and never imports the
+core, so **Mnesis's governance still gates every write** — redaction and
+contradiction/supersession review run server-side; the agent merely calls the
+tool and cannot bypass them. One core, three profiles:
+
+| Archetype | Tools | Writes | Entry |
+|---|---|---|---|
+| **assistant** | read/graph (query, get, entity, impact, traverse) | **proposes** a digest; never writes itself (the human confirms) | interactive REPL |
+| **research** | read/graph + `file_back` | **applies** — files exactly one digest (digests only; never ingest/supersede) | one-shot batch |
+| **ingest-daemon** | `ingest` (+ read for dedup) | **applies** — ingests watched files | long-running watcher |
+
+### Run recipes (against a running stack)
+
+```bash
+# 0. Bring up the core (and seed something to talk about).
+make docker-up && make docker-seed
+
+# 1. Ingest-daemon as a service: watches ./agent_watch and ingests new files.
+make agent-up                         # docker compose --profile agent up -d
+cp notes.txt ./agent_watch/           # dropped files are ingested into mnesis…
+make docker-cli ARGS='query "<a phrase from notes.txt>"'   # …and become queryable
+make agent-logs                       # one log line per ingest outcome
+make agent-down
+
+# 2. Research: a bounded investigation that crystallizes a cited digest.
+make agent-research GOAL="what depends on redis in atlas"
+#   → prints a cited report + the created digest page id (filed back into mnesis)
+
+# 3. Assistant: an interactive grounded REPL; proposes a file-back you confirm.
+make agent-assistant
+```
+
+The `agent-research` / `agent-assistant` targets run one-off containers
+(`docker compose run --rm mnesis-agent …`) that share the service's network and
+env, so they reach mnesis at `http://mnesis:8080/mcp` over the internal network.
+
+### MCP-endpoint connection
+
+The agent connects with `MNESIS_MCP_URL` + `MNESIS_MCP_TOKEN`. In Compose both
+default to the internal service (`http://mnesis:8080/mcp`) and the shared
+`.env` token. The dockerized agent never needs the host-published port — it
+talks to mnesis over the compose network only. (Because the agent reaches mnesis
+by service name, the server's DNS-rebinding Host allowlist must include it;
+Compose sets `MNESIS_MCP_ALLOWED_HOSTS=mnesis:*,localhost:*,127.0.0.1:*` for you.)
+The **ingest-daemon calls no LLM** — extraction runs server-side in mnesis — so
+only `research`/`assistant` use the provider.
+
+### Fully-local recipe (nothing leaves the box)
+
+Agent **+** Mnesis **+** a local model, all on one host, with **no external
+inference**. Set the local provider in `.env` (host Ollama, per
+[Local-first inference](#run-with-docker)):
+
+```dotenv
+MNESIS_LLM_PROVIDER=local
+MNESIS_LLM_MODEL=llama3.2:3b
+MNESIS_LLM_STUB=0
+MNESIS_LLM_BASE_URL=http://host.docker.internal:11434   # the default
+```
+
+```bash
+docker compose --profile agent up -d        # mnesis + the daemon, both on-prem
+make agent-research GOAL="…"                 # research uses the local model
+```
+
+Both `mnesis` and `mnesis-agent` then target your host Ollama; sources, the
+knowledge base, and inference all stay inside one trust boundary. The agent
+container is **stateless** — knowledge lives in mnesis; run audit (statuses and
+ids only, never values) goes to the `mnesis-agent-runs` volume.
+
+> **Seam for the Web UI.** The **assistant** archetype is designed to later back
+> the Web UI chat endpoint — upgrading today's simple RAG `/chat` into *agentic*
+> retrieval (multi-step query → graph traversal → grounded, cited answer) while
+> keeping the same grounded-and-cited contract.
 
 ## Verify the PoC
 

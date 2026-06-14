@@ -165,6 +165,14 @@ MNESIS_MCP_PORT: int = _env_int("MNESIS_MCP_PORT", 8080)
 #: ``Authorization: Bearer <token>``. Empty = no auth (privileged endpoint).
 MNESIS_MCP_TOKEN: str = os.environ.get("MNESIS_MCP_TOKEN", "")
 
+#: Host-header allowlist for the HTTP MCP endpoint's DNS-rebinding protection
+#: (comma-separated; each entry an exact ``host:port`` or a ``host:*`` wildcard).
+#: Empty keeps FastMCP's secure default (localhost only) — correct for host-side
+#: agents reaching ``localhost:8080``. A networked deployment where clients reach
+#: the server by another name (e.g. the dockerized agent connecting to
+#: ``mnesis:8080``) must list that name here, else the server returns 421.
+MNESIS_MCP_ALLOWED_HOSTS: str = os.environ.get("MNESIS_MCP_ALLOWED_HOSTS", "")
+
 #: Max bytes accepted by the ingestion upload endpoints (pasted text or file).
 MNESIS_MAX_UPLOAD_BYTES: int = _env_int("MNESIS_MAX_UPLOAD_BYTES", 2_000_000)
 

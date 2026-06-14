@@ -57,6 +57,48 @@ class IngestOutcome:
     message: str = ""
 
 
+def _parse_ingest_result(raw: str) -> dict:
+    """Extract {action, page_id, review_id} from a mnesis_ingest result.
+
+    Tolerant of two shapes: a JSON ``IngestResult`` (the in-process FakeToolSource
+    and any structured server) and the real MCP tool's human-readable ``key:
+    value`` text (``ingested page: <id>`` / ``action: <a>`` / ``review: <n>``).
+    Missing fields come back as None so the daemon degrades gracefully.
+    """
+    out: dict = {"action": None, "page_id": None, "review_id": None}
+    raw = (raw or "").strip()
+    if not raw:
+        return out
+
+    # JSON first.
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, ValueError, TypeError):
+        data = None
+    if isinstance(data, dict):
+        out["action"] = data.get("action_taken") or data.get("action")
+        out["page_id"] = data.get("page_id") or data.get("id")
+        out["review_id"] = data.get("review_id")
+        return out
+
+    # Text fallback: parse "key: value" lines.
+    for line in raw.splitlines():
+        if ":" not in line:
+            continue
+        key, _, value = line.partition(":")
+        key, value = key.strip().lower(), value.strip()
+        if key in ("ingested page", "page", "page_id") and not out["page_id"]:
+            out["page_id"] = value
+        elif key == "action":
+            out["action"] = value
+        elif key == "review":
+            try:
+                out["review_id"] = int(value)
+            except ValueError:
+                pass
+    return out
+
+
 def _slug(text: str) -> str:
     """Collision-light slug for a source_ref derived from a filename."""
     s = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
@@ -142,16 +184,10 @@ class IngestDaemon:
 
         # Parse the server outcome. The daemon only reports routing — it never
         # acts on a contradiction (no mnesis_resolve call).
-        action = page_id = None
-        review_id = None
-        try:
-            data = json.loads(raw)
-            if isinstance(data, dict):
-                action = data.get("action_taken")
-                page_id = data.get("page_id")
-                review_id = data.get("review_id")
-        except (json.JSONDecodeError, ValueError, TypeError):
-            pass
+        parsed = _parse_ingest_result(raw)
+        action = parsed["action"]
+        page_id = parsed["page_id"]
+        review_id = parsed["review_id"]
 
         self._seen.add(source_ref)
         if action == "contradict":

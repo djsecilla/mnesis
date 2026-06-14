@@ -38,12 +38,47 @@ def test_mnesis_ingest_reports_summary_and_redacts(wiki):
     )
     assert "ingested page:" in out
     assert "redactions: 1" in out  # the fake secret was caught
+    # The routing action is surfaced so an automated client can report the
+    # outcome (a brand-new fact routes to "new").
+    assert "action: new" in out
 
     # The secret never reaches the page on disk.
     pages = store.list_pages()
     assert len(pages) == 1
     page_text = (config.PAGES_DIR / f"{pages[0].id}.md").read_text()
     assert FAKE_SECRET not in page_text
+
+
+def test_mnesis_ingest_action_line_is_parseable(wiki):
+    """The agent's daemon parses the action/page_id from the tool's text output."""
+    from mnesis_agent.daemon import _parse_ingest_result
+
+    out = mcp_server.mnesis_ingest("Project Atlas uses Redis for caching.", "atlas-notes")
+    parsed = _parse_ingest_result(out)
+    assert parsed["action"] == "new"
+    assert parsed["page_id"]  # the real page id, extracted from "ingested page: <id>"
+    assert parsed["page_id"] in {p.id for p in store.list_pages()}
+
+
+# --- HTTP transport: DNS-rebinding Host allowlist ---------------------------
+
+
+def test_transport_security_none_by_default(monkeypatch):
+    """Unset MNESIS_MCP_ALLOWED_HOSTS keeps FastMCP's secure default (localhost)."""
+    monkeypatch.setattr(config, "MNESIS_MCP_ALLOWED_HOSTS", "")
+    assert mcp_server._transport_security() is None
+
+
+def test_transport_security_allows_configured_hosts(monkeypatch):
+    """A networked deployment lists the service name so it is not 421'd."""
+    monkeypatch.setattr(config, "MNESIS_MCP_ALLOWED_HOSTS", "mnesis:*, localhost:*")
+    ts = mcp_server._transport_security()
+    assert ts is not None
+    assert ts.enable_dns_rebinding_protection is True
+    assert "mnesis:*" in ts.allowed_hosts
+    assert "localhost:*" in ts.allowed_hosts
+    # http/https origins are mirrored for browser callers.
+    assert "http://mnesis:*" in ts.allowed_origins
 
 
 def test_query_surfaces_ingested_page(wiki):

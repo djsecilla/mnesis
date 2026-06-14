@@ -11,7 +11,7 @@ import logging
 
 import pytest
 
-from mnesis_agent.daemon import IngestDaemon, source_ref_for
+from mnesis_agent.daemon import IngestDaemon, source_ref_for, _parse_ingest_result
 from mnesis_agent.fake_tools import FakeToolSource
 from mnesis_agent.loop import ToolStep
 from mnesis_agent.mcp_client import ToolSource, ToolSpec
@@ -439,3 +439,47 @@ def test_daemon_watch_bounded_by_max_cycles(tmp_path):
 def test_source_ref_slugifies_stem(tmp_path):
     assert source_ref_for(tmp_path / "My Notes 2026.txt") == "my-notes-2026"
     assert source_ref_for(tmp_path / "redis_cache.md") == "redis-cache"
+
+
+# ── ingest-result parsing (JSON from fakes + real MCP-tool text) ──────────────
+
+
+def test_parse_ingest_result_json_shape():
+    raw = json.dumps({"action_taken": "contradict", "page_id": "p1", "review_id": 7})
+    out = _parse_ingest_result(raw)
+    assert out == {"action": "contradict", "page_id": "p1", "review_id": 7}
+
+
+def test_parse_ingest_result_real_text_shape():
+    # The real mnesis_ingest tool returns human-readable "key: value" lines.
+    raw = "ingested page: atlas-redis\ntitle: Atlas uses Redis\ntags: project:atlas\naction: new\nredactions: 0"
+    out = _parse_ingest_result(raw)
+    assert out["page_id"] == "atlas-redis"
+    assert out["action"] == "new"
+    assert out["review_id"] is None
+
+
+def test_parse_ingest_result_text_with_review():
+    raw = "ingested page: p-new\naction: contradict\nredactions: 0\nreview: 12"
+    out = _parse_ingest_result(raw)
+    assert out["action"] == "contradict"
+    assert out["review_id"] == 12
+
+
+def test_parse_ingest_result_empty_or_garbage():
+    assert _parse_ingest_result("") == {"action": None, "page_id": None, "review_id": None}
+    assert _parse_ingest_result("no colons here")["page_id"] is None
+
+
+def test_daemon_reports_action_from_real_text_output(tmp_path):
+    """End-to-end of the parse fix: a text-returning ingest tool yields a populated outcome."""
+    f = tmp_path / "note.txt"
+    f.write_text("Atlas uses Redis.", encoding="utf-8")
+    # FakeToolSource returning the REAL tool's text shape (not JSON).
+    text_result = "ingested page: atlas-redis\ntitle: t\ntags: project:atlas\naction: new\nredactions: 0"
+    src = RecordingSource(responses={"mnesis_ingest": text_result})
+    daemon = IngestDaemon(_registry(src))
+    outcomes = run(daemon.scan_once(tmp_path))
+    assert outcomes[0].status == "ingested"
+    assert outcomes[0].action == "new"
+    assert outcomes[0].page_id == "atlas-redis"
