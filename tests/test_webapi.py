@@ -253,6 +253,25 @@ def test_chat_degrades_gracefully_when_llm_unavailable(client, monkeypatch):
     assert done["retrieval"], "retrieved pages still reported so the user sees grounding"
 
 
+# --- ingest preview: clean error on LLM failure -----------------------------
+
+
+def test_ingest_preview_llm_timeout_returns_structured_502(client, monkeypatch):
+    # A local-model read timeout during extraction must surface as a clean JSON
+    # error (502 {code, message}), never a bare 500 the client can't parse.
+    import httpx
+
+    def boom(*_a, **_k):
+        raise httpx.ReadTimeout("timed out")
+
+    monkeypatch.setattr(webapi.ingest, "plan_ingest", boom)
+    r = client.post("/api/ingest/preview", json={"text": "Some longer source text."}, headers=AUTH)
+    assert r.status_code == 502
+    body = r.json()  # must be valid JSON
+    assert body["code"] == "llm_timeout"
+    assert "timed out" in body["message"].lower()
+
+
 # --- fileback ---------------------------------------------------------------
 
 

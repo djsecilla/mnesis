@@ -109,7 +109,7 @@ def _local_complete(system: str, user: str) -> str:
             "temperature": 0,
             "stream": False,
         },
-        timeout=120,
+        timeout=config.MNESIS_LLM_TIMEOUT,
     )
     response.raise_for_status()
     return response.json()["choices"][0]["message"]["content"]

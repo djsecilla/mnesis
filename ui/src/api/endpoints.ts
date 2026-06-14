@@ -58,8 +58,21 @@ export const fileback = (question: string, answer: string) =>
 /** Surface the gateway's structured {code, message} errors as the thrown message. */
 async function unwrap<T>(res: Response): Promise<T> {
   const body = await res.text();
-  const data = body ? JSON.parse(body) : null;
-  if (!res.ok) throw new Error(data?.message || data?.error || `${res.status} ${res.statusText}`);
+  // Parse defensively: a non-JSON error body (e.g. a plain-text 500) must yield
+  // a clean message, never an "Unexpected token" JSON.parse crash.
+  let data: unknown = null;
+  try {
+    data = body ? JSON.parse(body) : null;
+  } catch {
+    if (!res.ok) {
+      throw new Error(`${res.status} ${res.statusText}${body ? ` — ${body.slice(0, 200)}` : ""}`);
+    }
+    throw new Error("Unexpected non-JSON response from the server.");
+  }
+  if (!res.ok) {
+    const d = data as { message?: string; error?: string } | null;
+    throw new Error(d?.message || d?.error || `${res.status} ${res.statusText}`);
+  }
   return data as T;
 }
 

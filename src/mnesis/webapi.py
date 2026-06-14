@@ -522,13 +522,42 @@ async def _read_ingest_input(request: Request) -> tuple[str, str]:
     return text, _safe_source_ref(body.get("source_ref"), "pasted")
 
 
+def _llm_err(exc: Exception) -> JSONResponse:
+    """Turn an extraction/LLM failure into a clean, structured 502.
+
+    A timeout or connection error to the model would otherwise surface as a bare
+    500 (plain text), which the client can't parse. This keeps the contract JSON
+    and tells the user something actionable.
+    """
+    import httpx
+
+    log.warning("ingest extraction failed", exc_info=True)
+    if isinstance(exc, httpx.TimeoutException):
+        return _err(
+            "llm_timeout",
+            "The extraction model timed out. Try a shorter source, raise "
+            "MNESIS_LLM_TIMEOUT, or use a faster model.",
+            502,
+        )
+    if isinstance(exc, httpx.HTTPError):
+        return _err(
+            "llm_unavailable",
+            "Could not reach the extraction model. Check the LLM provider/endpoint.",
+            502,
+        )
+    return _err("extraction_failed", f"Extraction failed: {exc}", 502)
+
+
 async def _ingest_preview(request: Request) -> JSONResponse:
     """Side-effect-free preview: returns the IngestPlan (calls plan_ingest only)."""
     try:
         text, ref = await _read_ingest_input(request)
     except _IngestInputError as e:
         return _err(e.code, e.message, e.status)
-    return JSONResponse(ingest.plan_ingest(text, ref))
+    try:
+        return JSONResponse(ingest.plan_ingest(text, ref))
+    except Exception as e:  # LLM timeout / unreachable / extraction failure
+        return _llm_err(e)
 
 
 async def _ingest_commit(request: Request) -> JSONResponse:
@@ -545,6 +574,8 @@ async def _ingest_commit(request: Request) -> JSONResponse:
         result = ingest.apply_ingest(plan, overrides if isinstance(overrides, dict) else None)
     except ValueError as e:
         return _err("invalid_override", str(e), 400)
+    except Exception as e:  # LLM timeout / unreachable / extraction failure
+        return _llm_err(e)
     _refresh_graph()  # so the new page's entities/relations appear in the graph
     return JSONResponse(result)
 

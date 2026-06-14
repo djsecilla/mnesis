@@ -50,6 +50,11 @@ MNESIS_LLM_MODEL: str = os.environ.get("MNESIS_LLM_MODEL", "claude-sonnet-4-6")
 #: Base URL of the local model server (used only when provider is "local").
 MNESIS_LLM_BASE_URL: str = os.environ.get("MNESIS_LLM_BASE_URL", "http://localhost:11434")
 
+#: Read timeout (seconds) for a single LLM completion. Local models on modest
+#: hardware can take a while on longer sources, so this is generous by default
+#: and env-overridable. The ingest path turns a timeout into a clean error.
+MNESIS_LLM_TIMEOUT: float = float(os.environ.get("MNESIS_LLM_TIMEOUT", "300"))
+
 #: Quality gate for filing answers back as digest pages.
 MNESIS_FILEBACK_THRESHOLD: float = float(os.environ.get("MNESIS_FILEBACK_THRESHOLD", "0.7"))
 
