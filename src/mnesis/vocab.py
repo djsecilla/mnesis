@@ -21,8 +21,14 @@ import re
 ENTITY_TYPES: tuple[str, ...] = ("person", "project", "library", "concept", "file", "decision")
 
 #: The directed predicates a relation may use (``A -p-> B``). See CLAUDE.md §6
-#: for the direction semantics of each.
+#: for the direction semantics of each. The set is split into the original
+#: engineering-focused relations and a general-purpose set added so non-software
+#: knowledge (people, places, history, organisations) can also form edges
+#: instead of leaving conceptually-connected entities stranded as isolated nodes.
+#: ``related_to`` is the deliberate last-resort catch-all; the extraction prompt
+#: instructs the model to prefer the most specific predicate over it.
 PREDICATES: tuple[str, ...] = (
+    # engineering / project relations (original set)
     "uses",
     "depends_on",
     "owns",
@@ -30,6 +36,13 @@ PREDICATES: tuple[str, ...] = (
     "fixed",
     "contradicts",
     "supersedes",
+    # general-purpose relations
+    "part_of",
+    "located_in",
+    "created",
+    "precedes",
+    "influences",
+    "related_to",
 )
 
 _RELATION_KEYS = ("s", "p", "o")

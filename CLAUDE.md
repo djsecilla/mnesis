@@ -131,7 +131,7 @@ The typed knowledge graph (Phase 3) is built from two things already in Markdown
 
 **Entity types** (`vocab.ENTITY_TYPES`): `person`, `project`, `library`, `concept`, `file`, `decision`.
 
-**Predicates** (`vocab.PREDICATES`) — directed edge types, written `A -> B`:
+**Predicates** (`vocab.PREDICATES`) — directed edge types, written `A -> B`. The set splits into the original engineering relations and a general-purpose set (so non-software knowledge — people, places, history, organisations — forms edges instead of leaving conceptually-related entities as isolated nodes):
 
 | Predicate | Direction semantics |
 |---|---|
@@ -142,6 +142,14 @@ The typed knowledge graph (Phase 3) is built from two things already in Markdown
 | `fixed` | A resolved B |
 | `contradicts` | A conflicts with B (stored directed, treated symmetric in traversal) |
 | `supersedes` | A replaces B |
+| `part_of` | A is a component/member of B |
+| `located_in` | A is situated in / at B |
+| `created` | A brought B into existence (founded / authored / built) |
+| `precedes` | A comes before B in time or sequence |
+| `influences` | A shapes / affects B (weaker than `caused`) |
+| `related_to` | A is associated with B — the **last-resort catch-all**; the extraction prompt instructs the model to prefer a more specific predicate first |
+
+`impact()` still reverse-traverses **only `depends_on`/`uses`** (`_IMPACT_PREDICATES`), keeping change-propagation semantics crisp; the new predicates connect and are traversable via `neighbors`/`traverse` but do not widen impact.
 
 **Relation = a triple** `{s, p, o}` in a page's `relations` frontmatter list, where `s`/`o` are entity refs and `p` a predicate. **The page that carries the triple is its provenance.** Validated/normalised by `vocab.validate_relation`.
 

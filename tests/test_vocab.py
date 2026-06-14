@@ -48,8 +48,18 @@ def test_validate_relation_rejects_bad_shapes():
 def test_predicate_and_type_constants_match_contract():
     assert set(vocab.ENTITY_TYPES) == {"person", "project", "library", "concept", "file", "decision"}
     assert set(vocab.PREDICATES) == {
-        "uses", "depends_on", "owns", "caused", "fixed", "contradicts", "supersedes"
+        # engineering / project relations
+        "uses", "depends_on", "owns", "caused", "fixed", "contradicts", "supersedes",
+        # general-purpose relations
+        "part_of", "located_in", "created", "precedes", "influences", "related_to",
     }
+
+
+def test_general_purpose_predicates_validate():
+    # A general-knowledge relation now forms a valid edge instead of being dropped.
+    rel = vocab.validate_relation({"s": "project:atlas", "p": "part_of", "o": "project:helios"})
+    assert rel == {"s": "project:atlas", "p": "part_of", "o": "project:helios"}
+    assert vocab.is_valid_predicate("related_to")
 
 
 @pytest.fixture()

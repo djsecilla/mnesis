@@ -60,13 +60,35 @@ Return ONLY a JSON object (no prose, no code fences) with exactly these keys:
   - "tags": lowercase "type:value" entity refs for every entity the source
     mentions, using ONLY the entity types {entity_types} (e.g. "project:atlas",
     "library:redis", "person:sarah"). Reuse existing forms where possible.
-  - "relations": a list of {{"s","p","o"}} triples that the source explicitly
-    supports, where "s" and "o" are entity refs (as in tags) and "p" is one of
-    the allowed predicates {predicates}. State the direction as "A -p-> B".
+  - "relations": a list of {{"s","p","o"}} triples for EVERY relationship the
+    source states between two entities, where "s" and "o" are entity refs (as in
+    tags) and "p" is one of the allowed predicates {predicates}. State the
+    direction as "A -p-> B". Use the MOST SPECIFIC predicate that fits; use
+    "related_to" only as a last resort when no other predicate applies.
+
+EXAMPLE
+Source: "Project Atlas uses Redis for caching. Sarah owns the auth-migration \
+decision, which depends on Redis. Atlas is part of the Helios platform."
+Output:
+{{"title": "Project Atlas uses Redis for caching",
+  "summary_markdown": "Project Atlas uses Redis as its caching layer. The \
+auth-migration decision, owned by Sarah, depends on Redis. Atlas is part of the \
+Helios platform.",
+  "key_facts": ["Project Atlas uses Redis for caching", "Sarah owns the \
+auth-migration decision", "Auth-migration depends on Redis", "Atlas is part of \
+the Helios platform"],
+  "tags": ["project:atlas", "library:redis", "concept:caching", "person:sarah", \
+"decision:auth-migration", "project:helios"],
+  "relations": [
+    {{"s": "project:atlas", "p": "uses", "o": "library:redis"}},
+    {{"s": "person:sarah", "p": "owns", "o": "decision:auth-migration"}},
+    {{"s": "decision:auth-migration", "p": "depends_on", "o": "library:redis"}},
+    {{"s": "project:atlas", "p": "part_of", "o": "project:helios"}}
+  ]}}
 
 Discipline: cite only the given source; state nothing the source does not
-support. Do not invent entities or relationships. Prefer FEWER, well-grounded
-edges over speculative ones, and prefer one coherent claim per page."""
+support. Do not invent entities or relationships — but DO capture every
+relationship the source explicitly states. Prefer one coherent claim per page."""
 
 _STRICTER_SUFFIX = (
     "\n\nIMPORTANT: Your previous output was not valid JSON. Respond with a "
