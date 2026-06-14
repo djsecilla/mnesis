@@ -30,15 +30,15 @@ These hold across every module and every change. Treat a violation as a defect.
 
 ## 3. Repository conventions
 
-Layout (src-layout; everything importable as `mnesis.*`):
+Layout (src-layout; the **core** is importable as `mnesis.*`, the **runtime agent** as `mnesis_agent.*`):
 
 ```
 README.md
 CLAUDE.md                 # this file
-pyproject.toml            # deps + the `mnesis` console script
+pyproject.toml            # deps + the `mnesis` and `mnesis-agent` console scripts
 .gitignore
 .mcp.json                 # MCP registration for Claude Code
-src/mnesis/
+src/mnesis/               # the core (canonical store + tools)
   config.py               # paths + env config (model, threshold, stub flag)
   store.py                # canonical Markdown + frontmatter + git
   filters.py              # secret / PII redaction (pure functions)
@@ -47,10 +47,26 @@ src/mnesis/
   search.py               # SQLite FTS5 index: rebuild / upsert / search
   mcp_server.py           # FastMCP server exposing the wiki tools
   cli.py                  # `mnesis` command
+src/mnesis_agent/         # runtime agent — a separate MCP CLIENT of the core (never imports mnesis.*); see §14
+  config.py               # agent env (MCP url/token, LLM, audit dir, local-tools flag)
+  mcp_client.py           # MCP HTTP client + ToolSource/ToolSpec abstraction
+  fake_tools.py           # FakeToolSource — in-process deterministic stand-in for offline tests
+  registry.py             # ToolRegistry: aggregate sources + dispatch
+  provider.py             # provider-neutral tool-use (Anthropic / local / stub)
+  loop.py                 # bounded reason->act->observe loop + guardrails
+  memory.py               # grounding, citations, propose/apply crystallization
+  policy.py               # allowlist + write-policy enforcement (hard gate)
+  audit.py                # append-only JSONL run audit
+  local_tools.py          # opt-in in-process tools (off by default)
+  daemon.py               # ingest-daemon directory watcher
+  runner.py               # build registry, pick provider, run an archetype
+  cli.py                  # `mnesis-agent` command
+  profiles/               # the three archetypes (assistant / research / ingest-daemon)
 wiki/
   pages/                  # canonical Markdown pages (tracked)
   sources/                # redacted raw sources, for provenance (tracked)
   .index/                 # SQLite index — GITIGNORED (rebuildable cache)
+agent_runs/               # agent run audit (JSONL) — GITIGNORED
 tests/
 scripts/demo_end_to_end.py
 ```
@@ -238,7 +254,7 @@ A page is acceptable when it: states a clear, declarative claim in the `title`; 
 - **Audit** is the git history plus the saved (redacted) sources. Every write is one commit.
 - **Reversibility:** prefer `status: stale` over deletion. The PoC does not hard-delete pages.
 - The MVP filter (regex + entropy) is intentionally simple; `detect-secrets` and Microsoft Presidio are the production upgrade path.
-- **Three surfaces, one core.** The same `mnesis.*` core is reached three ways: the **`mnesis` CLI** (humans/scripts/maintenance), the **MCP server** (agents — stdio locally, HTTP `/mcp` networked), and the **Web UI** (humans — a browser SPA over the REST+SSE gateway at `/api`, the same internals the MCP tools wrap). All three share the canonical store; none has private state. The HTTP app serves `/mcp`, `/api/*`, and an open `/health`, with bearer auth (`MNESIS_MCP_TOKEN`) on everything but `/health`. The Web UI is now a full **read + write** surface: reading/search/graph/chat, plus ingestion (`/add`, batch `/add/batch`), provenance (`/sources`), and contradiction resolution (`/review`). Every write routes through the **plan→apply** ingestion core (§7) or the supersession machinery (§11) — so writes are previewed, human-confirmed, and committed to git. **Canonical page editing is intentionally out of scope** for every surface: knowledge changes only by ingesting sources (create / reinforce / supersede / contradict) and resolving contradictions, never by hand-editing a page's body, so the audit trail stays a coherent record of *why* each change happened.
+- **Three surfaces, one core.** The same `mnesis.*` core is reached three ways: the **`mnesis` CLI** (humans/scripts/maintenance), the **MCP server** (agents — stdio locally, HTTP `/mcp` networked), and the **Web UI** (humans — a browser SPA over the REST+SSE gateway at `/api`, the same internals the MCP tools wrap). All three share the canonical store; none has private state. *(The **runtime agent** in `mnesis_agent` is **not** a surface: it is a separately-deployable **client** that reaches the core only across the MCP boundary and never touches the store directly — see §14.)* The HTTP app serves `/mcp`, `/api/*`, and an open `/health`, with bearer auth (`MNESIS_MCP_TOKEN`) on everything but `/health`. The Web UI is now a full **read + write** surface: reading/search/graph/chat, plus ingestion (`/add`, batch `/add/batch`), provenance (`/sources`), and contradiction resolution (`/review`). Every write routes through the **plan→apply** ingestion core (§7) or the supersession machinery (§11) — so writes are previewed, human-confirmed, and committed to git. **Canonical page editing is intentionally out of scope** for every surface: knowledge changes only by ingesting sources (create / reinforce / supersede / contradict) and resolving contradictions, never by hand-editing a page's body, so the audit trail stays a coherent record of *why* each change happened.
 - **Deployment model.** `docker compose up` brings up two services: **`mnesis`** (the HTTP MCP+API service, stdio locally / HTTP for networked use) over a volume at `MNESIS_ROOT` (`/data/mnesis`), and **`mnesis-ui`** (a static nginx container serving the SPA and reverse-proxying `/api` + SSE to `mnesis`, injecting the bearer token server-side so the browser never holds it). The durable, must-back-up layer is the **git history** (pages + sources) plus **`.index/state.db`** (access events + review queue). Everything else under `.index/` (`wiki.db`, `graph.db`) is a **regenerable cache** that `mnesis rebuild` reconstructs from Markdown + `state.db` — so backups exclude `.index/` except `state.db`. **`mnesis-ui` is stateless** (no volume) — all state lives in `mnesis`. See `docs/OPS.md`.
 
 ---
@@ -250,6 +266,8 @@ A page is acceptable when it: states a clear, declarative claim in the `title`; 
 **In scope (Phase 2 — implemented):** confidence scoring (`confidence.py`) & Ebbinghaus-style decay with the active↔stale lifecycle (`lifecycle.py`, `mnesis decay`); relation-aware ingest — reinforce / supersede / contradict / create (`ingest.py`); the durable **state store** (`state.py`: access events + review queue); confidence-blended retrieval with access-on-read reinforcement (`search.py`); and the contradiction review queue (`mnesis review` / `resolve`). The `contradicts` and `decay_class` frontmatter fields back this. All exercised by the test suite and the `scripts/demo_phase2.py` regression demo.
 
 **In scope (Phase 3 — implemented):** the typed-relationship knowledge graph. The `relations` frontmatter field and entity/predicate vocabulary with validation (`vocab.py`, §6); relation extraction on ingest (`ingest.py`); the pluggable `GraphBackend` (`graph.py`) with an embedded-SQLite default, the rebuild-from-Markdown projection (noisy-OR edge confidence, demotion of stale-only edges), and cycle-safe traversal/neighbors — built into `mnesis rebuild` (search index + graph rebuild together; state store untouched); graph-augmented query and `impact()` wired into retrieval (`mnesis_query` folds in graph-reachable pages); the graph tools — `mnesis_entity` / `mnesis_neighbors` / `mnesis_traverse` / `mnesis_impact` / `mnesis_graph_stats` (MCP) and `mnesis entity` / `neighbors` / `impact` / `graph-stats` (CLI), with query/get noting related entities; and **graph lint** (`graph_lint.py`, `mnesis graph-lint [--fix]`) — auto-fixes the safe categories (merge duplicate edges, demote stale-only edges, recompute confidence) and flags the rest (undeclared/orphan entities, dangling structural edges), idempotently.
+
+**In scope (agent layer — implemented):** the runtime agent (`mnesis_agent`), a separately-deployable MCP **client** that uses Mnesis as memory — MCP client + tool registry, provider-neutral tool-use, a bounded agent loop, memory grounding/crystallization, three archetypes, and the policy/budget/audit/local-tool safety story. Reaches the core only over MCP; never imports `mnesis`. Fully documented in **§14**.
 
 **Out of scope for now — map of where each deferred capability lands:**
 
@@ -263,7 +281,58 @@ When you extend the PoC toward any of these, **update this file first**, then ma
 
 ---
 
-## 14. Changing this file
+## 14. The agent layer (`mnesis_agent`)
+
+A **runtime agent** that uses Mnesis as long-term memory. It is a *consumer* of the core, not part of it: a separately-deployable package (`src/mnesis_agent/`, importable as `mnesis_agent.*`) that reaches Mnesis **only through the MCP HTTP endpoint** and **never imports `mnesis`**. That boundary is load-bearing — it keeps the agent independently shippable and, crucially, means the agent **cannot bypass Mnesis's own governance** (§2.2, §11): redaction and contradiction/supersession review run server-side on every write, and the agent merely *calls the tool*.
+
+### Architecture — one core, layered client
+
+The package is built bottom-up; each layer has its own module and test file:
+
+1. **MCP client & tool registry** (`mcp_client.py`, `registry.py`). `MCPToolSource` connects to the Mnesis MCP endpoint (streamable-HTTP, bearer token), lists tools, and normalises them to `ToolSpec{name, description, input_schema}`. A `ToolSource` ABC decouples the registry from MCP; `FakeToolSource` is an in-process deterministic stand-in so the whole stack tests offline. `ToolRegistry` aggregates one or more sources and `dispatch(name, args)` routes to the owning source.
+2. **Provider tool-use** (`provider.py`). One neutral interface — `complete_with_tools(system, messages, tools) -> AssistantTurn{text, tool_calls, stop_reason, usage}` — over three adapters: **Anthropic** (tool_use blocks), **local** (Ollama/OpenAI-compatible function calling), and a **stub** (scripted, deterministic, offline). Selected by the same `MNESIS_LLM_*` env as the core. Messages/tool-results use a provider-neutral representation; provider differences stay inside the adapters. `usage` is propagated for budgeting.
+3. **The bounded loop** (`loop.py`). `run_agent(profile, input, tools, provider, registry)` runs reason→call tools→observe→repeat→answer. **Guardrails** (all with a safe, flagged stop): `max_iterations`, `max_tool_calls`, input-`token_budget`, wall-clock `deadline`, and a `no_progress` detector (repeated identical `(tool, args)`). **Tool errors never crash the loop** — they return to the model as tool-results so it can recover. Returns `AgentResult{final_text, transcript, tools_used, citations, writes, stop_reason, usage, iterations}`. A redaction-safe audit hook fires per step (args reduced to key names). Pure orchestration: no Mnesis-specific logic.
+4. **Memory integration** (`memory.py`). Wraps the loop with Mnesis behaviours: **session-start context load** (a bounded `mnesis_query` on the goal, injected into the system prompt so the agent starts grounded); a **citation convention** (cite `[page-id]`; citations in the result come only from real tool results, never invented); and **crystallization** under a write policy — `propose` (returns a `DigestProposal`, writes nothing), `apply` (may call write tools within its allowlist/budget), or `off`.
+5. **Archetypes** (`profiles/`). One core, three profiles — each an `Archetype{system_prompt, tool_allowlist, write_policy, write_allowlist, budgets, entry_mode, allow_local_tools}`:
+
+   | Archetype | Tool allowlist | Write policy | Entry mode |
+   |---|---|---|---|
+   | **assistant** | read tools (`query`/`get`/`entity`/`impact`/`traverse`) | `propose` (never writes itself) | interactive REPL |
+   | **research** | read/graph tools + `file_back` (digests only — no `ingest`, no `resolve`) | `apply`, write allowlist = `{file_back}` | batch |
+   | **ingest-daemon** | `ingest` + `query`/`get` (read for dedup) | `apply`, write allowlist = `{ingest}` | daemon |
+
+   The **assistant** proposes a digest and surfaces it for the human to confirm (confirming then calls `mnesis_file_back`). **Research** runs a bounded investigation and crystallizes exactly one digest. The **ingest-daemon** is not an LLM loop but a resilient, idempotent directory watcher (`daemon.py`): each new file maps to a stable `source_ref` and is dispatched once via `mnesis_ingest`; re-seeing it is a no-op; a `contradict` outcome is logged with its review id and **left to Mnesis** (the daemon never forces a resolution); one bad file is logged and skipped without aborting.
+6. **Safety: policy, budgets, audit, local tools** (`policy.py`, `audit.py`, `local_tools.py`, assembled in `runner.py`).
+   - **Policy enforcement (hard gate).** `PolicyEnforcingRegistry` runs `ToolPolicy.check(name)` before *every* dispatch: an out-of-allowlist call, or a write tool under a non-`apply` policy / outside the write allowlist, raises `PolicyViolation` **before any side effect**. The loop catches it and feeds it back to the model as an error result — refused *and* surfaced. This is the hard counterpart to the soft allowlist filtering (which only hides tools from the model).
+   - **Budgets** flow from the archetype through the loop's profile and stop the run deterministically with a flagged `stop_reason`.
+   - **Audit** (`audit.py`). An **append-only JSONL** run log (one file per UTC day under `MNESIS_AGENT_AUDIT_DIR`, gitignored): `run_start{profile, input}` → one `step` per loop step → `run_end{stop_reason, iterations, usage, tools_used, writes:[{tool, call_id}], citations}`. **Never logs argument values, result bodies, or any redacted secret/PII** — step records carry only `args_keys` and a status; the loop's redaction-safe hook is the only step source.
+   - **Local tools (opt-in, off by default).** `LocalToolSource` is the seam for optional in-process tools (e.g. an example `web_search`), registered **only** when `MNESIS_AGENT_ENABLE_LOCAL_TOOLS` is set — a plain run has only Mnesis tools. Even then, `Archetype.allow_local_tools` gates usage to **research alone**; the policy layer refuses local-tool calls from any other profile.
+
+### Run plumbing & CLI
+
+`runner.build_registry(...)` builds the registry (MCP client to Mnesis + optional local tools); `runner.run_archetype(arch, input, registry, provider, *, audit, local_tool_names)` selects the provider, filters tools to the allowlist, wraps the registry in the policy gate, wires the audit trail, and runs the grounded loop. The `mnesis-agent` CLI exposes the three archetypes: `mnesis-agent assistant` (grounded REPL with human-confirmed file-back), `mnesis-agent research "<goal>"` (cited report + crystallized digest id), and `mnesis-agent ingest-daemon --watch <path>`.
+
+### Agent environment variables (read in `mnesis_agent/config.py`, all with fallbacks)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `MNESIS_MCP_URL` | `http://localhost:8080/mcp` | Mnesis MCP endpoint the agent connects to. |
+| `MNESIS_MCP_TOKEN` | unset | Bearer token; must match the server's `MNESIS_MCP_TOKEN`. |
+| `MNESIS_LLM_PROVIDER` / `MNESIS_LLM_MODEL` / `MNESIS_LLM_BASE_URL` / `MNESIS_LLM_STUB` | — | Provider switch, mirroring the core stack (no import of `mnesis.config`). |
+| `MNESIS_AGENT_AUDIT_DIR` | `./agent_runs` | Directory for the append-only JSONL run audit. |
+| `MNESIS_AGENT_ENABLE_LOCAL_TOOLS` | unset | When set, registers the example local tools (research-only). Off by default. |
+
+### Invariants specific to the agent layer
+
+1. **MCP-only access.** The agent reaches Mnesis solely through MCP tools; it never imports `mnesis` and holds no canonical state of its own.
+2. **Mnesis governance is unbypassable.** Per-write safety (redaction, contradiction/supersession review) is the server's job; the agent only calls the tool. The policy layer governs *whether* the agent may call a write, not *how* the write is made safe.
+3. **Every limit has a safe, flagged stop.** Out-of-allowlist and out-of-budget calls are refused deterministically, before any side effect.
+4. **The audit never holds secrets, PII, or full payloads** — statuses and ids only.
+5. **Optional tools are opt-in.** A plain run starts with only the Mnesis tools, and only the research profile may ever use local ones.
+
+---
+
+## 15. Changing this file
 
 This document is co-evolved with the system. Expect the first version to be rough and to sharpen after the first few dozen sources and lint passes. Conventions:
 
