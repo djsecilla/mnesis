@@ -1,171 +1,411 @@
-# mnesis (MVP PoC)
+# mnesis
 
-mnesis is a knowledge base that **compounds** instead of resetting. Where
-retrieval-augmented generation fetches context and forgets it, this wiki
-accumulates and reinforces it: sources are filtered, ingested, and written as
-canonical Markdown pages; those pages are indexed for keyword search; queries
-draw on them; and synthesized answers are filed back as durable, retrievable
-knowledge. This repository is the **Phase-1 MVP proof of concept** demonstrating
-that end-to-end loop — *filter → ingest → write → index → query → file back →
-query again and see it surface*. The design contract lives in
-[`CLAUDE.md`](CLAUDE.md), the authoritative schema document for the system.
+**A knowledge base that compounds instead of resetting.**
 
-## Architecture in one paragraph
+Retrieval-augmented generation fetches context and forgets it. mnesis does the
+opposite: every source you feed it is filtered, distilled into a canonical page,
+and woven into a growing, self-reinforcing memory. Synthesized answers are filed
+back as durable knowledge, so the system gets *more* useful the more it is used —
+the compounding loop:
 
-The **Markdown pages under `wiki/pages/` are the single source of truth**, each
-a YAML-frontmatter document versioned in git (every write is one commit — git is
-the audit trail). A source is ingested by first **scrubbing** secrets/PII at the
-boundary (`filters.py`), persisting the redacted source for provenance
-(`wiki/sources/`), calling an **LLM** (`llm.py`, with a deterministic offline
-stub) to extract a disciplined `{title, summary, key_facts, tags}`, and writing
-a canonical `fact` page (`store.py`, `ingest.py`). A **SQLite FTS5 index**
-(`search.py`) is a *rebuildable cache* — a pure projection of the Markdown that
-`rebuild()` can reconstruct at any time. Everything is exposed both as a **CLI**
-(`cli.py`) and as an **MCP server** (`mcp_server.py`) so Claude Code and other
-agents can use it natively. Filing a synthesized answer back
-(`mnesis_file_back`) writes a `digest` page — that is the compounding step.
+> **filter → ingest → write a canonical page → index → query → file an answer back → query again and see it surface.**
 
-## Prerequisites
+mnesis is built to be the long-term memory for AI agents (reachable over the
+[Model Context Protocol](https://modelcontextprotocol.io)) while remaining fully
+usable by humans through a CLI and a web UI. The authoritative design contract is
+[`CLAUDE.md`](CLAUDE.md) — when this README and that document disagree, `CLAUDE.md`
+is the intended design.
 
-- **Python 3.11+** with a `sqlite3` compiled with **FTS5** (the uv-managed and
-  python.org CPython builds have it; `make test` will tell you clearly if not).
-- **[uv](https://docs.astral.sh/uv/)** for environment and dependency management.
-- **git** (the canonical store commits every page mutation).
-- *Optional:* `ANTHROPIC_API_KEY` for real LLM extraction. Without it (or with
-  `MNESIS_LLM_STUB=1`) mnesis runs fully offline with a deterministic stub, so the
-  tests and demo never touch the network.
+---
 
-## Setup
+## Table of contents
+
+- [What you get](#what-you-get)
+- [How it works](#how-it-works) — the mental model
+- [Quickstart](#quickstart)
+- [Using the CLI](#using-the-cli)
+- [The three surfaces](#the-three-surfaces) — CLI · MCP · Web UI
+- [The agent layer](#the-agent-layer)
+- [Running with Docker](#running-with-docker)
+- [Making the most of mnesis](#making-the-most-of-mnesis) — best practices
+- [Configuration reference](#configuration-reference)
+- [Verify it works](#verify-it-works) — guided demos
+- [Project layout & scope](#project-layout--scope)
+
+---
+
+## What you get
+
+| Capability | What it means |
+|---|---|
+| **Filtered ingest** | Secrets and PII are redacted *at the boundary*, before anything reaches disk, a log, or an LLM. |
+| **Canonical Markdown + git** | Pages are plain Markdown under version control; **every write is a commit** — git is the audit trail. |
+| **Derived confidence + decay** | Each page carries a *computed* confidence that strengthens with corroboration and recency and **fades over time** (Ebbinghaus-style), so stale knowledge sinks on its own. |
+| **Relation-aware lifecycle** | A new source can **reinforce**, **supersede**, **contradict**, or **create** — mnesis routes it, and flags conflicts it can't resolve for review. |
+| **Typed knowledge graph** | Entities and typed relations are extracted into a graph you can traverse and run **impact analysis** over ("what breaks if I change Redis?"). |
+| **Three surfaces, one core** | The same core is reached by a **CLI** (humans/scripts), an **MCP server** (agents), and a **web UI** (browser) — none has private state. |
+| **A runtime agent layer** | A separately-deployable agent that uses mnesis as memory — grounded assistant, multi-step researcher, and an ingest daemon — reaching it **only over MCP**. |
+| **Runs offline & on-prem** | A deterministic stub runs with no network; a local-model mode (Ollama) keeps inference and sources entirely on your machine. |
+
+---
+
+## How it works
+
+This section is the mental model. If you read one thing, read this.
+
+### 1. Markdown is the source of truth; everything else is a cache
+
+The canonical knowledge is a directory of Markdown pages (`wiki/pages/`), each a
+YAML-frontmatter document tracked in git. The SQLite **search index** and the
+**knowledge graph** under `wiki/.index/` are *rebuildable caches* — pure
+projections of the Markdown that `mnesis rebuild` can reconstruct at any time.
+Delete them and rebuild; you lose nothing canonical.
+
+The one deliberate exception is the **state store** (`wiki/.index/state.db`):
+access history (how often/recently a page was read) and the contradiction review
+queue. It is *not* derivable from Markdown and is never cleared by a rebuild —
+losing it is survivable but lossy (confidence simply degrades to its
+Markdown-only value).
+
+### 2. The ingest pipeline
+
+When you ingest a source, mnesis runs a disciplined pipeline:
+
+1. **Scrub** — `filters.py` redacts secrets/PII from the raw text. Only the
+   redacted text proceeds; the original value never reaches disk, a log, an LLM
+   prompt, or a report.
+2. **Persist the source** — the redacted source is saved to `wiki/sources/` and
+   committed, for provenance.
+3. **Extract** — an LLM distils a disciplined `{title, summary, key_facts, tags,
+   relations}`. The prompt forbids invention: state only what the source
+   supports, write a *declarative* title that asserts the claim, prefer one
+   coherent claim per page.
+4. **Classify & route** — the new information is compared against the most
+   similar existing pages and routed (below).
+
+An offline **stub** produces deterministic output when no API key is present (or
+`MNESIS_LLM_STUB=1`), so tests and demos never touch the network.
+
+### 3. Pages: facts, digests, notes
+
+Every page is one of three **kinds**:
+
+- **`fact`** — a discrete, sourced claim (the default output of ingest).
+- **`digest`** — a *synthesized answer filed back* (`mnesis_file_back`): a
+  question, its answer, and the facts it drew on. **This is the compounding
+  step** — exploration becomes durable, retrievable knowledge.
+- **`note`** — a human/agent observation that is neither a single sourced fact
+  nor a filed answer (used sparingly).
+
+A page also has a **status**: `active` (participates fully) or `stale`
+(deprioritised — demoted in search, never deleted; reversible). Pages are never
+hard-deleted; mnesis prefers `stale` over destruction.
+
+### 4. Confidence and decay
+
+Confidence is a value in `[0, 1]` that is **computed, never hand-set**. It rises
+with **corroboration** (more independent sources) and **recency**, and falls as a
+claim goes unconfirmed — a deliberate forgetting curve so that old, unreinforced
+knowledge loses authority on its own. Reading a page gives it a small, capped
+boost; reinforcement resets its retention clock. Decay speed depends on the
+claim's *class* (architectural decisions decay slowly; bug notes fast).
+
+Search blends confidence into ranking, and a periodic **decay** pass transitions
+aged, unread, low-confidence pages to `stale` (and can revive them on
+reinforcement). You never edit confidence — you feed sources and read pages, and
+the number follows.
+
+### 5. The relation-aware lifecycle
+
+Ingest doesn't blindly create pages. It classifies new information against
+existing ones and routes it:
+
+- **reinforce** → no new page; bump the existing page's support and reset its
+  retention clock.
+- **supersede** → write the new page and mark the old one `stale` (with links
+  both ways).
+- **contradict** → compare confidence; if one clearly wins, auto-supersede the
+  loser, otherwise **both coexist** (each penalised) and a **review** is queued
+  for a human to resolve.
+- **create** → a genuinely new claim becomes a new `fact` page.
+
+Conflicts are *flagged, not silently resolved*. `mnesis review` lists open
+contradictions; `mnesis resolve` settles one by keeping a page and superseding
+the other — always via the audited supersession path, never an ad-hoc edit.
+
+### 6. The knowledge graph
+
+Ingest also extracts **entities** (`type:value` tags like `project:atlas`,
+`library:redis`, `person:sarah`) and **typed relations** (`{s, p, o}` triples
+with predicates like `uses`, `depends_on`, `owns`, `caused`, `fixed`). `mnesis
+rebuild` projects these into a graph cache. Edge confidence is *derived* from the
+asserting pages (noisy-OR), and edges supported only by stale pages are demoted.
+
+The headline query is **impact analysis**: `mnesis impact library:redis`
+reverse-traverses `depends_on`/`uses` to surface everything a change to Redis
+would affect — *including dependencies no single page states in words*, recovered
+by chaining edges across pages. Retrieval is graph-augmented: a query that
+resolves to an entity folds in graph-reachable pages, each shown with the edge
+that connects it.
+
+### 7. Retrieval
+
+Search is **BM25 keyword matching blended with confidence**
+(`final = bm25_norm × (0.5 + 0.5 × confidence)`), over `(id, title, tags, body)`
+via SQLite FTS5, augmented by a small graph-proximity boost when the query
+resolves to an entity. Stale pages are excluded unless explicitly requested and
+never outrank a comparable active page. Reading the top hits records access (the
+gentle reinforcement above).
+
+### 8. The compounding step
+
+`mnesis file-back` is what makes the loop *compound*. When an answer clears a
+quality threshold, it is written as a `digest` page — so the next time anyone (or
+any agent) asks a related question, the synthesized answer surfaces as durable
+knowledge rather than being re-derived from scratch. Knowledge that did not exist
+as a page now does.
+
+---
+
+## Quickstart
+
+**Prerequisites:** Python 3.11+ with a `sqlite3` compiled with **FTS5** (uv-managed
+and python.org CPython builds have it), **[uv](https://docs.astral.sh/uv/)**, and
+**git**. Optionally an `ANTHROPIC_API_KEY` for real extraction — without it mnesis
+runs fully offline with the deterministic stub.
 
 ```bash
 make setup        # uv venv && uv pip install -e .
 make test         # full suite, offline (expect: all passing)
-make demo         # end-to-end compounding-loop demo, offline
+make demo         # the end-to-end compounding-loop demo, offline
 ```
 
-`make help` lists every target (`setup`, `test`, `demo`, `run-mcp`, `rebuild`).
-
-By default the wiki lives under `./wiki` (override with `MNESIS_ROOT`). The SQLite
-index under `wiki/.index/` is gitignored — it is a rebuildable cache, never the
-source of truth.
-
-## The four core commands
-
-The `mnesis` CLI is installed by `make setup`. The four core verbs:
+Try the loop yourself, in a throwaway location so your clone stays clean:
 
 ```bash
-# 1. INGEST a source (a file, or - for stdin). --ref sets the provenance id.
+rm -rf /tmp/mnesis-try && git init -q /tmp/mnesis-try
+export MNESIS_LLM_STUB=1 MNESIS_ROOT=/tmp/mnesis-try/wiki
+
+echo "Project Atlas uses Redis for caching." | uv run mnesis ingest - --ref atlas
+uv run mnesis rebuild
+uv run mnesis query "redis"          # → the ingested page is the top hit
+uv run mnesis file-back "What caches Atlas?" "Atlas uses Redis for caching." --score 0.9
+uv run mnesis query "caching"        # → BOTH the fact and the new digest appear
+
+unset MNESIS_ROOT MNESIS_LLM_STUB
+```
+
+The wiki lives under `./wiki` by default (override with `MNESIS_ROOT`).
+`make help` lists every target.
+
+---
+
+## Using the CLI
+
+The `mnesis` command (installed by `make setup`; prefix with `uv run` if the venv
+isn't active) is the full-power surface for humans, scripts, and maintenance.
+
+### Core verbs
+
+```bash
+# INGEST a source (a file, or - for stdin). --ref sets the provenance id.
 echo "Project Atlas uses Redis for caching." | mnesis ingest - --ref atlas-notes
 mnesis ingest path/to/notes.md            # --ref defaults to the file stem
 
-# 2. QUERY the wiki (BM25 keyword search).
-mnesis query "redis caching"
+# QUERY (BM25 keyword search, confidence-blended, graph-augmented)
+mnesis query "redis caching"              # --limit N, --include-stale
 
-# 3. GET a page's full Markdown by id.
+# GET a page's full Markdown by id
 mnesis get project-atlas-uses-redis-for-caching
 
-# 4. FILE-BACK a synthesized answer as a durable digest page (the compounding
-#    step). Files only if the quality score clears MNESIS_FILEBACK_THRESHOLD (0.7).
+# FILE-BACK a synthesized answer as a durable digest (the compounding step).
+# Files only if the score clears MNESIS_FILEBACK_THRESHOLD (default 0.7).
 mnesis file-back "What caches Atlas?" "Atlas uses Redis for caching." --score 0.9
+
+# Utilities
+mnesis list                               # all pages with status + confidence
+mnesis rebuild                            # reconstruct the search index + graph from Markdown
 ```
 
-Utilities round it out: `mnesis list` (all pages) and `mnesis rebuild`
-(reconstruct the search index from Markdown). Run any command under
-`uv run mnesis ...` if you have not activated the venv.
-
-### Phase-2 lifecycle commands
-
-Pages carry a derived **confidence** and a **status** (`active`/`stale`); `query`
-and `get` display both, and search blends confidence into ranking (stale pages
-are hidden unless `--include-stale`). Three commands drive the lifecycle:
+### Lifecycle (confidence, decay, contradictions)
 
 ```bash
-# Recompute confidence corpus-wide; age unread, low-confidence pages to stale.
-mnesis decay
-
-# List open contradiction reviews (low-margin conflicts ingest couldn't auto-resolve).
-mnesis review
-
-# Resolve one: keep a page, supersede the other (-> stale), lift the kept confidence.
-mnesis resolve <review_id> --keep <page_id>
+mnesis decay                              # recompute confidence; age unread, low-confidence pages → stale
+mnesis review                             # list open contradiction reviews
+mnesis resolve <review_id> --keep <page_id>   # keep one page, supersede the other
 ```
 
-Ingest is relation-aware: a new source can **reinforce** an existing page (more
-support, no new page), **supersede** it (old → stale), **contradict** it
-(auto-resolved by confidence margin, else queued for `review`), or create a new
-page. See [`CLAUDE.md`](CLAUDE.md) §7/§8/§11 for the model.
-
-### Phase-3 graph commands
-
-Ingest extracts typed **entities** (`type:value`) and **relations** (`{s,p,o}`
-triples) into page frontmatter; `mnesis rebuild` projects them into a knowledge
-graph (alongside the search index). The graph is a rebuildable cache behind a
-pluggable backend — `MNESIS_GRAPH_BACKEND` selects it (default `sqlite`, an
-embedded backend; a Tier-B backend like Postgres+AGE or Neo4j implements the
-same interface with no other changes).
+### Knowledge graph
 
 ```bash
-mnesis entity library:redis           # type, declaring pages, and typed edges
-mnesis neighbors library:redis --in   # adjacent entities (--in for incoming; --pred to filter)
-mnesis impact library:redis           # what depends on/uses it (reverse traversal, with paths)
-mnesis graph-stats                    # node/edge counts by type and predicate
-mnesis graph-lint [--fix]             # consistency check; --fix applies the safe auto-fixes
+mnesis entity library:redis               # type, declaring pages, typed edges
+mnesis neighbors library:redis --in       # adjacent entities (--in = incoming; --pred to filter)
+mnesis impact library:redis               # what depends on/uses it (reverse traversal, with paths)
+mnesis graph-stats                        # node/edge counts by type and predicate
+mnesis graph-lint --fix                   # consistency check; --fix applies the safe auto-fixes
 ```
 
-`query`/`get` also note a page's related entities, and `query` folds in
-graph-reachable pages (grounded by the connecting edge) even when they lack the
-keyword. See [`CLAUDE.md`](CLAUDE.md) §6 for the graph contract.
+---
 
-## Connect the MCP server to Claude Code
+## The three surfaces
 
-mnesis exposes its tools over the [Model Context Protocol](https://modelcontextprotocol.io):
-`mnesis_ingest`, `mnesis_query`, `mnesis_get`, `mnesis_file_back`, `mnesis_list`,
-`mnesis_rebuild`, `mnesis_decay`, `mnesis_review`, `mnesis_resolve`, and the graph tools
-`mnesis_entity`, `mnesis_neighbors`, `mnesis_traverse`, `mnesis_impact`,
-`mnesis_graph_stats`, `mnesis_graph_lint`.
+The same core (`mnesis.*`) is reached three ways; all share the canonical store,
+none has private state.
 
-**Run the server standalone** (stdio transport): `make run-mcp` (i.e.
-`uv run python -m mnesis.mcp_server`).
+### CLI
 
-**Auto-discovery.** This repo ships a [`.mcp.json`](.mcp.json) registering the
-server, so running `claude` from the project root discovers it automatically
-(approve the project-scoped server when prompted, then `/mcp` to confirm). It
-launches `.venv/bin/python -m mnesis.mcp_server`, so run `make setup` first.
+For humans, scripts, and maintenance — the full command set above.
 
-**`claude mcp add` alternative:**
+### MCP server (for agents)
+
+mnesis exposes **15 tools** over MCP: `mnesis_ingest`, `mnesis_query`,
+`mnesis_get`, `mnesis_file_back`, `mnesis_list`, `mnesis_rebuild`, `mnesis_decay`,
+`mnesis_review`, `mnesis_resolve`, and the graph tools `mnesis_entity`,
+`mnesis_neighbors`, `mnesis_traverse`, `mnesis_impact`, `mnesis_graph_stats`,
+`mnesis_graph_lint`.
+
+**Local (stdio), zero config.** This repo ships [`.mcp.json`](.mcp.json), so
+running `claude` from the project root auto-discovers the server (approve it, then
+`/mcp` to confirm). It spawns `.venv/bin/python -m mnesis.mcp_server`, so run
+`make setup` first. Or add it explicitly:
 
 ```bash
 claude mcp add mnesis -- uv run python -m mnesis.mcp_server
 ```
 
-Set `ANTHROPIC_API_KEY` for real extraction, or `MNESIS_LLM_STUB=1` to run offline.
+stdio means a local subprocess — no port, no token. Set `ANTHROPIC_API_KEY` for
+real extraction, or `MNESIS_LLM_STUB=1` for offline.
 
-**Networked (HTTP) transport.** For container/remote deployment, set
-`MNESIS_MCP_TRANSPORT=http` (default `stdio`). The server then serves streamable
-HTTP at `/mcp` on `MNESIS_MCP_HOST:MNESIS_MCP_PORT` (default `0.0.0.0:8080`),
-plus an unauthenticated `GET /health` returning quick stats (page count, index/
-graph present). If `MNESIS_MCP_TOKEN` is set, every tool call must send
-`Authorization: Bearer <token>`; if unset, the server logs a warning and the
-endpoint is unauthenticated — treat it as privileged (it can ingest and modify
-knowledge). Point a client at it with:
+**Networked (HTTP).** Set `MNESIS_MCP_TRANSPORT=http`; the server serves
+streamable HTTP at `/mcp` on `MNESIS_MCP_HOST:MNESIS_MCP_PORT` (default
+`0.0.0.0:8080`) plus an open `GET /health`. If `MNESIS_MCP_TOKEN` is set, every
+call must send `Authorization: Bearer <token>` (strongly recommended — the
+endpoint can modify knowledge). When clients reach the server by a name other
+than localhost (e.g. behind Docker), list it in `MNESIS_MCP_ALLOWED_HOSTS`.
 
 ```bash
 claude mcp add mnesis --transport http http://<host>:8080/mcp \
   --header "Authorization: Bearer $MNESIS_MCP_TOKEN"
 ```
 
-**Web UI gateway.** The same HTTP app also serves a browser-friendly REST + SSE
-API under `/api` (thin adapters over the same internals as the MCP tools): read
-endpoints for pages, search, graph, entity, and impact, a grounded streaming
-`POST /api/chat` (answers only from retrieved pages, cites them as `[[page-id]]`),
-and `POST /api/fileback`. `/api/*` shares the bearer-token auth (`MNESIS_MCP_TOKEN`);
-`/health` stays open.
+### Web UI (for humans, in the browser)
 
-**Local-first inference (opt-in).** By default mnesis uses Anthropic (or the
-offline stub). For a privacy-preserving deployment where **sources never leave
-the host**, point mnesis at a local model server you run on the host — your own
-**Ollama** (or any OpenAI-compatible API). mnesis does **not** run an Ollama
-container; it reaches the host server at `host.docker.internal`.
+A plain `docker compose up` brings up **`mnesis-ui`** — a static nginx app that
+reverse-proxies the REST + SSE gateway (`/api`) to the core. After
+`make docker-up && make docker-seed`, open **http://localhost:3000**:
+
+| URL | View |
+|---|---|
+| `/` → `/graph` | the knowledge graph — hover to highlight a neighbourhood, click a node for a detail panel |
+| `/pages` · `/pages/:id` | page index and reader |
+| `/chat` | grounded chat — streams a cited answer drawn only from retrieved pages |
+| `/add` · `/add/batch` | **Add to Mnesis** — paste/upload, preview, curate, commit (single or batch) |
+| `/sources` | what you fed in, and the page(s) it became |
+| `/review` | resolve queued contradictions |
+
+The UI is a full **read + write** surface, but every write routes through the
+same previewed, human-confirmed, git-committed ingestion path as everywhere else.
+Canonical page **editing is intentionally not offered** on any surface — knowledge
+changes only by ingesting sources and resolving contradictions, so the audit trail
+stays a coherent record of *why* each change happened. The browser never holds the
+bearer token (nginx injects it server-side).
+
+---
+
+## The agent layer
+
+mnesis ships a **runtime agent** (`mnesis_agent`, console script `mnesis-agent`)
+that uses the knowledge base as long-term memory. It is a *separately-deployable
+client*: it reaches mnesis **only over the MCP endpoint** and never imports the
+core — so **mnesis's governance still gates every write** (redaction and
+contradiction review run server-side; the agent merely calls the tool and cannot
+bypass them). One core, three profiles:
+
+| Archetype | Tools | Writes | Entry |
+|---|---|---|---|
+| **assistant** | read/graph (query, get, entity, impact, traverse) | **proposes** a digest; never writes itself — the human confirms | interactive REPL |
+| **research** | read/graph + `file_back` | **applies** — files exactly one digest (digests only; never ingests or supersedes) | one-shot batch |
+| **ingest-daemon** | `ingest` (+ read for dedup) | **applies** — ingests files dropped in a watched directory | long-running watcher |
+
+Each run is bounded by guardrails (max tool calls, token budget, wall-clock
+deadline, no-progress detection) and writes an **append-only audit** (statuses
+and ids only — never argument values or results).
+
+**Native use** (point the agent at a running HTTP MCP server):
+
+```bash
+# terminal 1 — run mnesis as an HTTP MCP server
+MNESIS_MCP_TRANSPORT=http MNESIS_MCP_TOKEN=secret uv run python -m mnesis.mcp_server
+
+# terminal 2 — point the agent at it
+export MNESIS_MCP_URL=http://localhost:8080/mcp MNESIS_MCP_TOKEN=secret
+uv run mnesis-agent research "what depends on redis in atlas"   # cited report + a filed digest
+uv run mnesis-agent assistant                                   # grounded REPL; proposes a file-back you confirm
+uv run mnesis-agent ingest-daemon --watch ./inbox               # ingest new files as they appear
+```
+
+The dockerized daemon and one-off runs are covered under
+[Running with Docker](#running-with-docker).
+
+---
+
+## Running with Docker
+
+A containerized stack — no Python/uv needed on the host. See
+[`docs/OPS.md`](docs/OPS.md) for backup/restore and operations.
+
+```bash
+cp .env.example .env          # then edit: MNESIS_MCP_TOKEN (recommended), keys, etc.
+make docker-build             # build the image
+make docker-up                # start mnesis + the web UI; wait for healthy
+make docker-seed              # ingest bundled sample sources (offline, idempotent)
+
+make docker-cli ARGS='query "redis"'          # query the seeded wiki
+make docker-cli ARGS='impact library:redis'   # graph impact
+```
+
+The data (pages, sources, `.git`, `state.db`) lives on the `mnesis-data` volume
+and survives `docker compose down`; only `down -v` wipes it. The web UI is on
+**http://localhost:3000** (`MNESIS_UI_PORT`).
+
+### Optional profiles (not started by a plain `up`)
+
+```bash
+docker compose --profile maintenance up -d    # periodic decay / graph-lint / rebuild upkeep
+docker compose --profile agent up -d          # the ingest-daemon agent (below)
+```
+
+### The ingest-daemon as a service
+
+`make agent-up` starts the daemon, which watches `./agent_watch`
+(`MNESIS_AGENT_WATCH_DIR`) and ingests any file dropped there:
+
+```bash
+make agent-up                                       # docker compose --profile agent up -d
+cp notes.txt ./agent_watch/                         # → ingested into mnesis…
+make docker-cli ARGS='query "<phrase from notes.txt>"'   # …and queryable
+make agent-logs                                     # one log line per ingest outcome
+make agent-down
+```
+
+The daemon is **resilient** (a bad file is logged and skipped, the loop survives)
+and **idempotent** (re-seeing a file is a no-op). It reaches mnesis only over the
+internal compose network and is **stateless** — knowledge stays in mnesis; the run
+audit goes to the `mnesis-agent-runs` volume.
+
+Research and assistant run as one-off containers sharing the same service env:
+
+```bash
+make agent-research GOAL="what depends on redis in atlas"   # cited report + created digest id
+make agent-assistant                                        # interactive grounded REPL
+```
+
+### Local-first inference (nothing leaves the box)
+
+For a fully on-prem deployment — **no external inference calls** — point both
+mnesis and the agent at a local model you run on the host (your own Ollama or any
+OpenAI-compatible server). mnesis runs **no** Ollama container; it reaches the
+host at `host.docker.internal`.
 
 ```bash
 # 1. On the host: run Ollama and pull a model.
@@ -173,290 +413,182 @@ ollama serve            # if not already running
 ollama pull llama3.2:3b
 
 # 2. In .env:
-#      MNESIS_LLM_PROVIDER=local
-#      MNESIS_LLM_MODEL=llama3.2:3b
-#      MNESIS_LLM_STUB=0
-#      MNESIS_LLM_BASE_URL=http://host.docker.internal:11434   (the default)
-# 3. Recreate the service to pick up the env:
-docker compose up -d --force-recreate mnesis
-```
-
-With `provider=local`, **ingestion and extraction make no external inference
-calls** — no Anthropic request, no API key needed; mnesis calls the host model's
-`/v1/chat/completions`. The default Anthropic/stub behaviour is unchanged when
-`provider` is left at `anthropic`.
-
-**Maintenance sidecar (opt-in).** The wiki needs periodic upkeep — decay, graph
-lint, cache freshness. Until Phase 4 moves these into the app as event hooks,
-the `maintenance` profile runs them on a cadence at the deployment layer:
-
-```bash
-docker compose --profile maintenance up -d        # default interval: daily (MNESIS_MAINT_INTERVAL)
-```
-
-The sidecar shares the data volume with the server and, each cycle, runs
-`mnesis decay`, `mnesis graph-lint --fix`, and a rebuild-if-missing check — all
-through the **CLI**, so every change is committed and git-audited in the volume.
-Commands for capabilities not yet built are skipped cleanly, write contention is
-retried (WAL), and an empty wiki is a clean no-op. It is **not** started by a
-plain `docker compose up`. **Phase 4** replaces this sidecar with in-app
-scheduling, at which point it can be retired.
-
-## Run with Docker
-
-A containerized core stack: a single `mnesis` service (HTTP MCP server) over a
-persistent volume. See [`docs/OPS.md`](docs/OPS.md) for backup/restore and ops.
-
-**Prerequisites:** Docker (with Compose v2). No Python/uv needed on the host.
-
-```bash
-cp .env.example .env          # then edit: MNESIS_MCP_TOKEN (recommended), keys, etc.
-make docker-build             # build the image
-make docker-up                # start the stack; wait for the `mnesis` service to be healthy
-make docker-seed              # ingest bundled sample sources (offline, idempotent)
-
-make docker-cli ARGS='query "redis"'          # query the seeded wiki
-make docker-cli ARGS='impact library:redis'   # graph impact
-make docker-demo                              # run the latest-phase demo inside the container
-```
-
-`make docker-seed` is idempotent — re-running it does not duplicate pages. The
-data (pages, sources, `.git`, `state.db`) lives on the `mnesis-data` volume and
-survives `docker compose down`; only `docker compose down -v` wipes it.
-
-### Web UI
-
-A plain `docker compose up` also brings up **`mnesis-ui`** — a static nginx
-container serving the browser app and reverse-proxying `/api` (and the SSE chat
-stream) to the `mnesis` service. After `make docker-up && make docker-seed`,
-open **http://localhost:3000** (`MNESIS_UI_PORT`) and browse:
-
-The UI is a full **read + write** human surface (alongside the CLI and the MCP
-tools for agents):
-
-| URL | View |
-|---|---|
-| `/` → `/graph` | knowledge graph of seeded entities |
-| `/pages` · `/pages/:id` | page index and reader |
-| `/chat` | grounded chat — streams a cited answer through the proxy |
-| `/add` | **Add to Mnesis** — paste/upload one source, preview, curate, commit |
-| `/add/batch` | **Add several** — multi-file queue, per-item review, commit-all |
-| `/sources` | **Sources** — what you fed in, and the page(s) it became |
-| `/review` | **Review** — resolve queued contradictions (rail badge shows the count) |
-
-The browser talks **only** to `mnesis-ui`; it reaches mnesis over the internal
-compose network, so the `mnesis` API port does not need host exposure for the UI
-(it stays published only for host-side agents on `/mcp`). **Auth model:** when
-`MNESIS_MCP_TOKEN` is set, nginx injects `Authorization: Bearer <token>` on
-proxied `/api` requests **server-side**, so the browser never handles the token.
-The tradeoff: on this trusted-host deployment anyone who can reach the UI port
-reaches the API with the proxy's privileges — the host/network is the trust
-boundary; per-user auth is a future iteration. The UI container is **stateless**
-(no volume) — all state lives in mnesis, so it is safe to rebuild or remove
-anytime. For local UI development against a running mnesis, `make ui-dev` runs
-the Vite dev server (proxies `/api` to `localhost:8080`).
-
-**Governance (ingestion).** Writes are deliberate and auditable. Sensitive data
-is **redacted at the ingestion boundary before anything is stored** (§2.2) and
-the preview shows *what* was redacted — counts and types only, never the values.
-**Every commit is human-confirmed**: the preview is side-effect-free, nothing is
-written until you click commit, and a supersede (which marks another page stale)
-requires an explicit confirmation. Canonical page **editing is intentionally not
-offered** in the UI — knowledge changes only through the disciplined
-plan→apply ingestion path (create / reinforce / supersede / contradict) and
-contradiction resolution, so **every write is a git commit** (the audit trail).
-Uploads are bounded by `MNESIS_MAX_UPLOAD_BYTES`; `mnesis-ui` mirrors that into
-nginx's `client_max_body_size` so multipart uploads pass through the proxy.
-
-**Local-first inference** is configured via `.env` (`MNESIS_LLM_PROVIDER=local`,
-pointing at the host's Ollama) — see above; no profile or extra container.
-
-**Optional profiles** (not started by a plain `up`):
-- `docker compose --profile maintenance up -d` — periodic decay / graph-lint /
-  rebuild upkeep (see above).
-- `docker compose --profile agent up -d` — the **ingest-daemon** agent (see
-  [Agent layer](#agent-layer) below).
-
-### Connect Claude Code
-
-**Networked (deployed HTTP server):** point a client at the HTTP MCP endpoint,
-sending the bearer token:
-
-```bash
-claude mcp add mnesis --transport http http://<host>:8080/mcp \
-  --header "Authorization: Bearer $MNESIS_MCP_TOKEN"
-```
-
-**Local (this repo, stdio):** for development you don't need Docker at all — the
-repo ships [`.mcp.json`](.mcp.json), so running `claude` from the project root
-auto-discovers the server over **stdio** (it spawns `.venv/bin/python -m
-mnesis.mcp_server`; run `make setup` first). stdio = local subprocess, no port,
-no token; HTTP = networked, token-guarded. Same tools either way.
-
-## Agent layer
-
-mnesis ships a **runtime agent** (`mnesis_agent`, console script `mnesis-agent`)
-that uses the knowledge base as long-term memory. It is a *separately-deployable
-client*: it reaches mnesis **only over the MCP endpoint** and never imports the
-core, so **Mnesis's governance still gates every write** — redaction and
-contradiction/supersession review run server-side; the agent merely calls the
-tool and cannot bypass them. One core, three profiles:
-
-| Archetype | Tools | Writes | Entry |
-|---|---|---|---|
-| **assistant** | read/graph (query, get, entity, impact, traverse) | **proposes** a digest; never writes itself (the human confirms) | interactive REPL |
-| **research** | read/graph + `file_back` | **applies** — files exactly one digest (digests only; never ingest/supersede) | one-shot batch |
-| **ingest-daemon** | `ingest` (+ read for dedup) | **applies** — ingests watched files | long-running watcher |
-
-### Run recipes (against a running stack)
-
-```bash
-# 0. Bring up the core (and seed something to talk about).
-make docker-up && make docker-seed
-
-# 1. Ingest-daemon as a service: watches ./agent_watch and ingests new files.
-make agent-up                         # docker compose --profile agent up -d
-cp notes.txt ./agent_watch/           # dropped files are ingested into mnesis…
-make docker-cli ARGS='query "<a phrase from notes.txt>"'   # …and become queryable
-make agent-logs                       # one log line per ingest outcome
-make agent-down
-
-# 2. Research: a bounded investigation that crystallizes a cited digest.
-make agent-research GOAL="what depends on redis in atlas"
-#   → prints a cited report + the created digest page id (filed back into mnesis)
-
-# 3. Assistant: an interactive grounded REPL; proposes a file-back you confirm.
-make agent-assistant
-```
-
-The `agent-research` / `agent-assistant` targets run one-off containers
-(`docker compose run --rm mnesis-agent …`) that share the service's network and
-env, so they reach mnesis at `http://mnesis:8080/mcp` over the internal network.
-
-### MCP-endpoint connection
-
-The agent connects with `MNESIS_MCP_URL` + `MNESIS_MCP_TOKEN`. In Compose both
-default to the internal service (`http://mnesis:8080/mcp`) and the shared
-`.env` token. The dockerized agent never needs the host-published port — it
-talks to mnesis over the compose network only. (Because the agent reaches mnesis
-by service name, the server's DNS-rebinding Host allowlist must include it;
-Compose sets `MNESIS_MCP_ALLOWED_HOSTS=mnesis:*,localhost:*,127.0.0.1:*` for you.)
-The **ingest-daemon calls no LLM** — extraction runs server-side in mnesis — so
-only `research`/`assistant` use the provider.
-
-### Fully-local recipe (nothing leaves the box)
-
-Agent **+** Mnesis **+** a local model, all on one host, with **no external
-inference**. Set the local provider in `.env` (host Ollama, per
-[Local-first inference](#run-with-docker)):
-
-```dotenv
 MNESIS_LLM_PROVIDER=local
 MNESIS_LLM_MODEL=llama3.2:3b
 MNESIS_LLM_STUB=0
 MNESIS_LLM_BASE_URL=http://host.docker.internal:11434   # the default
+
+# 3. Bring it up — sources, the KB, and inference all stay inside one trust boundary.
+docker compose --profile agent up -d
 ```
+
+---
+
+## Making the most of mnesis
+
+mnesis rewards a few habits. These turn it from "a place to dump notes" into a
+memory that genuinely compounds.
+
+**Write sources as declarative, single claims.** The extractor produces the best
+pages from text that states *one* clear thing. "Project Atlas uses Redis for
+caching" beats a wall of mixed notes. Group tightly-related facts; split unrelated
+ones into separate ingests. A good `title` *asserts* a claim, not a topic.
+
+**File answers back — deliberately.** The compounding only happens if you
+crystallise good answers. After an agent (or you) works out something worth
+keeping, `file-back` it. Pass an honest `--score`; below the threshold it won't
+file (that's a feature — don't pollute the KB with weak synthesis). Digests are
+tagged so they never masquerade as primary sourced facts.
+
+**Let corroboration and time do their work.** Ingest the same fact from a second
+independent source and confidence rises; the page reinforces rather than
+duplicates. Conversely, don't fight decay — a claim you stop confirming *should*
+lose authority. Run `mnesis decay` (or the maintenance sidecar) so the lifecycle
+stays current.
+
+**Use the graph before you change things.** Before touching a shared dependency,
+ask `mnesis impact <entity>`. It surfaces the blast radius across pages — including
+chains no single page spells out — so you coordinate the right people and work
+streams. `mnesis neighbors` and `mnesis entity` are good for exploring how a
+concept connects.
+
+**Resolve contradictions; don't ignore the queue.** When two sources genuinely
+conflict and neither clearly wins, mnesis keeps both (penalised) and queues a
+review rather than guessing. Check `mnesis review` periodically and `resolve` —
+that's how the KB stays trustworthy. A resolved review never reappears.
+
+**Pick the right surface.** Humans curate fastest in the **web UI** (preview +
+confirm) or the **CLI**; agents should use the **MCP** tools; long-running
+ingestion belongs to the **daemon**. They all hit the same store, so mix freely.
+
+**Trust the redaction boundary — and keep it strict.** Secrets/PII are scrubbed
+before anything is written, including in reports. The MVP filter (regex + entropy)
+is intentionally simple; for sensitive corpora, plan the `detect-secrets` /
+Presidio upgrade path. Never disable the scrub step.
+
+**Keep the canonical layer backed up; treat caches as disposable.** The durable,
+must-back-up layer is the **git history** (pages + sources) plus
+**`.index/state.db`** (access events + review queue). Everything else under
+`.index/` is regenerated by `mnesis rebuild`. Deleting the search index is
+routine; deleting the state store loses access history and open reviews.
+
+---
+
+## Configuration reference
+
+All settings are environment variables with sensible defaults; copy
+[`.env.example`](.env.example) to `.env` to customise. The most useful ones:
+
+### Core
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `MNESIS_ROOT` | `./wiki` | Root of pages, sources, and the index. |
+| `MNESIS_LLM_PROVIDER` | `anthropic` | `anthropic` or `local` (Ollama / OpenAI-compatible). |
+| `MNESIS_LLM_MODEL` | `claude-sonnet-4-6` | Extraction model (an Ollama tag when `provider=local`). |
+| `MNESIS_LLM_BASE_URL` | `http://localhost:11434` | Local model endpoint (used when `provider=local`). |
+| `MNESIS_LLM_STUB` | unset | `1` forces the offline deterministic stub (also auto-on for `anthropic` with no key). |
+| `MNESIS_FILEBACK_THRESHOLD` | `0.7` | Quality gate for filing answers back as digests. |
+| `MNESIS_GRAPH_BACKEND` | `sqlite` | Graph engine (embedded default; a Tier-B backend is a config change, not a refactor). |
+
+Confidence, decay, and routing have many tunable constants (stability per decay
+class, weights, auto-resolve margin, stale thresholds) — all env-overridable; see
+[`CLAUDE.md` §8/§11](CLAUDE.md) and [`.env.example`](.env.example).
+
+### MCP server (HTTP transport)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `MNESIS_MCP_TRANSPORT` | `stdio` | `stdio` (local subprocess) or `http` (networked). |
+| `MNESIS_MCP_HOST` / `MNESIS_MCP_PORT` | `0.0.0.0` / `8080` | HTTP bind address/port. |
+| `MNESIS_MCP_TOKEN` | unset | Bearer token required on every call when set (strongly recommended in HTTP mode). |
+| `MNESIS_MCP_ALLOWED_HOSTS` | unset (localhost) | Host allowlist for DNS-rebinding protection (`host:port` / `host:*`). List the service name for networked clients. |
+| `MNESIS_MAX_UPLOAD_BYTES` | `2000000` | Max bytes accepted by the ingestion upload endpoints. |
+| `MNESIS_UI_PORT` | `3000` | Host port for the web UI. |
+
+### Agent layer (`mnesis-agent`)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `MNESIS_MCP_URL` | `http://localhost:8080/mcp` | The MCP endpoint the agent connects to. |
+| `MNESIS_MCP_TOKEN` | unset | Bearer token; must match the server's. |
+| `MNESIS_AGENT_AUDIT_DIR` | `./agent_runs` | Directory for the append-only JSONL run audit. |
+| `MNESIS_AGENT_ENABLE_LOCAL_TOOLS` | unset | When set, registers example local tools (research profile only). Off by default. |
+| `MNESIS_AGENT_WATCH_DIR` | `./agent_watch` | Directory the dockerized ingest-daemon watches. |
+
+---
+
+## Verify it works
+
+Each phase ships a self-contained, offline demo. Run them top to bottom on a
+fresh clone.
+
+### Phase 1 — the compounding loop (`make demo`)
+
+`make demo` prints six steps. Confirm:
+- **Step 2** shows `redactions: 1` and the saved source reads
+  `... the API key [REDACTED:SECRET], which must be rotated quarterly.` — the
+  fake secret was filtered *before* anything was written.
+- **Step 6** (`query "caching"` after filing the answer back) returns the new
+  **digest** page alongside the original fact — knowledge that did not exist as a
+  page before now surfaces. That is the compounding behaviour.
+
+**Canonical-vs-cache holds:** deleting the index and rebuilding reproduces
+identical search results (also asserted by the test suite):
 
 ```bash
-docker compose --profile agent up -d        # mnesis + the daemon, both on-prem
-make agent-research GOAL="…"                 # research uses the local model
+rm -f /tmp/mnesis-try/wiki/.index/wiki.db && uv run env MNESIS_ROOT=/tmp/mnesis-try/wiki mnesis rebuild
 ```
 
-Both `mnesis` and `mnesis-agent` then target your host Ollama; sources, the
-knowledge base, and inference all stay inside one trust boundary. The agent
-container is **stateless** — knowledge lives in mnesis; run audit (statuses and
-ids only, never values) goes to the `mnesis-agent-runs` volume.
+### Phase 2 — confidence & lifecycle (`make demo-phase2`)
 
-> **Seam for the Web UI.** The **assistant** archetype is designed to later back
-> the Web UI chat endpoint — upgrading today's simple RAG `/chat` into *agentic*
-> retrieval (multi-step query → graph traversal → grounded, cited answer) while
-> keeping the same grounded-and-cited contract.
+Six steps demonstrate reinforce → supersede → confidence-blended search →
+contradiction queue/resolve → decay-to-stale. Confirm a reinforcing source bumps
+`source_count` to 2 with **one** page (no duplicate), a superseding source moves
+the old page to **stale**, a low-margin conflict is **queued** until `resolve`,
+and `decay` ages an unread page to stale. Durable state (access counts + review
+queue) survives a cache rebuild — asserted by `tests/test_phase2_e2e.py`.
 
-## Verify the PoC
+### Phase 3 — knowledge graph (`make demo-phase3`)
 
-Run top to bottom on a fresh clone; each step states what you should see.
+Confirm `rebuild` reports the graph it built (entities/edges + the active
+backend), `impact library:redis` returns **auth-migration (hop 1)** and **Atlas
+(hop 2)** with the connecting path — a Redis dependency the Atlas page never
+states in words — a superseding source **demotes** the old edge and the new one
+takes over the chain, and `graph-lint --fix` reports **clean**. The graph is a
+rebuildable cache — asserted by `tests/test_phase3_e2e.py`.
 
-1. **Install** — `make setup` completes without error and the `mnesis` command
-   is available (`uv run mnesis --help` lists the subcommands).
-2. **Tests pass** — `make test` reports all tests passing, fully offline.
-3. **The loop compounds** — `make demo` prints six steps. Confirm:
-   - **Step 2** shows `redactions: 1` and the saved source on disk reads
-     `... the API key [REDACTED:SECRET], which must be rotated quarterly.` —
-     the fake secret was filtered *before* anything was written.
-   - **Step 6** (`query "caching"` after filing the answer back) returns the new
-     **digest** page *alongside* the original fact — knowledge that did not exist
-     as a page before now surfaces. That is the compounding behaviour.
-4. **Try the loop yourself via the CLI** (offline, in a throwaway location so
-   your clone stays clean):
+---
 
-   ```bash
-   rm -rf /tmp/mnesis-try && git init -q /tmp/mnesis-try
-   export MNESIS_LLM_STUB=1 MNESIS_ROOT=/tmp/mnesis-try/wiki
-   echo "Project Atlas uses Redis for caching." | uv run mnesis ingest - --ref atlas
-   uv run mnesis rebuild
-   uv run mnesis query "redis"          # -> the ingested page is the top hit
-   uv run mnesis file-back "What caches Atlas?" "Atlas uses Redis for caching." --score 0.9
-   uv run mnesis query "caching"        # -> BOTH the fact and the new digest appear
-   unset MNESIS_ROOT MNESIS_LLM_STUB
-   ```
+## Project layout & scope
 
-5. **Canonical-vs-cache holds** — the index is a pure projection of Markdown:
+```
+src/mnesis/          the core: store · filters · ingest · search · graph · confidence ·
+                     lifecycle · vocab · MCP server · REST/SSE gateway · CLI
+src/mnesis_agent/    the runtime agent: MCP client · provider tool-use · bounded loop ·
+                     memory/grounding · policy · audit · daemon · the three archetypes
+ui/                  the React + Vite web UI (served by nginx in Docker)
+wiki/                pages/ (canonical, tracked) · sources/ (redacted, tracked) · .index/ (cache, gitignored)
+tests/               the full offline test suite
+docs/OPS.md          backup / restore / operations
+CLAUDE.md            the authoritative design contract (read this to extend the system)
+```
 
-   ```bash
-   rm -f /tmp/mnesis-try/wiki/.index/wiki.db && uv run env MNESIS_ROOT=/tmp/mnesis-try/wiki mnesis rebuild
-   ```
+**In scope and implemented:** filtered ingest · Markdown + git canonical store ·
+FTS5 keyword search · confidence scoring & decay lifecycle · relation-aware ingest
+(reinforce/supersede/contradict/create) · contradiction review queue · the typed
+knowledge graph with impact analysis · three surfaces (CLI, MCP, web UI) · the
+runtime agent layer with policy, budgets, and audit · Docker deployment with
+local-first inference.
 
-   deleting the index and rebuilding reproduces identical search results (this
-   is also asserted by the test suite).
+**Deferred** (see [`CLAUDE.md` §13](CLAUDE.md) for the full map): automation hooks
+& scheduler (Phase 4); vector stream + reciprocal rank fusion and LLM-as-judge
+quality scoring (Phase 5); multi-agent mesh sync and private/shared scoping
+(Phase 6).
 
-If every item holds, the Phase-1 PoC is working as designed.
+---
 
-## Verify Phase 2 (confidence & lifecycle)
-
-Phase 2 adds confidence, decay, supersession, and the contradiction review queue.
-
-1. **Lifecycle demo** — `make demo-phase2` (i.e. `uv run python scripts/demo_phase2.py`)
-   prints the full lifecycle in six steps. Confirm:
-   - **Step 2** — an agreeing source *reinforces* page A: `source_count` becomes
-     2 and confidence rises, with **still one page** (no duplicate).
-   - **Step 3** — an updating source creates page B that *supersedes* A; A goes
-     **stale**.
-   - **Step 4** — `query "redis caching"` returns B by default; A reappears
-     **demoted** only with `include_stale`.
-   - **Step 5** — a low-margin conflicting source is **queued**; `mnesis resolve`
-     keeps B, supersedes the conflicter, and empties the queue.
-   - **Step 6** — `mnesis decay` transitions an aged, unread page to **stale**.
-2. **Confidence & status are surfaced** — `make demo-phase2` output (and
-   `mnesis query` / `mnesis get`) show a rounded confidence and status on every
-   page; stale pages are marked.
-3. **Durable state survives a cache rebuild** — deleting the search index
-   (`wiki/.index/wiki.db`) and running `mnesis rebuild` reproduces ranking and
-   confidences **without** clearing the durable state store
-   (`wiki/.index/state.db`: access counts + review queue). Asserted by
-   `tests/test_phase2_e2e.py`.
-
-## Verify Phase 3 (knowledge graph)
-
-Phase 3 extracts entities/relations and projects them into a typed graph.
-
-1. **Graph demo** — `make demo-phase3` (i.e. `uv run python scripts/demo_phase3.py`)
-   prints the full walkthrough. Confirm:
-   - **Step 2** — `mnesis rebuild` reports the graph it built (entities/edges)
-     and the active backend (`sqlite`); `graph-stats` shows counts by type.
-   - **Step 3** — `impact library:redis` returns **auth-migration (hop 1)** and
-     **Atlas (hop 2)** with the connecting path `project:atlas -> decision:auth-migration
-     -> library:redis` — a Redis dependency the Atlas page never states in words.
-   - **Step 4** — after a superseding source moves the migration to Postgres, the
-     old Redis edge is **demoted** (Redis impact becomes empty) and the new
-     Postgres edge **takes over** the chain.
-   - **Step 5** — `graph-lint --fix` reports **clean**.
-2. **Graph is a rebuildable cache** — deleting both `wiki/.index/wiki.db` and
-   `wiki/.index/graph.db` and running `mnesis rebuild` reproduces the graph, the
-   search ranking, and confidences, while the durable state store
-   (`wiki/.index/state.db`) is preserved. Asserted by `tests/test_phase3_e2e.py`.
-3. **Pluggable backend** — `MNESIS_GRAPH_BACKEND` selects the engine (default
-   `sqlite`); all graph access goes through one `GraphBackend` interface, so a
-   Tier-B backend is a config change, not a refactor.
-
-See [`CLAUDE.md` §13](CLAUDE.md) for the scope map: Phases 1–3 are in scope and
-implemented; Phases 4–6 are deferred, with each capability mapped to its phase.
+mnesis is a proof of concept under active development. To extend it, read
+[`CLAUDE.md`](CLAUDE.md) first — it is the operating contract, and any change that
+touches a field, directory, env var, tool, or behaviour described there updates
+that document in the same commit.
