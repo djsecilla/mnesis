@@ -23,12 +23,24 @@ export function edgeId(e: { s: string; p: string; o: string }): string {
   return `${e.s}|${e.p}|${e.o}`;
 }
 
+/**
+ * Display label: the value half of a `type:value` ref. The type is already
+ * encoded by node color, so dropping the prefix halves label width and noise
+ * (`library:redis` -> `redis`). The full ref stays the node id and shows in the
+ * detail panel on click.
+ */
+export function shortLabel(ref: string): string {
+  const i = ref.indexOf(":");
+  return i >= 0 ? ref.slice(i + 1) : ref;
+}
+
 export function nodeElement(n: GraphNode): ElementDefinition {
   return {
     group: "nodes",
     data: {
       id: n.ref,
-      label: n.ref,
+      label: shortLabel(n.ref),
+      ref: n.ref,
       type: n.type,
       degree: n.degree,
       color: entityColorValue(n.type),
@@ -75,11 +87,23 @@ export function stylesheet(): StylesheetStyle[] {
         width: "data(size)",
         height: "data(size)",
         label: "data(label)",
-        color: c.fg,
-        "font-size": 10,
+        // Muted so labels recede and the colored structure dominates; a halo
+        // (text-outline in the bg color) keeps them legible over edges without a
+        // boxy background. Truncated so long refs (e.g. page ids) never sprawl.
+        color: c.muted,
+        "font-size": 8,
+        "font-weight": 500,
         "font-family": "Inter, system-ui, sans-serif",
         "text-valign": "bottom",
-        "text-margin-y": 4,
+        "text-margin-y": 3,
+        "text-max-width": "84px",
+        ["text-wrap" as string]: "ellipsis",
+        "text-outline-width": 1.6,
+        "text-outline-color": c.bg,
+        "text-outline-opacity": 1,
+        // Auto-declutter: a label is hidden once it would render below this many
+        // on-screen px. After "fit", a small graph zooms in (labels show) while a
+        // dense one zooms out (labels hide until you zoom into a region).
         "min-zoomed-font-size": 8,
         "border-width": 0,
         "transition-property": "opacity",
@@ -87,8 +111,14 @@ export function stylesheet(): StylesheetStyle[] {
       },
     },
     {
+      // Selected/focused: ring + label always legible regardless of zoom.
       selector: "node:selected",
-      style: { "border-width": 3, "border-color": c.accent },
+      style: {
+        "border-width": 3,
+        "border-color": c.accent,
+        color: c.fg,
+        "min-zoomed-font-size": 0,
+      },
     },
     {
       selector: "edge",
@@ -102,13 +132,15 @@ export function stylesheet(): StylesheetStyle[] {
         "arrow-scale": 0.8,
         "curve-style": "bezier",
         label: "data(p)",
-        "font-size": 8,
+        "font-size": 7,
         color: c.muted,
         "text-rotation": "autorotate",
-        "text-background-color": c.bg,
-        "text-background-opacity": 0.85,
-        "text-background-padding": "1",
-        "min-zoomed-font-size": 7,
+        "text-outline-width": 1.5,
+        "text-outline-color": c.bg,
+        "text-outline-opacity": 1,
+        // Predicate labels are the noisiest at scale: show them only when zoomed
+        // in close, or on hover (edge.hover-edge drops this floor to 0).
+        "min-zoomed-font-size": 13,
         "transition-property": "opacity, width",
         "transition-duration": dur,
       },
@@ -150,14 +182,16 @@ export function stylesheet(): StylesheetStyle[] {
       selector: "edge.hover-dim",
       style: { opacity: 0.05, "text-opacity": 0 },
     },
-    // The hovered node: accent ring, on top, full opacity.
+    // The hovered node: accent ring, on top, full opacity, label always shown.
     {
       selector: "node.hovered",
       style: {
         "border-width": 4,
         "border-color": c.accent,
+        color: c.fg,
         opacity: 1,
         "text-opacity": 1,
+        "min-zoomed-font-size": 0,
         "z-index": 999,
       },
     },

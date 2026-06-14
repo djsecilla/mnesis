@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { getGraph, getImpact } from "../api/endpoints";
 import type { GraphData, ImpactResponse } from "../api/types";
-import { entityColorValue } from "../design/tokens";
+import { entityColor, entityColorValue } from "../design/tokens";
 import { BrandSplash } from "../components/Logo";
 import GraphPanel from "../graph/GraphPanel";
 import {
@@ -298,6 +298,8 @@ export default function GraphPage() {
 
   const loading = base.isLoading || base.isFetching;
   const empty = base.data && base.data.nodes.length === 0;
+  // Entity types present in the current view (for the legend).
+  const presentTypes = Array.from(new Set((base.data?.nodes ?? []).map((n) => n.type))).sort();
 
   return (
     <div className="relative h-full">
@@ -366,6 +368,20 @@ export default function GraphPage() {
         )}
 
         <div ref={containerRef} className="h-full w-full" />
+
+        {/* Legend: color → entity type. Labels drop the `type:` prefix (color
+            carries the type), so this keeps the encoding intuitive. Only the
+            types actually present are shown, so it never adds noise. */}
+        {!empty && !loading && presentTypes.length > 0 && (
+          <div className="pointer-events-none absolute bottom-3 left-3 z-10 flex flex-wrap gap-x-3 gap-y-1 rounded-lg border border-border bg-elev/80 px-2.5 py-1.5 text-[10px] text-muted backdrop-blur">
+            {presentTypes.map((t) => (
+              <span key={t} className="inline-flex items-center gap-1">
+                <span className="h-2 w-2 rounded-full" style={{ background: entityColor(t) }} />
+                {t}
+              </span>
+            ))}
+          </div>
+        )}
 
         {/* Floating overlay — sits over the canvas; does not reflow it. */}
         {selected && (
