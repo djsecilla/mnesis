@@ -41,6 +41,10 @@ export default function GraphPage() {
   const [impactLoading, setImpactLoading] = useState(false);
   const [overCap, setOverCap] = useState(false);
   const [searchInput, setSearchInput] = useState("");
+  // Entity types hidden by the legend filter. A ref mirrors it so imperative
+  // merges/resets (which run outside React) can re-apply the current filter.
+  const [hiddenTypes, setHiddenTypes] = useState<Set<string>>(new Set());
+  const hiddenTypesRef = useRef<Set<string>>(hiddenTypes);
 
   const base = useQuery({
     queryKey: ["graph", root ?? "overview", depth],
@@ -131,6 +135,26 @@ export default function GraphPage() {
     cyRef.current?.edges(".demoted").toggleClass("hidden", !showDemoted);
   }
 
+  // Hide nodes whose entity type is in `hidden` (their edges hide with them).
+  function applyTypeFilter(hidden: Set<string>) {
+    const cy = cyRef.current;
+    if (!cy) return;
+    cy.batch(() => {
+      cy.nodes().forEach((n) => {
+        n.toggleClass("type-off", hidden.has(String(n.data("type"))));
+      });
+    });
+  }
+
+  function toggleType(t: string) {
+    setHiddenTypes((prev) => {
+      const next = new Set(prev);
+      if (next.has(t)) next.delete(t);
+      else next.add(t);
+      return next;
+    });
+  }
+
   function runLayout() {
     cyRef.current?.layout({ ...FCOSE_LAYOUT }).run();
   }
@@ -159,6 +183,7 @@ export default function GraphPage() {
       for (const e of g.edges) if (cy.getElementById(edgeId(e)).empty()) cy.add(edgeElement(e));
     });
     applyDemoted();
+    applyTypeFilter(hiddenTypesRef.current); // newly merged nodes respect the active filter
     runLayout();
     enforceCap();
   }
@@ -204,6 +229,7 @@ export default function GraphPage() {
     cy.elements().remove();
     cy.add(toElements(base.data));
     applyDemoted();
+    applyTypeFilter(hiddenTypesRef.current); // keep the filter across view changes
     runLayout();
     enforceCap();
     if (root) {
@@ -219,6 +245,14 @@ export default function GraphPage() {
     applyDemoted();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showDemoted]);
+
+  // Re-apply the type filter whenever it changes; mirror it into the ref so
+  // imperative merges/resets pick up the current selection.
+  useEffect(() => {
+    hiddenTypesRef.current = hiddenTypes;
+    applyTypeFilter(hiddenTypes);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hiddenTypes]);
 
   // Keep the selected node clear of the floating panel (anchored top-right): if it
   // would sit under the card, gently pan it left. Centered/focused nodes land at
@@ -369,17 +403,36 @@ export default function GraphPage() {
 
         <div ref={containerRef} className="h-full w-full" />
 
-        {/* Legend: color → entity type. Labels drop the `type:` prefix (color
-            carries the type), so this keeps the encoding intuitive. Only the
-            types actually present are shown, so it never adds noise. */}
+        {/* Legend + type filter: color → entity type, and a click toggles each
+            type's nodes on/off. Labels drop the `type:` prefix (color carries
+            the type), so this keeps the encoding intuitive. Only the types
+            actually present are shown, so it never adds noise. */}
         {!empty && !loading && presentTypes.length > 0 && (
-          <div className="pointer-events-none absolute bottom-3 left-3 z-10 flex flex-wrap gap-x-3 gap-y-1 rounded-lg border border-border bg-elev/80 px-2.5 py-1.5 text-[10px] text-muted backdrop-blur">
-            {presentTypes.map((t) => (
-              <span key={t} className="inline-flex items-center gap-1">
-                <span className="h-2 w-2 rounded-full" style={{ background: entityColor(t) }} />
-                {t}
-              </span>
-            ))}
+          <div className="absolute bottom-3 left-3 z-10 flex flex-wrap items-center gap-x-1 gap-y-1 rounded-lg border border-border bg-elev/80 px-1.5 py-1 text-[10px] backdrop-blur">
+            {presentTypes.map((t) => {
+              const off = hiddenTypes.has(t);
+              return (
+                <button
+                  key={t}
+                  onClick={() => toggleType(t)}
+                  title={off ? `Show ${t} nodes` : `Hide ${t} nodes`}
+                  aria-pressed={!off}
+                  className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 transition hover:bg-bg ${off ? "opacity-40" : "text-muted"}`}
+                >
+                  <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: entityColor(t) }} />
+                  <span className={off ? "line-through" : ""}>{t}</span>
+                </button>
+              );
+            })}
+            {hiddenTypes.size > 0 && (
+              <button
+                onClick={() => setHiddenTypes(new Set())}
+                title="Show all types"
+                className="ml-0.5 rounded px-1.5 py-0.5 text-muted transition hover:bg-bg hover:text-fg"
+              >
+                reset
+              </button>
+            )}
           </div>
         )}
 

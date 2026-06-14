@@ -104,7 +104,7 @@ export function stylesheet(): StylesheetStyle[] {
         // Auto-declutter: a label is hidden once it would render below this many
         // on-screen px. After "fit", a small graph zooms in (labels show) while a
         // dense one zooms out (labels hide until you zoom into a region).
-        "min-zoomed-font-size": 8,
+        "min-zoomed-font-size": 6,
         "border-width": 0,
         "transition-property": "opacity",
         "transition-duration": dur,
@@ -151,6 +151,13 @@ export function stylesheet(): StylesheetStyle[] {
     },
     {
       selector: ".hidden",
+      style: { display: "none" },
+    },
+    {
+      // Type filter (legend toggles): hide nodes of a deselected entity type.
+      // Cytoscape also hides any edge whose endpoint is display:none, so the
+      // connected edges disappear with the node.
+      selector: "node.type-off",
       style: { display: "none" },
     },
     {
