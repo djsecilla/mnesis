@@ -220,12 +220,29 @@ export function stylesheet(): StylesheetStyle[] {
 
 export const FCOSE_LAYOUT = {
   name: "fcose",
+  // "proof" = the highest-quality spectral solve; fine well past our node cap.
+  quality: "proof",
   animate: true,
-  animationDuration: 350,
-  randomize: false,
+  animationDuration: 400,
+  // Randomize → spectral initialization spreads nodes in 2D from the start,
+  // instead of preserving a near-linear draft that `fit` then stretches across
+  // the diagonal. Incremental merges (expand) override this to false.
+  randomize: true,
   fit: true,
-  padding: 40,
-  nodeRepulsion: 6000,
-  idealEdgeLength: 110,
-  nodeSeparation: 80,
+  padding: 50,
+  // Strong repulsion fills the canvas; gravity curls long chains inward so a
+  // path-shaped graph (e.g. a supersession history) balances rather than
+  // streaking corner-to-corner.
+  nodeRepulsion: 12000,
+  idealEdgeLength: 95,
+  edgeElasticity: 0.45,
+  gravity: 0.45,
+  gravityRange: 3.8,
+  gravityCompound: 1.2,
+  gravityRangeCompound: 1.5,
+  numIter: 2500,
+  nodeSeparation: 110,
+  // Pack disconnected components (e.g. tag-only nodes with no edges) next to
+  // the main graph instead of stranding them in a far corner.
+  packComponents: true,
 } as const;

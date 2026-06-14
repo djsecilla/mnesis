@@ -155,8 +155,13 @@ export default function GraphPage() {
     });
   }
 
-  function runLayout() {
-    cyRef.current?.layout({ ...FCOSE_LAYOUT }).run();
+  // randomize=true (default) gives a fresh, well-spread 2D layout — right for
+  // initial loads. Incremental merges pass false so existing nodes keep their
+  // places and only the new ones settle in, avoiding a jarring full reshuffle.
+  function runLayout(randomize = true) {
+    // fcose options aren't in cytoscape's base LayoutOptions type; cast as the
+    // rest of the file does for under-typed cytoscape extensions.
+    cyRef.current?.layout({ ...FCOSE_LAYOUT, randomize } as cytoscape.LayoutOptions).run();
   }
 
   function enforceCap() {
@@ -184,7 +189,7 @@ export default function GraphPage() {
     });
     applyDemoted();
     applyTypeFilter(hiddenTypesRef.current); // newly merged nodes respect the active filter
-    runLayout();
+    runLayout(false); // incremental: keep existing nodes put, settle only the new ones
     enforceCap();
   }
 
