@@ -6,6 +6,7 @@ import { useSearchParams } from "react-router-dom";
 import { getGraph, getImpact } from "../api/endpoints";
 import type { GraphData, ImpactResponse } from "../api/types";
 import { entityColorValue } from "../design/tokens";
+import { BrandSplash } from "../components/Logo";
 import GraphPanel from "../graph/GraphPanel";
 import {
   FCOSE_LAYOUT,
@@ -354,8 +355,8 @@ export default function GraphPage() {
           </div>
         )}
         {empty && !loading && (
-          <div className="absolute inset-0 z-0 flex items-center justify-center text-muted">
-            No graph yet — ingest sources, then run rebuild.
+          <div className="absolute inset-0 z-0">
+            <BrandSplash tagline="No graph yet — ingest a source and it takes shape here." />
           </div>
         )}
         {base.error && (

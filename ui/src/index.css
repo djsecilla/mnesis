@@ -80,6 +80,22 @@ body {
   }
 }
 
+/* Brand splash: a gentle breathing pulse for loading states (the static empty
+   states render the same lockup without it). Disabled under reduced-motion. */
+@keyframes brand-pulse {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
+}
+.brand-pulse {
+  animation: brand-pulse 1.8s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .brand-pulse {
+    animation: none;
+    opacity: 0.9;
+  }
+}
+
 /* Typography (react-markdown) — bind the `prose` palette to our shared tokens so
    it reads well in both themes without a per-view color fork. */
 .prose {

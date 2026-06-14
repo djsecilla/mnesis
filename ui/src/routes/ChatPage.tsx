@@ -5,6 +5,7 @@ import { ChatError, streamChat, type ChatHistoryItem } from "../api/sse";
 import type { RetrievalHit } from "../api/types";
 import { KindBadge } from "../components/Badges";
 import ChatAnswer from "../components/ChatAnswer";
+import { BrandSplash } from "../components/Logo";
 
 interface Msg {
   role: "user" | "assistant";
@@ -112,10 +113,7 @@ export default function ChatPage() {
 
       <div ref={scrollRef} className="flex-1 space-y-5 overflow-auto pr-1">
         {messages.length === 0 && (
-          <p className="text-muted">
-            Ask a question. Answers are grounded in the wiki and cited — if the wiki has nothing,
-            Mnesis says so rather than guessing.
-          </p>
+          <BrandSplash tagline="Ask a question — answers are grounded in the wiki and cited. If the wiki has nothing, Mnesis says so rather than guessing." />
         )}
 
         {messages.map((m, i) =>

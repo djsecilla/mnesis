@@ -71,6 +71,31 @@ export interface LogoProps {
   title?: string;
 }
 
+/**
+ * A large, centered brand lockup for loading splashes and empty states. Fills
+ * its container and vertically centers the mark + wordmark, with an optional
+ * tagline below. `animate` adds a gentle breathing pulse (loading); leave it off
+ * for static empty states. Honors prefers-reduced-motion (see index.css).
+ */
+export function BrandSplash({
+  tagline,
+  animate = false,
+  size = 52,
+}: {
+  tagline?: React.ReactNode;
+  animate?: boolean;
+  size?: number;
+}) {
+  return (
+    <div className="flex h-full w-full flex-col items-center justify-center gap-3 px-6 text-center text-fg">
+      <div className={animate ? "brand-pulse" : "opacity-90"}>
+        <Logo lockup size={size} />
+      </div>
+      {tagline && <p className="max-w-sm text-sm leading-relaxed text-muted">{tagline}</p>}
+    </div>
+  );
+}
+
 export default function Logo({ variant = BRAND_MARK, lockup = false, size = 28, title = "mnesis" }: LogoProps) {
   const mark = (
     <svg width={size} height={size} viewBox="0 0 64 64" role="img" aria-label={title}>
