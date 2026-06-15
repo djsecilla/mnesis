@@ -19,8 +19,13 @@ import re
 
 from . import config
 
-#: The entity types an entity ref may carry (the ``type`` in ``type:value``).
-ENTITY_TYPES: tuple[str, ...] = ("person", "project", "library", "concept", "file", "decision")
+#: The built-in default entity types (the ``type`` in a ``type:value`` ref),
+#: used when ``MNESIS_ENTITY_TYPES`` is unset.
+DEFAULT_ENTITY_TYPES: tuple[str, ...] = ("person", "project", "library", "concept", "file", "decision")
+
+#: Reserved type names a custom set may NOT use: ``page`` labels the structural
+#: page nodes the graph emits, so allowing it as an entity type would collide.
+RESERVED_ENTITY_TYPES: frozenset[str] = frozenset({"page"})
 
 #: Predicates the graph itself emits as structural page-level edges (supersession
 #: / contradiction). These are ALWAYS part of the vocabulary, even under a custom
@@ -56,14 +61,14 @@ DEFAULT_PREDICATES: tuple[str, ...] = (
 _RELATION_KEYS = ("s", "p", "o")
 
 
-def _normalize_predicate(p: object) -> str:
-    """snake_case a predicate: lowercase, runs of non-alphanumerics -> ``_``.
+def _snake_case(token: object) -> str:
+    """snake_case a vocabulary token: lowercase, runs of non-alphanumerics -> ``_``.
 
     Makes matching forgiving — ``"Depends On"``, ``"depends-on"`` and
     ``"depends_on"`` all resolve to the same canonical ``depends_on`` — and
-    canonicalises user-supplied custom predicates the same way.
+    canonicalises user-supplied custom predicates and entity types the same way.
     """
-    return re.sub(r"[^a-z0-9]+", "_", str(p).strip().lower()).strip("_")
+    return re.sub(r"[^a-z0-9]+", "_", str(token).strip().lower()).strip("_")
 
 
 def _resolve_predicates() -> tuple[str, ...]:
@@ -71,7 +76,7 @@ def _resolve_predicates() -> tuple[str, ...]:
     normalised, de-duplicated, and always including :data:`CORE_PREDICATES`."""
     raw = config.MNESIS_PREDICATES.strip()
     base = (
-        tuple(_normalize_predicate(p) for p in raw.split(",") if p.strip())
+        tuple(_snake_case(p) for p in raw.split(",") if p.strip())
         if raw
         else DEFAULT_PREDICATES
     )
@@ -82,10 +87,32 @@ def _resolve_predicates() -> tuple[str, ...]:
     return tuple(out)
 
 
+def _resolve_entity_types() -> tuple[str, ...]:
+    """The active entity-type set: ``MNESIS_ENTITY_TYPES`` (if set) else the
+    default, normalised, de-duplicated, with :data:`RESERVED_ENTITY_TYPES`
+    dropped. Unlike predicates there is no forced core — the structural ``page``
+    type is separate and never a member here."""
+    raw = config.MNESIS_ENTITY_TYPES.strip()
+    base = (
+        tuple(_snake_case(t) for t in raw.split(",") if t.strip())
+        if raw
+        else DEFAULT_ENTITY_TYPES
+    )
+    out: list[str] = []
+    for t in base:
+        if t and t not in RESERVED_ENTITY_TYPES and t not in out:
+            out.append(t)
+    return tuple(out)
+
+
 #: The directed predicates a relation may use (``A -p-> B``). Resolved from
 #: ``MNESIS_PREDICATES`` at import time (default = :data:`DEFAULT_PREDICATES`),
 #: always including :data:`CORE_PREDICATES`. See CLAUDE.md §6.
 PREDICATES: tuple[str, ...] = _resolve_predicates()
+
+#: The entity types an entity ref may carry. Resolved from ``MNESIS_ENTITY_TYPES``
+#: at import time (default = :data:`DEFAULT_ENTITY_TYPES`). See CLAUDE.md §6.
+ENTITY_TYPES: tuple[str, ...] = _resolve_entity_types()
 
 
 def normalize_ref(ref: str) -> str:
@@ -99,7 +126,7 @@ def normalize_ref(ref: str) -> str:
     if not isinstance(ref, str) or ":" not in ref:
         raise ValueError(f"entity ref must be 'type:value', got {ref!r}")
     raw_type, raw_value = ref.split(":", 1)
-    etype = raw_type.strip().lower()
+    etype = _snake_case(raw_type)
     if etype not in ENTITY_TYPES:
         raise ValueError(
             f"unknown entity type {raw_type.strip()!r} in ref {ref!r}; "
@@ -113,7 +140,7 @@ def normalize_ref(ref: str) -> str:
 
 def is_valid_predicate(p: object) -> bool:
     """True if ``p`` (normalised to snake_case) is an allowed predicate."""
-    return isinstance(p, str) and _normalize_predicate(p) in PREDICATES
+    return isinstance(p, str) and _snake_case(p) in PREDICATES
 
 
 def validate_relation(rel: object) -> dict:
@@ -127,7 +154,7 @@ def validate_relation(rel: object) -> dict:
     if missing:
         raise ValueError(f"relation {rel!r} is missing key(s): {', '.join(missing)}")
 
-    predicate = _normalize_predicate(rel["p"])
+    predicate = _snake_case(rel["p"])
     if predicate not in PREDICATES:
         raise ValueError(
             f"unknown predicate {rel['p']!r}; must be one of {', '.join(PREDICATES)}"

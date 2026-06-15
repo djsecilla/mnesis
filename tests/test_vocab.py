@@ -84,6 +84,27 @@ def test_empty_config_uses_default(monkeypatch):
     assert vocab._resolve_predicates() == vocab.PREDICATES
 
 
+def test_custom_entity_types_from_config(monkeypatch):
+    # MNESIS_ENTITY_TYPES replaces the default set; entries are snake_cased, the
+    # reserved "page" type is dropped, and there is no forced core.
+    monkeypatch.setattr(config, "MNESIS_ENTITY_TYPES", "Person, org, place, page, code file")
+    resolved = vocab._resolve_entity_types()
+    assert resolved == ("person", "org", "place", "code_file")  # order preserved, page dropped
+    assert "project" not in resolved  # default excluded under a custom list
+
+
+def test_empty_entity_type_config_uses_default(monkeypatch):
+    monkeypatch.setattr(config, "MNESIS_ENTITY_TYPES", "")
+    assert vocab._resolve_entity_types() == vocab.DEFAULT_ENTITY_TYPES
+
+
+def test_entity_type_matching_is_normalized(monkeypatch):
+    # A ref's type is snake_cased the same way the vocabulary is, so a custom
+    # multi-word type round-trips.
+    monkeypatch.setattr(vocab, "ENTITY_TYPES", ("person", "code_file"))
+    assert vocab.normalize_ref("Code File:auth-utils") == "code_file:auth-utils"
+
+
 @pytest.fixture()
 def wiki(tmp_path, monkeypatch):
     root = tmp_path / "wiki"

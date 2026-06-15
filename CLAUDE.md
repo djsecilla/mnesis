@@ -129,7 +129,7 @@ The typed knowledge graph (Phase 3) is built from two things already in Markdown
 
 **Entity ref format:** `type:value`, **lowercase, hyphenated** value (`project:atlas`, `library:redis`, `person:sarah`, `decision:auth-migration`). Normalised by `vocab.normalize_ref`.
 
-**Entity types** (`vocab.ENTITY_TYPES`): `person`, `project`, `library`, `concept`, `file`, `decision`.
+**Entity types** (`vocab.ENTITY_TYPES`): default `person`, `project`, `library`, `concept`, `file`, `decision`. **Configurable** via **`MNESIS_ENTITY_TYPES`** (comma-separated; empty = default), resolved in `vocab.py` exactly like predicates: custom entries are snake_cased and de-duplicated. There is **no forced core** (unlike predicates), but **`page` is reserved** (`RESERVED_ENTITY_TYPES`) and dropped if supplied — it labels the structural page nodes the graph emits, so an entity type of the same name would collide. The same list-length trade-offs as predicates apply. **UI caveat:** the Web UI assigns distinct colours only to the built-in six types; custom types fall back to the `page` colour unless matching `--entity-<type>` CSS vars are added (a UI rebuild).
 
 **Predicates** (`vocab.PREDICATES`) — directed edge types, written `A -> B`. The set splits into the original engineering relations and a general-purpose set (so non-software knowledge — people, places, history, organisations — forms edges instead of leaving conceptually-related entities as isolated nodes):
 

@@ -164,6 +164,14 @@ GRAPH_PROXIMITY_DECAY: float = _env_float("MNESIS_GRAPH_PROXIMITY_DECAY", 0.5)
 #: CLAUDE.md §6 for the trade-offs of a long list.
 MNESIS_PREDICATES: str = os.environ.get("MNESIS_PREDICATES", "")
 
+#: Custom entity-type vocabulary — a comma-separated list of the ``type`` in a
+#: ``type:value`` entity ref, REPLACING the built-in default when non-empty
+#: (e.g. "person,org,place,event,concept"). Entries are normalised to snake_case;
+#: ``page`` is reserved (structural page nodes) and is dropped if supplied. The
+#: Web UI assigns distinct colours only to the built-in six types — custom types
+#: render in the fallback colour unless you add CSS vars. See CLAUDE.md §6.
+MNESIS_ENTITY_TYPES: str = os.environ.get("MNESIS_ENTITY_TYPES", "")
+
 # --- MCP server transport ---------------------------------------------------
 
 #: Transport for the MCP server: "stdio" (default; local Claude Code spawns it
