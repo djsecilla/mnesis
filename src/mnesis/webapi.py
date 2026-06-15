@@ -22,6 +22,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
+from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
@@ -431,7 +432,9 @@ async def _chat(request: Request) -> EventSourceResponse:
             return
 
         try:
-            answer = _grounded_answer(message, pages)
+            # Blocking LLM call — off the event loop so the SSE stream and the
+            # rest of the server stay responsive while the answer is generated.
+            answer = await run_in_threadpool(_grounded_answer, message, pages)
         except Exception:  # noqa: BLE001 — degrade gracefully on any LLM failure
             # The model is unreachable (no API credits, network, etc.). Don't crash
             # the stream: tell the user plainly, and still surface the retrieved
@@ -582,9 +585,13 @@ async def _ingest_preview(request: Request) -> JSONResponse:
     except _IngestInputError as e:
         return _err(e.code, e.message, e.status)
     try:
-        return JSONResponse(ingest.plan_ingest(text, ref))
+        # plan_ingest does a blocking LLM call (and is read-only — no writes), so
+        # run it off the event loop to keep the server (and /health) responsive
+        # during a slow local-model extraction.
+        plan = await run_in_threadpool(ingest.plan_ingest, text, ref)
     except Exception as e:  # LLM timeout / unreachable / extraction failure
         return _llm_err(e)
+    return JSONResponse(plan)
 
 
 async def _ingest_commit(request: Request) -> JSONResponse:
