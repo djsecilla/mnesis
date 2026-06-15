@@ -110,3 +110,47 @@ def test_traversal_is_cycle_safe(backend):
     assert {r["ref"] for r in reached} == {"concept:y"}
     for r in reached:
         assert len(r["path"]) == len(set(r["path"]))  # no repeats within a path
+
+
+def test_symmetric_edges_collapse_and_traverse_both_ways(backend):
+    # A symmetric predicate (related_to) asserted in BOTH directions by two pages
+    # collapses to ONE undirected edge, traversable from either endpoint.
+    backend.clear()
+    backend.add_entity("concept:a", "concept")
+    backend.add_entity("concept:b", "concept")
+    backend.add_edge("concept:a", "related_to", "concept:b", "p1", 0.5, True)
+    backend.add_edge("concept:b", "related_to", "concept:a", "p2", 0.5, True)  # reciprocal
+    backend.finalize()
+
+    # Collapsed: a single edge with both pages as provenance.
+    edges = backend.all_edges()
+    rel = [e for e in edges if e["p"] == "related_to"]
+    assert len(rel) == 1
+    assert rel[0]["symmetric"] is True
+    assert rel[0]["assertion_count"] == 2
+    assert sorted(rel[0]["source_pages"]) == ["p1", "p2"]
+
+    # Reachable from either endpoint, and reported as undirected.
+    a_nb = backend.neighbors("concept:a", direction="out")
+    b_nb = backend.neighbors("concept:b", direction="out")  # b is the non-canonical end
+    assert {n["ref"] for n in a_nb} == {"concept:b"}
+    assert {n["ref"] for n in b_nb} == {"concept:a"}  # symmetric: found despite "out"
+    assert a_nb[0]["direction"] == "both" and b_nb[0]["direction"] == "both"
+
+    # traverse follows the undirected edge from both ends.
+    assert {r["ref"] for r in backend.traverse("concept:a", depth=1)} == {"concept:b"}
+    assert {r["ref"] for r in backend.traverse("concept:b", depth=1)} == {"concept:a"}
+
+
+def test_directed_edges_keep_direction(backend):
+    # A directed predicate is unaffected: only reachable "out" from the subject.
+    backend.clear()
+    backend.add_entity("project:atlas", "project")
+    backend.add_entity("library:redis", "library")
+    backend.add_edge("project:atlas", "uses", "library:redis", "p1", 0.6, True)
+    backend.finalize()
+
+    assert {n["ref"] for n in backend.neighbors("project:atlas", direction="out")} == {"library:redis"}
+    assert backend.neighbors("library:redis", direction="out") == []  # redis doesn't "use" atlas
+    redis_in = backend.neighbors("library:redis", direction="in")
+    assert {n["ref"] for n in redis_in} == {"project:atlas"} and redis_in[0]["direction"] == "in"

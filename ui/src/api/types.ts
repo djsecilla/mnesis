@@ -67,6 +67,7 @@ export interface GraphEdge {
   assertion_count: number;
   demoted: boolean;
   source_pages: string[];
+  symmetric: boolean; // undirected predicate — rendered without a direction arrow
 }
 
 export interface GraphData {

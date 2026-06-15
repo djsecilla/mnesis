@@ -98,6 +98,31 @@ def test_empty_entity_type_config_uses_default(monkeypatch):
     assert vocab._resolve_entity_types() == vocab.DEFAULT_ENTITY_TYPES
 
 
+def test_symmetric_predicates_default_and_canonicalization():
+    # contradicts/related_to are symmetric by default; directed ones are not.
+    assert vocab.is_symmetric("related_to") and vocab.is_symmetric("contradicts")
+    assert not vocab.is_symmetric("uses") and not vocab.is_symmetric("depends_on")
+    # Symmetric edges canonicalise endpoint order so reciprocals collapse.
+    assert vocab.canonical_edge("concept:b", "related_to", "concept:a") == (
+        "concept:a", "related_to", "concept:b"
+    )
+    assert vocab.canonical_edge("concept:a", "related_to", "concept:b") == (
+        "concept:a", "related_to", "concept:b"
+    )
+    # Directed edges keep their order.
+    assert vocab.canonical_edge("project:b", "uses", "project:a") == ("project:b", "uses", "project:a")
+
+
+def test_symmetric_config_override_and_intersection(monkeypatch):
+    # Replaces the default; intersected with the active predicate set (a symmetric
+    # predicate that isn't a valid predicate is dropped).
+    monkeypatch.setattr(config, "MNESIS_SYMMETRIC_PREDICATES", "related_to, not_a_predicate")
+    assert vocab._resolve_symmetric() == frozenset({"related_to"})
+    # Empty disables symmetric handling entirely.
+    monkeypatch.setattr(config, "MNESIS_SYMMETRIC_PREDICATES", "")
+    assert vocab._resolve_symmetric() == frozenset()
+
+
 def test_entity_type_matching_is_normalized(monkeypatch):
     # A ref's type is snake_cased the same way the vocabulary is, so a custom
     # multi-word type round-trips.

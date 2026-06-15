@@ -194,10 +194,12 @@ class SqliteGraphBackend(GraphBackend):
         self._pending.append((s, p, o, source_page, page_confidence, page_active))
 
     def finalize(self) -> None:
-        # Group raw assertions by (s, p, o), one contribution per source page.
+        # Group raw assertions by the canonical (s, p, o), one contribution per
+        # source page. Symmetric predicates canonicalise endpoint order so a
+        # reciprocal A→B / B→A pair collapses onto a single undirected edge.
         groups: dict[tuple[str, str, str], dict[str, tuple[float, bool]]] = {}
         for s, p, o, page, conf, active in self._pending:
-            groups.setdefault((s, p, o), {})[page] = (conf, active)
+            groups.setdefault(vocab.canonical_edge(s, p, o), {})[page] = (conf, active)
 
         rows = []
         for (s, p, o), per_page in groups.items():
@@ -261,6 +263,7 @@ class SqliteGraphBackend(GraphBackend):
             "assertion_count": row["assertion_count"],
             "confidence": row["confidence"],
             "demoted": bool(row["demoted"]),
+            "symmetric": vocab.is_symmetric(row["p"]),
         }
 
     def get_entity(self, ref: str) -> dict | None:
@@ -279,15 +282,12 @@ class SqliteGraphBackend(GraphBackend):
         return {"type": erow["type"], "pages": pages, "edges": edges}
 
     def neighbors(self, ref: str, predicate: str | None = None, direction: str = "out") -> list[dict]:
-        clauses = ["demoted = 0"]
-        if direction == "out":
-            clauses.append("s = :ref")
-        elif direction == "in":
-            clauses.append("o = :ref")
-        elif direction == "both":
-            clauses.append("(s = :ref OR o = :ref)")
-        else:
+        if direction not in ("out", "in", "both"):
             raise ValueError(f"direction must be out|in|both, got {direction!r}")
+        # Fetch every edge touching ref (both sides), then filter direction in
+        # Python: a symmetric edge has no meaningful direction, so it is always
+        # included (reported as "both") regardless of the requested direction.
+        clauses = ["demoted = 0", "(s = :ref OR o = :ref)"]
         params: dict = {"ref": ref}
         if predicate is not None:
             clauses.append("p = :predicate")
@@ -304,11 +304,19 @@ class SqliteGraphBackend(GraphBackend):
         out = []
         for r in rows:
             edge = self._edge_dict(r)
-            neighbor = edge["o"] if edge["s"] == ref else edge["s"]
+            is_out = edge["s"] == ref
+            if edge["symmetric"]:
+                edge_dir = "both"
+            else:
+                if direction == "out" and not is_out:
+                    continue
+                if direction == "in" and is_out:
+                    continue
+                edge_dir = "out" if is_out else "in"
             out.append({
-                "ref": neighbor,
+                "ref": edge["o"] if is_out else edge["s"],
                 "predicate": edge["p"],
-                "direction": "out" if edge["s"] == ref else "in",
+                "direction": edge_dir,
                 "confidence": edge["confidence"],
                 "source_pages": edge["source_pages"],
             })
@@ -318,29 +326,40 @@ class SqliteGraphBackend(GraphBackend):
         self, ref: str, predicate: str | None = None, depth: int = 2,
         include_demoted: bool = False,
     ) -> list[dict]:
-        # Recursive CTE walk over outgoing edges. The path is a '|'-delimited
-        # string of refs (refs never contain '|'), so `instr` gives a cycle-safe,
-        # cheap "already visited on this path" check. Deterministic via ORDER BY.
+        # Recursive CTE walk. Follows outgoing edges (e.s = node -> e.o) and, for
+        # symmetric predicates, also the reverse (e.o = node -> e.s) so an
+        # undirected edge is traversable from either endpoint. `next` is the far
+        # endpoint. The path is a '|'-delimited string of refs (refs never
+        # contain '|'), so `instr` gives a cycle-safe "already visited" check.
+        # `:symset` is '|pred|pred|' for an instr() membership test.
         sql = """
             WITH RECURSIVE walk(node, depth, path, preds) AS (
                 SELECT :ref, 0, '|' || :ref || '|', ''
                 UNION ALL
-                SELECT e.o, w.depth + 1, w.path || e.o || '|', w.preds || e.p || '|'
+                SELECT
+                    CASE WHEN e.s = w.node THEN e.o ELSE e.s END,
+                    w.depth + 1,
+                    w.path || (CASE WHEN e.s = w.node THEN e.o ELSE e.s END) || '|',
+                    w.preds || e.p || '|'
                 FROM walk w
-                JOIN edges e ON e.s = w.node
+                JOIN edges e
+                  ON e.s = w.node
+                     OR (e.o = w.node AND instr(:symset, '|' || e.p || '|') > 0)
                 WHERE w.depth < :depth
                   AND (:include_demoted OR e.demoted = 0)
                   AND (:predicate IS NULL OR e.p = :predicate)
-                  AND instr(w.path, '|' || e.o || '|') = 0
+                  AND instr(w.path, '|' || (CASE WHEN e.s = w.node THEN e.o ELSE e.s END) || '|') = 0
             )
             SELECT node, depth, path, preds FROM walk WHERE depth > 0
             ORDER BY depth, path
         """
+        symset = "|" + "|".join(sorted(vocab.SYMMETRIC_PREDICATES)) + "|"
         params = {
             "ref": ref,
             "depth": depth,
             "predicate": predicate,
             "include_demoted": 1 if include_demoted else 0,
+            "symset": symset,
         }
         conn = self._connect()
         try:

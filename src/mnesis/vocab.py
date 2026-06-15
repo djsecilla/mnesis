@@ -115,6 +115,41 @@ PREDICATES: tuple[str, ...] = _resolve_predicates()
 ENTITY_TYPES: tuple[str, ...] = _resolve_entity_types()
 
 
+def _resolve_symmetric() -> frozenset[str]:
+    """Predicates whose direction is not meaningful (``A p B`` ⟺ ``B p A``).
+
+    From ``MNESIS_SYMMETRIC_PREDICATES`` (default ``contradicts,related_to``),
+    normalised and **intersected with the active predicate set** — a symmetric
+    predicate that isn't a valid predicate is meaningless. Set the env to empty
+    to disable symmetric handling entirely.
+    """
+    raw = config.MNESIS_SYMMETRIC_PREDICATES.strip()
+    if not raw:
+        return frozenset()
+    active = set(PREDICATES)
+    return frozenset(p for t in raw.split(",") if (p := _snake_case(t)) in active)
+
+
+#: Predicates treated as undirected (see :func:`_resolve_symmetric`). A symmetric
+#: edge is stored once (reciprocals collapse), traversed from either endpoint,
+#: and drawn without a direction arrow.
+SYMMETRIC_PREDICATES: frozenset[str] = _resolve_symmetric()
+
+
+def is_symmetric(p: object) -> bool:
+    """True if predicate ``p`` (normalised) is symmetric/undirected."""
+    return isinstance(p, str) and _snake_case(p) in SYMMETRIC_PREDICATES
+
+
+def canonical_edge(s: str, p: str, o: str) -> tuple[str, str, str]:
+    """Canonical ``(s, p, o)`` for grouping. For a symmetric predicate the
+    endpoints are order-normalised (``min``/``max``) so reciprocal assertions
+    collapse onto one edge; directed predicates are returned unchanged."""
+    if is_symmetric(p) and o < s:
+        return (o, p, s)
+    return (s, p, o)
+
+
 def normalize_ref(ref: str) -> str:
     """Normalize an entity ref to canonical ``type:value`` form, or raise.
 

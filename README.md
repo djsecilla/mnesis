@@ -492,6 +492,7 @@ All settings are environment variables with sensible defaults; copy
 | `MNESIS_GRAPH_BACKEND` | `sqlite` | Graph engine (embedded default; a Tier-B backend is a config change, not a refactor). |
 | `MNESIS_PREDICATES` | *(built-in default)* | Comma-separated graph predicate vocabulary; replaces the default set when set. See the trade-offs note in [`CLAUDE.md` §6](CLAUDE.md) and [`.env.example`](.env.example). |
 | `MNESIS_ENTITY_TYPES` | *(built-in default)* | Comma-separated entity-type vocabulary; replaces the default six when set (`page` is reserved). UI assigns distinct colours only to the built-in types. See [`CLAUDE.md` §6](CLAUDE.md). |
+| `MNESIS_SYMMETRIC_PREDICATES` | `contradicts,related_to` | Predicates treated as undirected: reciprocal edges collapse into one, traversable from either end, drawn without an arrow. See [`CLAUDE.md` §6](CLAUDE.md). |
 
 Confidence, decay, and routing have many tunable constants (stability per decay
 class, weights, auto-resolve margin, stale thresholds) — all env-overridable; see

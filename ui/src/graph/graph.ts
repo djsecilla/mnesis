@@ -71,7 +71,7 @@ export function edgeElement(e: GraphEdge): ElementDefinition {
       opacity: edgeOpacity(e.confidence),
       source_pages: e.source_pages,
     },
-    classes: e.demoted ? "demoted" : "",
+    classes: [e.demoted ? "demoted" : "", e.symmetric ? "symmetric" : ""].filter(Boolean).join(" "),
   };
 }
 
@@ -156,6 +156,12 @@ export function stylesheet(): StylesheetStyle[] {
     {
       selector: "edge.demoted",
       style: { "line-style": "dashed", opacity: 0.4 },
+    },
+    {
+      // Symmetric (undirected) predicate: no direction arrow — a plain line
+      // conveys a mutual relationship (e.g. related_to, contradicts).
+      selector: "edge.symmetric",
+      style: { "target-arrow-shape": "none", "source-arrow-shape": "none" },
     },
     {
       selector: ".hidden",

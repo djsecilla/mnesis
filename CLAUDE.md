@@ -140,16 +140,18 @@ The typed knowledge graph (Phase 3) is built from two things already in Markdown
 | `owns` | person/team A is responsible for B |
 | `caused` | A brought about B |
 | `fixed` | A resolved B |
-| `contradicts` | A conflicts with B (stored directed, treated symmetric in traversal) |
+| `contradicts` | A conflicts with B (**symmetric** — see below) |
 | `supersedes` | A replaces B |
 | `part_of` | A is a component/member of B |
 | `located_in` | A is situated in / at B |
 | `created` | A brought B into existence (founded / authored / built) |
 | `precedes` | A comes before B in time or sequence |
 | `influences` | A shapes / affects B (weaker than `caused`) |
-| `related_to` | A is associated with B — the **last-resort catch-all**; the extraction prompt instructs the model to prefer a more specific predicate first |
+| `related_to` | A is associated with B (**symmetric**) — the **last-resort catch-all**; the extraction prompt instructs the model to prefer a more specific predicate first |
 
 `impact()` still reverse-traverses **only `depends_on`/`uses`** (`_IMPACT_PREDICATES`), keeping change-propagation semantics crisp; the new predicates connect and are traversable via `neighbors`/`traverse` but do not widen impact.
+
+**Symmetric (undirected) predicates.** Some predicates have no meaningful direction (`A p B` ⟺ `B p A`). `vocab.SYMMETRIC_PREDICATES` (resolved from **`MNESIS_SYMMETRIC_PREDICATES`**, default `contradicts,related_to`, intersected with the active predicate set; empty disables it) marks them. A symmetric edge is **canonicalised on build** (`vocab.canonical_edge` orders the endpoints) so a reciprocal `A→B` / `B→A` pair **collapses onto one edge** (provenance/`assertion_count`/noisy-OR merged); it is **traversable from either endpoint** (`neighbors` returns it regardless of `direction`, reported as `both`; `traverse` follows it both ways); and the Web UI draws it **without a direction arrow**. Directed predicates are unchanged.
 
 **The predicate set is configurable.** It is resolved in `vocab.py` from **`MNESIS_PREDICATES`** (comma-separated; empty = the default 13 above). Custom entries are normalised to snake_case (`"Part Of"` → `part_of`), and predicate matching at validation is normalised the same way (so `"depends-on"` resolves to `depends_on`). **`CORE_PREDICATES`** (`supersedes`, `contradicts`) are *always* present — the graph emits them as structural page-edges — and `depends_on`/`uses` should be retained in any custom list if `impact()` is used. Changes are **forward-only**: they affect new ingests; existing edges survive a rebuild (which reprojects stored `relations` without re-validating).
 

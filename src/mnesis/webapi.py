@@ -116,7 +116,7 @@ def _edge_dict(e: dict) -> dict:
     return {
         "s": e["s"], "p": e["p"], "o": e["o"], "confidence": round(e["confidence"], 4),
         "assertion_count": e["assertion_count"], "demoted": e["demoted"],
-        "source_pages": e["source_pages"],
+        "source_pages": e["source_pages"], "symmetric": e.get("symmetric", False),
     }
 
 

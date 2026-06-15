@@ -172,6 +172,13 @@ MNESIS_PREDICATES: str = os.environ.get("MNESIS_PREDICATES", "")
 #: render in the fallback colour unless you add CSS vars. See CLAUDE.md §6.
 MNESIS_ENTITY_TYPES: str = os.environ.get("MNESIS_ENTITY_TYPES", "")
 
+#: Predicates whose direction is not meaningful (A rel B ⟺ B rel A) — a
+#: comma-separated list REPLACING the default (`contradicts,related_to`) when set.
+#: A symmetric edge is stored once (reciprocal A→B / B→A assertions collapse into
+#: a single edge), traversed from either endpoint, and rendered without a
+#: direction arrow. Intersected with the active predicate set. See CLAUDE.md §6.
+MNESIS_SYMMETRIC_PREDICATES: str = os.environ.get("MNESIS_SYMMETRIC_PREDICATES", "contradicts,related_to")
+
 # --- MCP server transport ---------------------------------------------------
 
 #: Transport for the MCP server: "stdio" (default; local Claude Code spawns it
