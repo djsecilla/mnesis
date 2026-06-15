@@ -7,8 +7,15 @@ import { entityColorValue, themeColors } from "../design/tokens";
 /** Cap on simultaneous nodes — keeps the canvas legible (see "collapse distant"). */
 export const MAX_NODES = 80;
 
-export function nodeSize(degree: number): number {
-  return Math.min(54, 20 + degree * 6);
+/**
+ * Node diameter encodes **mentions** — the number of distinct pages that
+ * reference the entity (a corpus-wide occurrence/citation count). A sqrt scale
+ * keeps a few heavily-mentioned entities from dwarfing everything, with a floor
+ * so a 0/1-mention node is still clearly visible and a cap so the canvas stays
+ * legible. Kept in sync with the size legend in GraphPage.
+ */
+export function nodeSize(mentions: number): number {
+  return Math.round(Math.min(56, 18 + Math.sqrt(Math.max(0, mentions)) * 9));
 }
 
 export function edgeWidth(confidence: number): number {
@@ -43,8 +50,9 @@ export function nodeElement(n: GraphNode): ElementDefinition {
       ref: n.ref,
       type: n.type,
       degree: n.degree,
+      mentions: n.mentions,
       color: entityColorValue(n.type),
-      size: nodeSize(n.degree),
+      size: nodeSize(n.mentions),
     },
   };
 }

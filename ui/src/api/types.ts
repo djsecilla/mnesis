@@ -56,6 +56,7 @@ export interface GraphNode {
   ref: string;
   type: string;
   degree: number;
+  mentions: number; // distinct pages referencing the entity (drives node size)
 }
 
 export interface GraphEdge {

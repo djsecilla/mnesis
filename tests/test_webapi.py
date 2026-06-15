@@ -172,6 +172,17 @@ def test_graph_subgraph_respects_include_demoted(client):
     assert overview["root"] is None and overview["nodes"]
 
 
+def test_graph_nodes_carry_mentions(client):
+    # mentions = distinct pages referencing the entity (drives node size).
+    # redis is tagged on all three fixture pages (atlas, auth, legacy);
+    # project:atlas appears on one.
+    base = client.get("/api/graph?root=library:redis&depth=1", headers=AUTH).json()
+    by_ref = {n["ref"]: n for n in base["nodes"]}
+    assert by_ref["library:redis"]["mentions"] == 3
+    assert by_ref["project:atlas"]["mentions"] == 1
+    assert by_ref["decision:auth-migration"]["mentions"] == 1
+
+
 def test_graph_overview_includes_isolated_entities(client):
     # A page with entity tags but NO relations contributes only isolated nodes
     # (0 edges). The overview must still surface them, so a knowledge base of

@@ -170,12 +170,36 @@ async def _search(request: Request) -> JSONResponse:
     return JSONResponse({"query": q, "hits": [_hit_dict(h) for h in hits]})
 
 
+def _entity_mentions() -> dict[str, int]:
+    """Per-entity ``mentions`` = the number of DISTINCT pages that reference the
+    entity, either via an entity-typed ``type:value`` tag or as the subject/object
+    of a relation. A corpus-wide "how much of the knowledge base is about this
+    entity" signal (a citation/occurrence count) — stable across graph views,
+    unlike edge degree. Drives node size in the UI.
+    """
+    counts: dict[str, int] = {}
+    for page in store.list_pages():
+        refs: set[str] = set()
+        for tag in page.tags:
+            try:
+                refs.add(vocab.normalize_ref(tag))  # entity-typed tags only
+            except ValueError:
+                pass  # free tag (not an entity ref) — ignored
+        for rel in page.relations:
+            if {"s", "o"} <= rel.keys():
+                refs.update((rel["s"], rel["o"]))
+        for ref in refs:
+            counts[ref] = counts.get(ref, 0) + 1  # one increment per distinct page
+    return counts
+
+
 def _build_subgraph(root: str | None, depth: int, include_demoted: bool) -> dict:
     backend = graph.get_graph_backend()
     edges = backend.all_edges()
     if not include_demoted:
         edges = [e for e in edges if not e["demoted"]]
     types = {e["ref"]: e["type"] for e in backend.all_entities()}
+    mentions = _entity_mentions()
 
     if root:
         adj: dict[str, set[str]] = {}
@@ -222,7 +246,10 @@ def _build_subgraph(root: str | None, depth: int, include_demoted: bool) -> dict
     for e in sub_edges:
         fdeg[e["s"]] = fdeg.get(e["s"], 0) + 1
         fdeg[e["o"]] = fdeg.get(e["o"], 0) + 1
-    nodes = [{"ref": r, "type": types.get(r, "?"), "degree": fdeg.get(r, 0)} for r in sorted(node_refs)]
+    nodes = [
+        {"ref": r, "type": types.get(r, "?"), "degree": fdeg.get(r, 0), "mentions": mentions.get(r, 0)}
+        for r in sorted(node_refs)
+    ]
     return {
         "root": root, "depth": depth, "include_demoted": include_demoted,
         "nodes": nodes, "edges": [_edge_dict(e) for e in sub_edges],

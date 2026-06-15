@@ -14,6 +14,7 @@ import {
   edgeElement,
   edgeId,
   nodeElement,
+  nodeSize,
   stylesheet,
   toElements,
 } from "../graph/graph";
@@ -339,6 +340,8 @@ export default function GraphPage() {
   const empty = base.data && base.data.nodes.length === 0;
   // Entity types present in the current view (for the legend).
   const presentTypes = Array.from(new Set((base.data?.nodes ?? []).map((n) => n.type))).sort();
+  // Largest mention count in view — anchors the "size = mentions" legend scale.
+  const maxMentions = Math.max(1, ...(base.data?.nodes ?? []).map((n) => n.mentions ?? 0));
 
   return (
     <div className="relative h-full">
@@ -441,6 +444,12 @@ export default function GraphPage() {
           </div>
         )}
 
+        {/* Size legend: node diameter encodes "mentions" — how many pages
+            reference the entity (a corpus-wide occurrence/citation count). */}
+        {!empty && !loading && (
+          <SizeLegend maxMentions={maxMentions} />
+        )}
+
         {/* Floating overlay — sits over the canvas; does not reflow it. */}
         {selected && (
           <GraphPanel
@@ -457,6 +466,41 @@ export default function GraphPage() {
             impactLoading={impactLoading}
           />
         )}
+    </div>
+  );
+}
+
+/**
+ * Bottom-right key explaining the node-size dimension: diameter encodes how many
+ * pages mention the entity. Sample dots are drawn at the real node sizes (via
+ * the shared nodeSize) so the legend is an exact key, anchored to the view's max.
+ */
+function SizeLegend({ maxMentions }: { maxMentions: number }) {
+  const samples = Array.from(
+    new Set([1, Math.max(2, Math.round(maxMentions / 2)), maxMentions]),
+  )
+    .filter((m) => m >= 1 && m <= Math.max(1, maxMentions))
+    .sort((a, b) => a - b);
+
+  return (
+    <div className="pointer-events-none absolute bottom-3 right-3 z-10 rounded-lg border border-border bg-elev/80 px-2.5 py-2 text-[10px] text-muted backdrop-blur">
+      <div className="mb-1.5">
+        <span className="font-medium text-fg">Node size</span> — pages mentioning the entity
+      </div>
+      <div className="flex items-end gap-3">
+        {samples.map((m) => {
+          const d = nodeSize(m);
+          return (
+            <div key={m} className="flex flex-col items-center gap-1" style={{ width: Math.max(d, 18) }}>
+              <span
+                className="rounded-full"
+                style={{ width: d, height: d, background: "var(--muted)", opacity: 0.55 }}
+              />
+              <span className="tabular-nums">{m}</span>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
