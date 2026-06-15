@@ -156,6 +156,14 @@ GRAPH_QUERY_DEPTH: int = _env_int("MNESIS_GRAPH_QUERY_DEPTH", 2)
 GRAPH_PROXIMITY_BASE: float = _env_float("MNESIS_GRAPH_PROXIMITY_BASE", 0.25)
 GRAPH_PROXIMITY_DECAY: float = _env_float("MNESIS_GRAPH_PROXIMITY_DECAY", 0.5)
 
+#: Custom predicate vocabulary for the knowledge graph — a comma-separated list
+#: that REPLACES the built-in default set when non-empty (e.g.
+#: "uses,part_of,located_in,related_to"). Entries are normalised to snake_case.
+#: The structural predicates ``supersedes`` and ``contradicts`` are always
+#: included regardless (the graph emits them). Resolved in ``vocab.py``; see
+#: CLAUDE.md §6 for the trade-offs of a long list.
+MNESIS_PREDICATES: str = os.environ.get("MNESIS_PREDICATES", "")
+
 # --- MCP server transport ---------------------------------------------------
 
 #: Transport for the MCP server: "stdio" (default; local Claude Code spawns it

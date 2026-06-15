@@ -490,6 +490,7 @@ All settings are environment variables with sensible defaults; copy
 | `MNESIS_LLM_STUB` | unset | `1` forces the offline deterministic stub (also auto-on for `anthropic` with no key). |
 | `MNESIS_FILEBACK_THRESHOLD` | `0.7` | Quality gate for filing answers back as digests. |
 | `MNESIS_GRAPH_BACKEND` | `sqlite` | Graph engine (embedded default; a Tier-B backend is a config change, not a refactor). |
+| `MNESIS_PREDICATES` | *(built-in default)* | Comma-separated graph predicate vocabulary; replaces the default set when set. See the trade-offs note in [`CLAUDE.md` §6](CLAUDE.md) and [`.env.example`](.env.example). |
 
 Confidence, decay, and routing have many tunable constants (stability per decay
 class, weights, auto-resolve margin, stale thresholds) — all env-overridable; see

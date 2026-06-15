@@ -17,18 +17,26 @@ from __future__ import annotations
 
 import re
 
+from . import config
+
 #: The entity types an entity ref may carry (the ``type`` in ``type:value``).
 ENTITY_TYPES: tuple[str, ...] = ("person", "project", "library", "concept", "file", "decision")
 
-#: The directed predicates a relation may use (``A -p-> B``). See CLAUDE.md §6
-#: for the direction semantics of each. The set is split into the original
-#: engineering-focused relations and a general-purpose set added so non-software
-#: knowledge (people, places, history, organisations) can also form edges
-#: instead of leaving conceptually-connected entities stranded as isolated nodes.
-#: ``related_to`` is the deliberate last-resort catch-all; the extraction prompt
-#: instructs the model to prefer the most specific predicate over it.
-PREDICATES: tuple[str, ...] = (
-    # engineering / project relations (original set)
+#: Predicates the graph itself emits as structural page-level edges (supersession
+#: / contradiction). These are ALWAYS part of the vocabulary, even under a custom
+#: override, so the structural projection stays consistent.
+CORE_PREDICATES: tuple[str, ...] = ("supersedes", "contradicts")
+
+#: The built-in default predicate set, used when ``MNESIS_PREDICATES`` is unset.
+#: Split into the original engineering relations and a general-purpose set added
+#: so non-software knowledge (people, places, history, organisations) can also
+#: form edges instead of leaving conceptually-connected entities stranded as
+#: isolated nodes. ``related_to`` is the deliberate last-resort catch-all; the
+#: extraction prompt instructs the model to prefer a more specific predicate.
+#: NOTE: ``depends_on``/``uses`` drive ``graph.impact()`` — keep them in a custom
+#: list if you rely on impact analysis.
+DEFAULT_PREDICATES: tuple[str, ...] = (
+    # engineering / project relations
     "uses",
     "depends_on",
     "owns",
@@ -46,6 +54,38 @@ PREDICATES: tuple[str, ...] = (
 )
 
 _RELATION_KEYS = ("s", "p", "o")
+
+
+def _normalize_predicate(p: object) -> str:
+    """snake_case a predicate: lowercase, runs of non-alphanumerics -> ``_``.
+
+    Makes matching forgiving — ``"Depends On"``, ``"depends-on"`` and
+    ``"depends_on"`` all resolve to the same canonical ``depends_on`` — and
+    canonicalises user-supplied custom predicates the same way.
+    """
+    return re.sub(r"[^a-z0-9]+", "_", str(p).strip().lower()).strip("_")
+
+
+def _resolve_predicates() -> tuple[str, ...]:
+    """The active predicate set: ``MNESIS_PREDICATES`` (if set) else the default,
+    normalised, de-duplicated, and always including :data:`CORE_PREDICATES`."""
+    raw = config.MNESIS_PREDICATES.strip()
+    base = (
+        tuple(_normalize_predicate(p) for p in raw.split(",") if p.strip())
+        if raw
+        else DEFAULT_PREDICATES
+    )
+    out: list[str] = []
+    for p in (*base, *CORE_PREDICATES):
+        if p and p not in out:
+            out.append(p)
+    return tuple(out)
+
+
+#: The directed predicates a relation may use (``A -p-> B``). Resolved from
+#: ``MNESIS_PREDICATES`` at import time (default = :data:`DEFAULT_PREDICATES`),
+#: always including :data:`CORE_PREDICATES`. See CLAUDE.md §6.
+PREDICATES: tuple[str, ...] = _resolve_predicates()
 
 
 def normalize_ref(ref: str) -> str:
@@ -72,8 +112,8 @@ def normalize_ref(ref: str) -> str:
 
 
 def is_valid_predicate(p: object) -> bool:
-    """True if ``p`` (case-insensitively) is an allowed predicate."""
-    return isinstance(p, str) and p.strip().lower() in PREDICATES
+    """True if ``p`` (normalised to snake_case) is an allowed predicate."""
+    return isinstance(p, str) and _normalize_predicate(p) in PREDICATES
 
 
 def validate_relation(rel: object) -> dict:
@@ -87,8 +127,8 @@ def validate_relation(rel: object) -> dict:
     if missing:
         raise ValueError(f"relation {rel!r} is missing key(s): {', '.join(missing)}")
 
-    predicate = str(rel["p"]).strip().lower()
-    if not is_valid_predicate(predicate):
+    predicate = _normalize_predicate(rel["p"])
+    if predicate not in PREDICATES:
         raise ValueError(
             f"unknown predicate {rel['p']!r}; must be one of {', '.join(PREDICATES)}"
         )

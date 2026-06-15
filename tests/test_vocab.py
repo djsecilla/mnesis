@@ -62,6 +62,28 @@ def test_general_purpose_predicates_validate():
     assert vocab.is_valid_predicate("related_to")
 
 
+def test_predicate_matching_is_normalized():
+    # "Depends On" / "depends-on" / "depends_on" all resolve to the same predicate.
+    for variant in ("Depends On", "depends-on", "DEPENDS_ON"):
+        rel = vocab.validate_relation({"s": "project:atlas", "p": variant, "o": "library:redis"})
+        assert rel["p"] == "depends_on"
+
+
+def test_custom_predicates_from_config(monkeypatch):
+    # MNESIS_PREDICATES replaces the default set; entries are snake_cased and the
+    # structural predicates are always present.
+    monkeypatch.setattr(config, "MNESIS_PREDICATES", "uses, Part Of, located-in")
+    resolved = vocab._resolve_predicates()
+    assert "uses" in resolved and "part_of" in resolved and "located_in" in resolved
+    assert "supersedes" in resolved and "contradicts" in resolved  # core, always forced
+    assert "owns" not in resolved  # not in the custom list -> excluded
+
+
+def test_empty_config_uses_default(monkeypatch):
+    monkeypatch.setattr(config, "MNESIS_PREDICATES", "")
+    assert vocab._resolve_predicates() == vocab.PREDICATES
+
+
 @pytest.fixture()
 def wiki(tmp_path, monkeypatch):
     root = tmp_path / "wiki"
