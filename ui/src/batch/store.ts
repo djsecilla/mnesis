@@ -57,6 +57,31 @@ class BatchStore {
   private commitQueue: number[] = [];
   private commitActive = 0;
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
+  // Sequential mode: process ONE item at a time (concurrency 1). Recommended for
+  // slow local models — a parallel burst makes the tail items wait far longer
+  // (the backend serialises LLM calls) and time out. When sequential, an item's
+  // request (and thus its timeout) only fires once the previous one resolves.
+  private serial = false;
+
+  private get previewLimit(): number {
+    return this.serial ? 1 : PREVIEW_CONCURRENCY;
+  }
+  private get commitLimit(): number {
+    return this.serial ? 1 : COMMIT_CONCURRENCY;
+  }
+
+  /** Toggle sequential processing. Re-pumps so a relaxed limit starts more work. */
+  setSerial(on: boolean): void {
+    if (this.serial === on) return;
+    this.serial = on;
+    this.emit(); // surfaces to subscribers (the toggle reflects store state)
+    this.pumpPreview();
+    this.pumpCommit();
+  }
+
+  get isSerial(): boolean {
+    return this.serial;
+  }
 
   constructor() {
     this.rehydrate(); // restore a queue persisted before a reload, and resume work
@@ -209,7 +234,7 @@ class BatchStore {
 
   // ── preview pool (the heavy LLM-extraction step; globally throttled) ─────
   private pumpPreview() {
-    while (this.previewActive < PREVIEW_CONCURRENCY && this.previewQueue.length) {
+    while (this.previewActive < this.previewLimit && this.previewQueue.length) {
       const id = this.previewQueue.shift()!;
       if (!this.items.some((i) => i.id === id)) continue; // removed before it started
       this.previewActive++;
@@ -249,7 +274,7 @@ class BatchStore {
   }
 
   private pumpCommit() {
-    while (this.commitActive < COMMIT_CONCURRENCY && this.commitQueue.length) {
+    while (this.commitActive < this.commitLimit && this.commitQueue.length) {
       const id = this.commitQueue.shift()!;
       const it = this.items.find((i) => i.id === id);
       if (!it || it.status === "committed" || !it.plan || !it.curation) continue;
@@ -279,6 +304,12 @@ export const batchStore = new BatchStore();
 /** Subscribe a component to the live batch queue. */
 export function useBatchItems(): BatchItem[] {
   return useSyncExternalStore(batchStore.subscribe, batchStore.getSnapshot, batchStore.getSnapshot);
+}
+
+/** Subscribe to the sequential-mode flag (a value snapshot, so it re-renders on toggle). */
+export function useBatchSerial(): boolean {
+  const get = () => batchStore.isSerial;
+  return useSyncExternalStore(batchStore.subscribe, get, get);
 }
 
 /** Count of items still being worked on in the background (queue + in-flight). */

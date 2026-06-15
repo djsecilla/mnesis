@@ -23,6 +23,15 @@ function qs(params: object): string {
   return parts.length ? `?${parts.join("&")}` : "";
 }
 
+export interface AppConfig {
+  llm_provider: string;
+  llm_stub: boolean;
+  llm_timeout_seconds: number;
+}
+
+/** Non-sensitive runtime config (e.g. LLM provider) the UI adapts to. */
+export const getConfig = () => apiGet<AppConfig>(`/config`);
+
 export interface PageQuery {
   status?: string;
   kind?: string;

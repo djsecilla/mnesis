@@ -1,7 +1,7 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { type PreviewInput } from "../api/endpoints";
-import { batchStore, useBatchItems, type BatchItem } from "../batch/store";
+import { getConfig, type PreviewInput } from "../api/endpoints";
+import { batchStore, useBatchItems, useBatchSerial, type BatchItem } from "../batch/store";
 import {
   commitBlocked,
   effectiveRouting,
@@ -10,14 +10,42 @@ import {
 } from "../components/IngestReview";
 import { successMessage } from "./AddPage";
 
+const SERIAL_PREF_KEY = "mnesis.batch.serial";
+
 export default function BatchPage() {
   // The queue + its processing live in the module-level store, so jobs keep
   // running across navigation. Only these input fields are ephemeral page state.
   const items = useBatchItems();
+  const serial = useBatchSerial();
   const [text, setText] = useState("");
   const [pasteName, setPasteName] = useState("");
   const [dragOver, setDragOver] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
+
+  // Default sequential mode: a saved preference wins; otherwise turn it on when
+  // the backend reports a local model (slow → a parallel burst times out the
+  // tail). Runs once; the user can override with the toggle (persisted).
+  useEffect(() => {
+    const stored = localStorage.getItem(SERIAL_PREF_KEY);
+    if (stored != null) {
+      batchStore.setSerial(stored === "1");
+      return;
+    }
+    let cancelled = false;
+    getConfig()
+      .then((c) => {
+        if (!cancelled && localStorage.getItem(SERIAL_PREF_KEY) == null) {
+          batchStore.setSerial(c.llm_provider === "local");
+        }
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
+  function toggleSerial(on: boolean) {
+    localStorage.setItem(SERIAL_PREF_KEY, on ? "1" : "0");
+    batchStore.setSerial(on);
+  }
 
   function addFiles(files: FileList | null) {
     if (!files) return;
@@ -93,6 +121,22 @@ export default function BatchPage() {
             </button>
           </div>
         </div>
+
+        {/* Processing mode: sequential (one at a time) vs parallel. Sequential is
+            the right choice for slow local models — each item waits its turn and
+            its timeout only starts when it begins processing. */}
+        <label className="flex items-center gap-2 text-sm text-muted">
+          <input
+            type="checkbox"
+            checked={serial}
+            onChange={(e) => toggleSerial(e.target.checked)}
+            className="accent-accent"
+          />
+          <span>
+            Process <span className="text-fg">one at a time</span> (sequential)
+            <span className="ml-1 text-xs">— recommended for local models; avoids tail-end timeouts</span>
+          </span>
+        </label>
       </section>
 
       {/* queue */}
@@ -177,8 +221,12 @@ export default function BatchPage() {
 }
 
 function StatusChip({ item }: { item: BatchItem }) {
-  if (item.status === "queued" || item.status === "previewing")
-    return <span className="inline-flex items-center gap-1.5 text-xs text-muted"><Spinner /> previewing</span>;
+  // Waiting: enqueued but not yet started (its request — and timeout — has not
+  // fired). Distinct from Processing so a sequential queue reads clearly.
+  if (item.status === "queued")
+    return <span className="inline-flex items-center gap-1.5 text-xs text-muted">◷ waiting</span>;
+  if (item.status === "previewing")
+    return <span className="inline-flex items-center gap-1.5 text-xs text-muted"><Spinner /> processing</span>;
   if (item.status === "committing")
     return <span className="inline-flex items-center gap-1.5 text-xs text-muted"><Spinner /> committing</span>;
   if (item.status === "committed")

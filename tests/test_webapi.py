@@ -110,6 +110,13 @@ def test_health_open_but_api_requires_token(client):
     assert client.get("/api/pages", headers=AUTH).status_code == 200
 
 
+def test_config_reports_llm_provider(client):
+    # The UI reads this to default the batch queue to sequential on a local model.
+    cfg = client.get("/api/config", headers=AUTH).json()
+    assert "llm_provider" in cfg
+    assert "llm_timeout_seconds" in cfg and isinstance(cfg["llm_timeout_seconds"], (int, float))
+
+
 # --- pages ------------------------------------------------------------------
 
 

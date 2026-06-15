@@ -719,9 +719,21 @@ async def _resolve_review(request: Request) -> JSONResponse:
     return _err("invalid_keep", msg, 400)
 
 
+async def _config(_request: Request) -> JSONResponse:
+    """Non-sensitive runtime config the UI adapts to. Notably the LLM provider,
+    so the batch UI can default to sequential processing on a (slow) local model,
+    and the per-extraction timeout it should expect."""
+    return JSONResponse({
+        "llm_provider": config.MNESIS_LLM_PROVIDER,
+        "llm_stub": bool(config.MNESIS_LLM_STUB),
+        "llm_timeout_seconds": config.MNESIS_LLM_TIMEOUT,
+    })
+
+
 # --- Mounting ---------------------------------------------------------------
 
 API_ROUTES = [
+    Route("/api/config", _config, methods=["GET"]),
     Route("/api/pages", _list_pages, methods=["GET"]),
     Route("/api/pages/{page_id}", _get_page, methods=["GET"]),
     Route("/api/search", _search, methods=["GET"]),
