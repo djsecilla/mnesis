@@ -58,11 +58,22 @@ def make_stub_model(responses: list[Any] | None = None) -> "BaseChatModel":
     from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
     from langchain_core.messages import AIMessage
 
+    class _StubChatModel(GenericFakeChatModel):
+        """Fake model that accepts bind_tools (the base raises NotImplementedError).
+
+        The stub ignores bound tools — behaviour is driven entirely by the scripted
+        ``messages`` — so binding is a no-op that returns the model itself, which is
+        what the agent loop (create_agent) needs to run offline.
+        """
+
+        def bind_tools(self, tools, **kwargs):  # noqa: ANN001, ARG002
+            return self
+
     items = responses or ["This is a deterministic mnesis_agents stub response."]
     messages: list[AIMessage] = [
         m if isinstance(m, AIMessage) else AIMessage(content=str(m)) for m in items
     ]
-    return GenericFakeChatModel(messages=cycle(messages))
+    return _StubChatModel(messages=cycle(messages))
 
 
 def get_chat_model(**overrides: Any) -> "BaseChatModel":
