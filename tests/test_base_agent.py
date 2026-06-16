@@ -76,7 +76,7 @@ def test_writes_are_tracked():
     )
     profile = AgentProfile(
         name="w", system_prompt="ingest things.", tools=_mnesis_tools(),
-        write_tools=frozenset({"mnesis_ingest"}),
+        write_tools=frozenset({"mnesis_ingest"}), write_policy="apply",  # F6: writes need an execute policy
     )
     res = build_agent(profile, model=model).run("ingest this")
     assert [w["tool"] for w in res.writes] == ["mnesis_ingest"]

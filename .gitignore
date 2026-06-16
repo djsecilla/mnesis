@@ -9,3 +9,5 @@ dist/
 agent_runs/
 agent_watch/*
 !agent_watch/.gitkeep
+mnesis_agents_runs/
+mnesis_agents.checkpoints.db*

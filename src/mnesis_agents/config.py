@@ -8,6 +8,7 @@ environment (and the stub path needs nothing but this + langchain-core).
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 #: Supported provider keys for MNESIS_LLM_PROVIDER. Each maps to a LangChain
 #: integration in models.py; "openai_compatible" reuses the OpenAI client with a
@@ -65,6 +66,38 @@ MNESIS_MCP_TOKEN: str | None = _opt("MNESIS_MCP_TOKEN")
 #: Extra skill directories to scan (os.pathsep-separated), in addition to the
 #: always-scanned ``./skills`` (project-level) and the packaged example skills.
 MNESIS_AGENTS_SKILLS_DIRS: str = os.environ.get("MNESIS_AGENTS_SKILLS_DIRS", "")
+
+# ── Governance / persistence / audit (F6) ──────────────────────────────────
+
+#: Append-only JSONL run-audit directory (statuses + ids only — never payloads).
+MNESIS_AGENTS_AUDIT_DIR: Path = Path(
+    os.environ.get("MNESIS_AGENTS_AUDIT_DIR", "./mnesis_agents_runs")
+).expanduser()
+
+#: LangGraph checkpointer backend ("sqlite" default; "memory" for ephemeral).
+MNESIS_AGENTS_CHECKPOINT_BACKEND: str = os.environ.get(
+    "MNESIS_AGENTS_CHECKPOINT_BACKEND", "sqlite"
+).strip().lower()
+
+#: SQLite checkpoint DB path (used when backend is "sqlite").
+MNESIS_AGENTS_CHECKPOINT_DB: Path = Path(
+    os.environ.get("MNESIS_AGENTS_CHECKPOINT_DB", "./mnesis_agents.checkpoints.db")
+).expanduser()
+
+#: Default per-run budgets (a profile may override; None/0 = unlimited).
+MNESIS_AGENTS_MAX_TOOL_CALLS: int = int(os.environ.get("MNESIS_AGENTS_MAX_TOOL_CALLS", "50"))
+MNESIS_AGENTS_MAX_TOKENS: int = int(os.environ.get("MNESIS_AGENTS_MAX_TOKENS", "0"))
+MNESIS_AGENTS_WALLCLOCK_SECONDS: float = float(
+    os.environ.get("MNESIS_AGENTS_WALLCLOCK_SECONDS", "300")
+)
+
+
+def tracing_enabled() -> bool:
+    """True only when LangSmith tracing is explicitly turned on via its own env
+    (LANGSMITH_TRACING / legacy LANGCHAIN_TRACING_V2). Off by default — a plain
+    run sends nothing externally. We never set these ourselves."""
+    return _bool("LANGSMITH_TRACING") or _bool("LANGCHAIN_TRACING_V2")
+
 
 # ── Offline stub ─────────────────────────────────────────────────────────────
 

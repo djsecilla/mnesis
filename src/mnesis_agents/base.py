@@ -38,10 +38,16 @@ class AgentProfile:
     system_prompt: str
     tools: list["BaseTool"] = field(default_factory=list)
     skills: "SkillRegistry | None" = None
+    # Governance (F6).
     write_tools: frozenset[str] = DEFAULT_WRITE_TOOLS
-    write_policy: str = "off"
+    write_policy: str = "off"            # off | propose | apply | ingest | approved
+    tool_allowlist: frozenset[str] | None = None  # None = allow all permitted tools
+    approval_tools: frozenset[str] = frozenset()  # tools that pause for approval
+    max_tool_calls: int | None = None
+    max_tokens: int | None = None
+    wallclock_seconds: float | None = None
     recursion_limit: int = 25
-    checkpointer: Any = None  # F6 configures this (e.g. a LangGraph checkpointer)
+    checkpointer: Any = None  # LangGraph checkpointer (durable threads / interrupts)
 
 
 @dataclass
@@ -53,12 +59,13 @@ class AgentResult:
     steps: int                  # model turns taken
     tools_used: list[str]       # distinct tool names called (in call order)
     skills_used: list[str]      # skills activated via use_skill
-    writes: list[dict[str, Any]]  # write-tool calls performed ({tool, args_keys})
-
-
-def _is_write(name: str, write_tools: frozenset[str]) -> bool:
-    bare = name.split("__", 1)[-1]  # tolerate registry namespacing
-    return name in write_tools or bare in write_tools
+    writes: list[dict[str, Any]] = field(default_factory=list)     # APPLIED writes ({tool, args_keys})
+    refusals: list[dict[str, Any]] = field(default_factory=list)   # governance refusals ({tool, reason})
+    stop_reason: str = "end"    # end | tool_budget | token_budget | deadline | interrupt
+    usage: dict[str, Any] = field(default_factory=dict)
+    interrupted: bool = False
+    interrupt: Any = None       # the pending approval request when interrupted
+    thread_id: str | None = None
 
 
 def build_agent(profile: AgentProfile, *, model=None) -> "Agent":
@@ -71,92 +78,151 @@ def build_agent(profile: AgentProfile, *, model=None) -> "Agent":
     """
     from langchain.agents import create_agent
 
+    from .governance import GovernanceMiddleware, build_approval_middleware, make_checkpointer
+
     model = model if model is not None else get_chat_model()
     tools = list(profile.tools)
     system = profile.system_prompt
 
+    allowlist = profile.tool_allowlist
     if profile.skills is not None:
         from .skills.loader import make_use_skill_tool
 
         system = f"{system}\n\n{profile.skills.cards_prompt()}"
         tools.append(make_use_skill_tool(profile.skills))
+        if allowlist is not None:
+            allowlist = allowlist | {"use_skill"}  # never refuse the skills tool
+
+    governance = GovernanceMiddleware(
+        allowlist=allowlist,
+        write_tools=profile.write_tools,
+        write_policy=profile.write_policy,
+        max_tool_calls=profile.max_tool_calls,
+        max_tokens=profile.max_tokens,
+        wallclock_seconds=profile.wallclock_seconds,
+    )
+    middleware: list = [governance]
+    approval = build_approval_middleware(profile.approval_tools)
+    if approval is not None:
+        middleware.append(approval)
+
+    # Interrupts (approval) need a checkpointer; default to in-memory if none set.
+    checkpointer = profile.checkpointer
+    if checkpointer is None and profile.approval_tools:
+        checkpointer = make_checkpointer("memory")
 
     graph = create_agent(
-        model,
-        tools,
+        model, tools,
         system_prompt=system,
-        checkpointer=profile.checkpointer,
+        middleware=middleware,
+        checkpointer=checkpointer,
         name=profile.name,
     )
-    return Agent(graph=graph, profile=profile)
+    return Agent(graph=graph, profile=profile, governance=governance, checkpointed=checkpointer is not None)
 
 
 class Agent:
-    """A compiled LangGraph agent plus a structured run interface."""
+    """A compiled LangGraph agent plus a structured, governed run interface."""
 
-    def __init__(self, graph, profile: AgentProfile) -> None:
+    def __init__(self, graph, profile: AgentProfile, *, governance=None, checkpointed: bool = False) -> None:
         self.graph = graph
         self.profile = profile
+        self.governance = governance
+        self.checkpointed = checkpointed
 
-    # -- run --------------------------------------------------------------------
+    # -- config helpers ---------------------------------------------------------
 
     def _input(self, text: str) -> dict[str, Any]:
         return {"messages": [{"role": "user", "content": text}]}
 
-    def _config(self, config: dict | None) -> dict:
-        cfg = {"recursion_limit": self.profile.recursion_limit}
+    def _config(self, thread_id: str | None, config: dict | None) -> tuple[dict, str | None]:
+        import uuid
+
+        cfg: dict[str, Any] = {"recursion_limit": self.profile.recursion_limit}
+        tid = thread_id
+        if self.checkpointed:
+            tid = tid or uuid.uuid4().hex
+            cfg["configurable"] = {"thread_id": tid}
         if config:
             cfg.update(config)
-        return cfg
+        return cfg, tid
 
-    def run(self, input: str, *, config: dict | None = None) -> AgentResult:
-        state = self.graph.invoke(self._input(input), config=self._config(config))
-        return self._result(state)
+    # -- run --------------------------------------------------------------------
 
-    async def arun(self, input: str, *, config: dict | None = None) -> AgentResult:
-        state = await self.graph.ainvoke(self._input(input), config=self._config(config))
-        return self._result(state)
+    def run(self, input: str, *, thread_id: str | None = None, config: dict | None = None) -> AgentResult:
+        if self.governance is not None:
+            self.governance.begin_run()
+        cfg, tid = self._config(thread_id, config)
+        state = self.graph.invoke(self._input(input), config=cfg)
+        return self._result(state, tid)
 
-    def astream(self, input: str, *, config: dict | None = None):
-        """Passthrough to the compiled graph's async stream (raw LangGraph events)."""
-        return self.graph.astream(self._input(input), config=self._config(config))
+    async def arun(self, input: str, *, thread_id: str | None = None, config: dict | None = None) -> AgentResult:
+        if self.governance is not None:
+            self.governance.begin_run()
+        cfg, tid = self._config(thread_id, config)
+        state = await self.graph.ainvoke(self._input(input), config=cfg)
+        return self._result(state, tid)
+
+    def astream(self, input: str, *, thread_id: str | None = None, config: dict | None = None):
+        if self.governance is not None:
+            self.governance.begin_run()
+        cfg, _ = self._config(thread_id, config)
+        return self.graph.astream(self._input(input), config=cfg)
+
+    # -- resume (after an approval interrupt; does NOT reset governance) --------
+
+    def resume(self, decision: Any, *, thread_id: str, config: dict | None = None) -> AgentResult:
+        from langgraph.types import Command
+
+        cfg, tid = self._config(thread_id, config)
+        state = self.graph.invoke(Command(resume=decision), config=cfg)
+        return self._result(state, tid)
+
+    def approve(self, *, thread_id: str) -> AgentResult:
+        """Approve a pending interrupt and resume the run."""
+        return self.resume({"decisions": [{"type": "approve"}]}, thread_id=thread_id)
+
+    def reject(self, message: str = "Rejected.", *, thread_id: str) -> AgentResult:
+        """Reject a pending interrupt (the tool is not executed) and resume."""
+        return self.resume({"decisions": [{"type": "reject", "message": message}]}, thread_id=thread_id)
 
     # -- structured result ------------------------------------------------------
 
-    def _result(self, state: dict[str, Any]) -> AgentResult:
-        messages = state.get("messages", [])
+    def _result(self, state: dict[str, Any], thread_id: str | None) -> AgentResult:
+        messages = state.get("messages", []) if isinstance(state, dict) else []
+        interrupt = state.get("__interrupt__") if isinstance(state, dict) else None
+
         tools_used: list[str] = []
         skills_used: list[str] = []
-        writes: list[dict[str, Any]] = []
         steps = 0
         final = ""
-
         for m in messages:
             tool_calls = getattr(m, "tool_calls", None) or []
-            if getattr(m, "type", None) == "ai" or tool_calls:
+            if getattr(m, "type", None) == "ai":
                 steps += 1
             for tc in tool_calls:
                 name = tc.get("name", "")
-                args = tc.get("args", {}) or {}
                 tools_used.append(name)
                 if name.split("__", 1)[-1] == "use_skill":
-                    skill = args.get("name")
+                    skill = (tc.get("args") or {}).get("name")
                     if skill:
                         skills_used.append(str(skill))
-                if _is_write(name, self.profile.write_tools):
-                    writes.append({"tool": name, "args_keys": sorted(args)})
-            # last AI text content is the final output
             if getattr(m, "type", None) == "ai" and isinstance(getattr(m, "content", None), str) and m.content:
                 final = m.content
 
-        # de-dupe tools_used preserving order
+        gov = self.governance
         seen: set[str] = set()
-        tools_unique = [t for t in tools_used if not (t in seen or seen.add(t))]
         return AgentResult(
             output=final,
             messages=messages,
             steps=steps,
-            tools_used=tools_unique,
+            tools_used=[t for t in tools_used if not (t in seen or seen.add(t))],
             skills_used=list(dict.fromkeys(skills_used)),
-            writes=writes,
+            writes=list(gov.state.writes) if gov else [],
+            refusals=list(gov.state.refusals) if gov else [],
+            stop_reason="interrupt" if interrupt else ((gov.state.stop_reason if gov else None) or "end"),
+            usage={"total_tokens": gov.state.tokens} if gov else {},
+            interrupted=bool(interrupt),
+            interrupt=interrupt,
+            thread_id=thread_id,
         )
