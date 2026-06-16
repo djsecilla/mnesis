@@ -55,5 +55,9 @@ mnesis-agents = "mnesis_agents.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+# Ship the bundled example Agent Skill (SKILL.md + references/ + scripts/).
+"mnesis_agents.skills" = ["bundled/**/*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

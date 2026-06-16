@@ -60,6 +60,12 @@ MNESIS_LLM_TEMPERATURE: float = float(os.environ.get("MNESIS_LLM_TEMPERATURE", "
 MNESIS_MCP_URL: str = os.environ.get("MNESIS_MCP_URL", "http://localhost:8080/mcp")
 MNESIS_MCP_TOKEN: str | None = _opt("MNESIS_MCP_TOKEN")
 
+# ── Agent Skills ─────────────────────────────────────────────────────────────
+
+#: Extra skill directories to scan (os.pathsep-separated), in addition to the
+#: always-scanned ``./skills`` (project-level) and the packaged example skills.
+MNESIS_AGENTS_SKILLS_DIRS: str = os.environ.get("MNESIS_AGENTS_SKILLS_DIRS", "")
+
 # ── Offline stub ─────────────────────────────────────────────────────────────
 
 #: When set, get_chat_model() returns a deterministic offline fake model — no
