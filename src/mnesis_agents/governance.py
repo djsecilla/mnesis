@@ -83,10 +83,12 @@ class GovernanceMiddleware(AgentMiddleware):
     def begin_run(self) -> None:
         self.state = GovernanceState(started=time.monotonic())
 
-    # -- tool gate (before any side effect) ------------------------------------
+    # -- tool gate (before any side effect; shared by sync + async) ------------
 
-    def wrap_tool_call(self, request, handler):
-        tc = request.tool_call
+    def _gate(self, tc: dict) -> "ToolMessage | None":
+        """Apply allowlist/budget/write-policy. Returns a refusal ToolMessage, or
+        None to proceed (recording the executed call). Side-effect-free until the
+        caller invokes the tool handler."""
         name = tc.get("name", "")
         tcid = tc.get("id", "")
         bare = _bare(name)
@@ -98,12 +100,10 @@ class GovernanceMiddleware(AgentMiddleware):
         # 1) Allowlist — fail closed.
         if self.allowlist is not None and bare not in self.allowlist and name not in self.allowlist:
             return refuse("allowlist", f"tool {name!r} is not in this agent's allowlist.")
-
         # 2) Tool-call budget — refuse before executing, flag the run.
         if self.max_tool_calls is not None and self.state.tool_calls >= self.max_tool_calls:
             self.state.stop_reason = self.state.stop_reason or "tool_budget"
             return refuse("tool_budget", f"tool-call budget ({self.max_tool_calls}) exhausted.")
-
         # 3) Write policy — execute only under apply/ingest/approved; else propose.
         is_write = bare in self.write_tools or name in self.write_tools
         if is_write and self.write_policy not in _WRITE_EXECUTE_POLICIES:
@@ -112,17 +112,23 @@ class GovernanceMiddleware(AgentMiddleware):
                 "write_policy",
                 f"write tool {name!r} proposed, not applied (write_policy={self.write_policy!r}).",
             )
-
-        # Execute — count it; record applied writes (arg KEYS only, never values).
+        # Proceed — count it; record applied writes (arg KEYS only, never values).
         self.state.tool_calls += 1
         if is_write:
             self.state.writes.append({"tool": name, "args_keys": sorted((tc.get("args") or {}))})
-        return handler(request)
+        return None
+
+    def wrap_tool_call(self, request, handler):
+        refusal = self._gate(request.tool_call)
+        return refusal if refusal is not None else handler(request)
+
+    async def awrap_tool_call(self, request, handler):
+        refusal = self._gate(request.tool_call)
+        return refusal if refusal is not None else await handler(request)
 
     # -- run-level budgets (jump to end when exceeded) -------------------------
 
-    @hook_config(can_jump_to=["end"])
-    def before_model(self, state, runtime):  # noqa: ANN001, ARG002
+    def _budget_jump(self) -> "dict | None":
         if self.state.stop_reason:  # budget already tripped in a tool gate
             return {"jump_to": "end"}
         if self.wallclock is not None and self.state.started:
@@ -134,12 +140,25 @@ class GovernanceMiddleware(AgentMiddleware):
             return {"jump_to": "end"}
         return None
 
-    def after_model(self, state, runtime):  # noqa: ANN001, ARG002
-        # Best-effort token accounting from the latest AI message.
+    @hook_config(can_jump_to=["end"])
+    def before_model(self, state, runtime):  # noqa: ANN001, ARG002
+        return self._budget_jump()
+
+    @hook_config(can_jump_to=["end"])
+    async def abefore_model(self, state, runtime):  # noqa: ANN001, ARG002
+        return self._budget_jump()
+
+    def _account_tokens(self, state) -> None:
         msgs = state.get("messages", []) if isinstance(state, dict) else []
         if msgs:
             usage = getattr(msgs[-1], "usage_metadata", None) or {}
             self.state.tokens += int(usage.get("total_tokens", 0) or 0)
+
+    def after_model(self, state, runtime):  # noqa: ANN001, ARG002
+        self._account_tokens(state)
+
+    async def aafter_model(self, state, runtime):  # noqa: ANN001, ARG002
+        self._account_tokens(state)
         return None
 
 

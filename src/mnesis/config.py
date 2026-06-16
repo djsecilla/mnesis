@@ -55,6 +55,15 @@ MNESIS_LLM_BASE_URL: str = os.environ.get("MNESIS_LLM_BASE_URL", "http://localho
 #: and env-overridable. The ingest path turns a timeout into a clean error.
 MNESIS_LLM_TIMEOUT: float = float(os.environ.get("MNESIS_LLM_TIMEOUT", "300"))
 
+#: API key passthrough for the broader providers (openai/google/mistral/bedrock/
+#: ollama/openai_compatible) reached via the shared multi-LLM factory. Usually the
+#: provider SDK reads its own env (OPENAI_API_KEY, …); set this to override.
+MNESIS_LLM_API_KEY: str | None = os.environ.get("MNESIS_LLM_API_KEY") or None
+
+#: Sampling temperature for shared-factory providers (the native anthropic/local
+#: paths keep their own behaviour). Default 0 for reproducible extraction.
+MNESIS_LLM_TEMPERATURE: float = float(os.environ.get("MNESIS_LLM_TEMPERATURE", "0"))
+
 #: Quality gate for filing answers back as digest pages.
 MNESIS_FILEBACK_THRESHOLD: float = float(os.environ.get("MNESIS_FILEBACK_THRESHOLD", "0.7"))
 

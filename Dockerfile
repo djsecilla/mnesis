@@ -11,9 +11,13 @@ COPY src ./src
 
 # The default SQLite graph backend needs no system build libraries; deps are
 # pure-python / wheels, so no compiler toolchain is required here.
+# Install the package WITH the agents extra so this single image carries both
+# the Mnesis core (now multi-LLM capable via the shared factory) and the
+# LangGraph agentic runtime (`mnesis-agents`). Provider extras (langchain-openai
+# etc.) are added when concrete agents land; the idle runtime needs only this.
 RUN python -m venv /opt/venv \
     && /opt/venv/bin/pip install --no-cache-dir --upgrade pip \
-    && /opt/venv/bin/pip install --no-cache-dir .
+    && /opt/venv/bin/pip install --no-cache-dir ".[agents]"
 
 # --- runtime: slim image with git, non-root, volume -------------------------
 FROM python:3.12-slim AS runtime

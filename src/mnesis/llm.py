@@ -115,15 +115,43 @@ def _local_complete(system: str, user: str) -> str:
     return response.json()["choices"][0]["message"]["content"]
 
 
+def _factory_complete(system: str, user: str) -> str:
+    """Broader providers (openai/google/mistral/bedrock/ollama/openai_compatible)
+    via the shared multi-LLM factory — so Mnesis runs on any configured provider.
+
+    Lazy: langchain is only needed on this path. Missing deps raise a clear,
+    actionable error (install the matching extra). The native anthropic/local and
+    stub paths are unchanged, so existing behaviour and offline tests are intact.
+    """
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    from mnesis_llm.factory import get_chat_model
+
+    model = get_chat_model(
+        config.MNESIS_LLM_PROVIDER,
+        config.MNESIS_LLM_MODEL or "",
+        base_url=config.MNESIS_LLM_BASE_URL,
+        api_key=config.MNESIS_LLM_API_KEY,
+        temperature=config.MNESIS_LLM_TEMPERATURE,
+    )
+    resp = model.invoke([SystemMessage(content=system), HumanMessage(content=user)])
+    return resp.content if isinstance(resp.content, str) else str(resp.content)
+
+
 def complete(system: str, user: str) -> str:
     """Return the model's text response to ``system``/``user``.
 
     Routed at call time (so tests can toggle): the offline **stub** when
-    ``config.MNESIS_LLM_STUB`` is set; otherwise the **local** provider when
-    ``MNESIS_LLM_PROVIDER == "local"``; otherwise **Anthropic** (the default).
+    ``config.MNESIS_LLM_STUB`` is set; the native **local** (OpenAI-compatible
+    httpx) and **anthropic** (SDK) paths unchanged; any **other** provider goes
+    through the shared multi-LLM factory (``openai``/``google``/``mistral``/
+    ``bedrock``/``ollama``/``openai_compatible``).
     """
     if config.MNESIS_LLM_STUB:
         return _stub_complete(system, user)
-    if config.MNESIS_LLM_PROVIDER == "local":
+    provider = config.MNESIS_LLM_PROVIDER
+    if provider == "local":
         return _local_complete(system, user)
-    return _anthropic_complete(system, user)
+    if provider == "anthropic":
+        return _anthropic_complete(system, user)
+    return _factory_complete(system, user)

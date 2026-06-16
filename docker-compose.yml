@@ -152,6 +152,55 @@ services:
       retries: 5
       start_period: 10s
 
+  # --- LangGraph agentic runtime (profile: agents) -----------------------------
+  # NOT started by a plain `up`. Bring it up with:
+  #   docker compose --profile agents up -d
+  # Runs `mnesis-agents run` — the multi-LLM LangGraph foundation host. With NO
+  # concrete agents registered yet it stays IDLE and healthy, awaiting later agent
+  # sets. Reaches Mnesis ONLY over the internal MCP endpoint (it never imports the
+  # core). Durable agent state (checkpoints) + the run audit live on volumes.
+  # Setting MNESIS_LLM_PROVIDER=local in .env keeps the WHOLE stack (Mnesis +
+  # agents + model) on the host's Ollama — no external inference.
+  mnesis-agents-runtime:
+    build: .
+    image: mnesis:latest
+    profiles: ["agents"]
+    command: agents run
+    restart: unless-stopped
+    depends_on:
+      mnesis:
+        condition: service_healthy
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      MNESIS_MCP_URL: ${MNESIS_AGENTS_MCP_URL:-http://mnesis:8080/mcp}
+      MNESIS_MCP_TOKEN: ${MNESIS_MCP_TOKEN:-}
+      # Shared multi-LLM config — the SAME vars drive Mnesis and the agents layer.
+      MNESIS_LLM_PROVIDER: ${MNESIS_LLM_PROVIDER:-anthropic}
+      MNESIS_LLM_MODEL: ${MNESIS_LLM_MODEL:-}
+      MNESIS_LLM_BASE_URL: ${MNESIS_LLM_BASE_URL:-http://host.docker.internal:11434}
+      MNESIS_AGENTS_STUB: ${MNESIS_AGENTS_STUB:-}
+      # Durable state + audit on the mounted volumes.
+      MNESIS_AGENTS_CHECKPOINT_DB: /data/agents_state/checkpoints.db
+      MNESIS_AGENTS_AUDIT_DIR: /data/agents_runs
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - mnesis-agents-state:/data/agents_state    # LangGraph checkpoints (resumable threads)
+      - mnesis-agents-runs:/data/agents_runs       # append-only run audit (JSONL)
+    healthcheck:
+      # No HTTP server (idle host); "healthy" = it can reach mnesis over the net.
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://mnesis:8080/health', timeout=3).status==200 else 1)"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
   # --- local-first inference (opt-in) ------------------------------------------
   # mnesis can run inference on a LOCAL model server instead of Anthropic — set
   # MNESIS_LLM_PROVIDER=local in .env (and MNESIS_LLM_MODEL=<an Ollama tag>).
@@ -206,6 +255,8 @@ services:
 
 volumes:
   mnesis-data:
-  mnesis-agent-runs:         # agent run audit (JSONL); created with --profile agent
+  mnesis-agent-runs:         # A-series agent run audit (JSONL); --profile agent
+  mnesis-agents-state:       # LangGraph checkpoints (resumable threads); --profile agents
+  mnesis-agents-runs:        # LangGraph run audit (JSONL); --profile agents
   # postgres-data:           # (Tier-B) uncomment alongside the postgres service
   # qdrant-data:             # (Tier-B) uncomment alongside the qdrant service

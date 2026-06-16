@@ -349,6 +349,51 @@ The dockerized daemon and one-off runs are covered under
 
 ---
 
+## Agentic layer (LangChain foundation)
+
+A second, **LangGraph-based** agent foundation (`mnesis_agents`) provides the
+substrate that concrete agents will be built on. It is **multi-LLM from the
+ground up** and reaches Mnesis **only over MCP**. There are **no concrete agents
+yet** — this is the base, the category abstractions, and an idle runtime.
+
+- **Multi-LLM, shared by Mnesis too.** A single provider switch
+  (`MNESIS_LLM_PROVIDER`) selects the model for **both** Mnesis's own
+  extraction/synthesis and the agent layer — `openai`, `anthropic`, `google`,
+  `mistral`, `bedrock`, `ollama`, or `openai_compatible`. Mnesis keeps its
+  native `local`/`anthropic`/stub paths (no regression); broader providers go
+  through the shared factory. Install only the provider extra you use
+  (`pip install -e ".[agents-openai]"`, etc.).
+- **Mnesis as memory over MCP** — the `mnesis_*` tools become LangChain tools
+  via `langchain-mcp-adapters`, namespaced and aggregated in a registry.
+- **Agent Skills (agentskills.io)** — SKILL.md folders with progressive
+  disclosure (the same format Claude Code uses): discovery loads name+description
+  only; activation loads the full instructions; bundled scripts run guarded.
+- **Governance built in** — allowlists, write policy, budgets, a SQLite
+  checkpointer (resumable threads), human-in-the-loop approval interrupts, an
+  append-only audit (names/statuses only), and **opt-in** LangSmith tracing
+  (off unless its env is set).
+
+Run the foundation locally (idle until agents are registered):
+
+```bash
+uv pip install -e ".[agents]"     # the LangGraph core (no provider extra needed for idle)
+mnesis-agents                     # print the resolved model / MCP config
+mnesis-agents run                 # start the runner (healthy idle host; Ctrl-C to stop)
+```
+
+In Docker, a profile-gated runtime service runs it against the stack:
+
+```bash
+docker compose --profile agents up -d   # mnesis + an idle, healthy mnesis-agents-runtime
+```
+
+The runtime reaches Mnesis over the internal MCP endpoint only, stores durable
+agent state + the run audit on volumes, and — with `MNESIS_LLM_PROVIDER=local`
+in `.env` — keeps the **whole** stack (Mnesis + agents + model) on the host's
+Ollama, no external inference. Concrete agents arrive in later work.
+
+---
+
 ## Running with Docker
 
 A containerized stack — no Python/uv needed on the host. See

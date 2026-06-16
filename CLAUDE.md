@@ -356,6 +356,20 @@ The compounding loop closes at the agent level: agents **read** memory (grounded
 
 ---
 
+## 14b. The LangGraph agentic foundation (`mnesis_agents`)
+
+A second, **LangGraph-based** agentic foundation (`src/mnesis_agents/`, importable as `mnesis_agents.*`) coexists with the A-series `mnesis_agent` layer. It is the substrate concrete agents will be built on; **no concrete agents exist yet** — only the base, the category abstractions, and an idle runtime. Like the A-series, it reaches Mnesis **only over MCP** and **never imports `mnesis`**.
+
+- **Multi-LLM, provider-agnostic.** A shared factory (`src/mnesis_llm/factory.py`) maps a provider key to a LangChain chat model. **Mnesis is now provider-agnostic too**: `mnesis.llm.complete()` keeps its native `stub`/`local`/`anthropic` paths unchanged (no regression) and routes the *broader* providers (`openai`/`google`/`mistral`/`bedrock`/`ollama`/`openai_compatible`) through the same factory — so one `MNESIS_LLM_PROVIDER` switch changes the model for **both** Mnesis and the agents, no code change. langchain is a lazy import; the offline stub needs none of it.
+- **Mnesis tools via langchain-mcp-adapters** (`knowledge.py`): the `mnesis_*` tools become LangChain tools; a `ToolRegistry` aggregates sources (namespacing only on collision); a `FakeMnesisTools` source makes the layer testable offline.
+- **Agent Skills (agentskills.io)** (`skills/`): SKILL.md folders with strict three-level progressive disclosure (discovery = name+description only; activation loads instructions; resources/scripts on demand, path-confined + bounded). Surfaced to any model via skill cards in the prompt + a `use_skill(name)` tool. Same SKILL.md format Claude Code uses.
+- **Base agent + categories** (`base.py`, `categories/`): `build_agent(profile)` compiles a LangGraph agent (LangChain 1.x `create_agent`) wiring model + tools + skills + governance + checkpointer, returning a structured result. Three category ABCs declare trigger + write policy — **WritingAgent** (event / ingest), **ActionAgent** (event-or-schedule / propose), **MaintenanceAgent** (schedule / propose).
+- **Triggers + runner** (`triggers/`, `registry.py`, `runner.py`): event (`SourceConnector`) and schedule triggers with in-memory reference impls; an `AgentRegistry` of subscriptions; a resilient, observable `Runner`. `mnesis-agents run` is a healthy **idle** host until agents are registered.
+- **Governance/persistence/observability** (`governance.py`, `audit.py`): fail-closed allowlist + write-policy + budgets (LangChain middleware), a SQLite (default) / Postgres checkpointer, HumanInTheLoop approval interrupts, an append-only JSONL audit (names/statuses/ids only — never values), and **opt-in** LangSmith tracing (off unless its env is set). Per-write safety stays Mnesis's job server-side.
+- **Deployment.** The single `mnesis:latest` image carries both packages (installed with the `agents` extra). A profile-gated Compose service **`mnesis-agents-runtime`** (`docker compose --profile agents up -d`) runs `mnesis-agents run` — idle/healthy, MCP-only, durable state + audit on volumes. `MNESIS_LLM_PROVIDER=local` keeps the whole stack on-prem.
+
+---
+
 ## 15. Changing this file
 
 This document is co-evolved with the system. Expect the first version to be rough and to sharpen after the first few dozen sources and lint passes. Conventions:
