@@ -82,6 +82,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p_lint = sub.add_parser("graph-lint", help="check graph consistency; --fix applies safe fixes")
     p_lint.add_argument("--fix", action="store_true", help="apply the safe auto-fixes")
 
+    sub.add_parser("health", help="read-only system health snapshot")
+
+    p_dupes = sub.add_parser(
+        "find-duplicates", help="heuristic near-duplicate candidate pairs (read-only)"
+    )
+    p_dupes.add_argument("--limit", type=int, default=20, help="max candidate pairs (default 20)")
+
     sub.add_parser("review", help="list open contradiction reviews")
 
     p_resolve = sub.add_parser("resolve", help="resolve a contradiction review")
@@ -124,6 +131,10 @@ def main(argv: list[str] | None = None) -> int:
         print(mcp_server.mnesis_graph_stats())
     elif args.command == "graph-lint":
         print(mcp_server.mnesis_graph_lint(args.fix))
+    elif args.command == "health":
+        print(mcp_server.mnesis_health_report())
+    elif args.command == "find-duplicates":
+        print(mcp_server.mnesis_find_duplicates(args.limit))
     elif args.command == "review":
         print(mcp_server.mnesis_review())
     elif args.command == "resolve":

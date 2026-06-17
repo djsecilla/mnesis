@@ -23,7 +23,18 @@ import logging
 from mcp.server.fastmcp import FastMCP
 from starlette.responses import JSONResponse
 
-from . import config, confidence, graph, graph_lint, ingest, lifecycle, search, state, store
+from . import (
+    config,
+    confidence,
+    graph,
+    graph_lint,
+    ingest,
+    lifecycle,
+    maintenance,
+    search,
+    state,
+    store,
+)
 from .filters import scrub
 from .store import Page
 
@@ -349,6 +360,66 @@ def mnesis_graph_lint(fix: bool = False) -> str:
     structural edges) for human review. Idempotent; never deletes an edge with an
     active supporting page."""
     return graph_lint.graph_lint(fix=fix).summary()
+
+
+@mcp.tool()
+def mnesis_health_report() -> str:
+    """Read-only system health snapshot — counts, gaps, and cache freshness.
+
+    Side-effect-free. Reports page counts by status/kind, pages with no sources,
+    low-confidence and stale counts, the open-contradiction count, knowledge-graph
+    size with the demoted-edge count, orphan/undeclared/dangling graph entities,
+    and whether the search index and graph cache are in sync with the Markdown
+    (the canonical source). Writes nothing.
+    """
+    r = maintenance.health_report()
+    bs = ", ".join(f"{k}={v}" for k, v in r["by_status"].items()) or "(none)"
+    bk = ", ".join(f"{k}={v}" for k, v in r["by_kind"].items()) or "(none)"
+    idx = r["index"]
+    gidx = r["graph_index"]
+    lines = [
+        f"pages: {r['pages_total']}  ({bs})",
+        f"by kind: {bk}",
+        f"stale: {r['stale']}   low-confidence (< {config.STALE_THRESHOLD:.2f}): {r['low_confidence']}",
+        f"pages with no sources: {len(r['no_sources'])}"
+        + (f" ({', '.join(r['no_sources'])})" if r["no_sources"] else ""),
+        f"open contradictions: {r['open_contradictions']}",
+        f"graph: {r['graph']['entities']} entities, {r['graph']['edges']} edges "
+        f"({r['graph']['demoted']} demoted)",
+        f"graph flags: {r['orphan_entities']} orphan, {r['undeclared_entities']} undeclared, "
+        f"{r['dangling_structural']} dangling structural",
+        f"search index: {idx['indexed_pages']}/{idx['markdown_pages']} pages, "
+        f"{'fresh' if idx['fresh'] else 'STALE'}"
+        + (f" (missing: {', '.join(idx['missing_from_index'])})" if idx["missing_from_index"] else "")
+        + (f" (extra: {', '.join(idx['extra_in_index'])})" if idx["extra_in_index"] else ""),
+        f"graph cache: {'present' if gidx['present'] else 'ABSENT'}, "
+        f"{'fresh' if gidx['fresh'] else 'STALE'}"
+        + (f" (missing: {', '.join(gidx['missing_page_nodes'])})" if gidx["missing_page_nodes"] else "")
+        + (f" (extra: {', '.join(gidx['extra_page_nodes'])})" if gidx["extra_page_nodes"] else ""),
+    ]
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def mnesis_find_duplicates(limit: int = 20) -> str:
+    """Heuristic near-duplicate candidate pairs — read-only, proposes nothing.
+
+    Surfaces up to ``limit`` page pairs that may assert the same knowledge,
+    scored by blending title/tag overlap, shared graph edges, and FTS
+    co-retrieval, each with a similarity rationale. Pairs already linked by a
+    supersede are excluded. **This is a heuristic stand-in pending Phase-5
+    vectors** (semantic similarity); it changes nothing — a human or agent
+    decides what, if anything, to do (e.g. ingest a reconciling source).
+    """
+    dupes = maintenance.find_duplicates(limit=limit)
+    if not dupes:
+        return "no near-duplicate candidates found (heuristic)"
+    lines = [f"near-duplicate candidates (heuristic, pending Phase-5 vectors): {len(dupes)}"]
+    for d in dupes:
+        lines.append(f"  {d['page_a']} <~> {d['page_b']} (similarity {d['similarity']:.2f})")
+        lines.append(f"    \"{d['title_a']}\"  <~>  \"{d['title_b']}\"")
+        lines.append(f"    why: {d['rationale']}")
+    return "\n".join(lines)
 
 
 @mcp.tool()

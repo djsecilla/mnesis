@@ -148,6 +148,21 @@ def upsert(page: store.Page) -> None:
         conn.close()
 
 
+def indexed_ids() -> set[str]:
+    """The set of page ids currently present in the search index.
+
+    A read-only freshness probe (used by the health report): comparing this to
+    the Markdown page ids detects an index that has drifted from the canonical
+    store (pages added or removed without a rebuild/upsert).
+    """
+    conn = _connect()
+    try:
+        rows = conn.execute("SELECT id FROM pages").fetchall()
+    finally:
+        conn.close()
+    return {r[0] for r in rows}
+
+
 def record_and_reindex(page_id: str) -> None:
     """Record one access to ``page_id`` and refresh its cached confidence.
 
