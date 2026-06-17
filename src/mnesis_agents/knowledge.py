@@ -29,6 +29,17 @@ MNESIS_TOOL_NAMES: tuple[str, ...] = (
     "mnesis_impact",
 )
 
+#: Maintenance/curation tool names Mnesis exposes (the dream-cycle surface). Kept
+#: separate from MNESIS_TOOL_NAMES so the everyday read/write fake stays minimal.
+MAINTENANCE_TOOL_NAMES: tuple[str, ...] = (
+    "mnesis_decay",
+    "mnesis_graph_lint",
+    "mnesis_review",
+    "mnesis_resolve",
+    "mnesis_find_duplicates",
+    "mnesis_health_report",
+)
+
 #: Separator used when the registry namespaces a colliding tool name.
 NAMESPACE_SEP = "__"
 
@@ -170,6 +181,110 @@ class FakeMnesisTools(ToolSource):
 
     async def load_tools(self) -> list["BaseTool"]:
         return _build_fake_mnesis_tools()
+
+
+def _build_fake_maintenance_tools() -> list["BaseTool"]:
+    """Deterministic stand-ins for the Mnesis **maintenance** tools (the
+    dream-cycle surface) — canned JSON results, no network. They mirror the real
+    tools' names/signatures; the review fake bundles the per-page ``source_count``
+    /``last_confirmed`` that the real flow gathers via ``mnesis_get``, so the
+    triage skill is exercisable offline from a single call."""
+    import json
+
+    from langchain_core.tools import tool
+
+    @tool
+    def mnesis_decay() -> str:
+        """Run the decay/lifecycle pass (age knowledge, active<->stale). Returns transition counts as JSON."""
+        return json.dumps({"scanned": 6, "restaled": 1, "reactivated": 0, "unchanged": 5})
+
+    @tool
+    def mnesis_graph_lint(fix: bool = False) -> str:
+        """Lint the knowledge graph; with fix=True apply the safe auto-fixes. Returns a structured report as JSON."""
+        if fix:
+            return json.dumps({
+                "fixed": True,
+                "fixed_categories": {"duplicate_edges": 1, "stale_only_edges": 0, "confidence_updates": 1},
+                "flagged_items": [
+                    {"category": "undeclared_entities", "ref": "library:redis",
+                     "detail": "used by page atlas-redis but not declared as a tag"}
+                ],
+            })
+        return json.dumps({
+            "fixed": False,
+            "fixable_categories": {"duplicate_edges": 1, "stale_only_edges": 0, "confidence_updates": 1},
+            "flagged_items": [
+                {"category": "undeclared_entities", "ref": "library:redis",
+                 "detail": "used by page atlas-redis but not declared as a tag"}
+            ],
+        })
+
+    @tool
+    def mnesis_review() -> str:
+        """List open contradiction reviews (with per-page confidence/source_count/last_confirmed) as JSON."""
+        return json.dumps({"open": [
+            {"review_id": 1, "detail": "Conflicting cache backend for Atlas",
+             "pages": [
+                 {"id": "atlas-redis", "title": "Atlas uses Redis", "confidence": 0.82,
+                  "source_count": 3, "last_confirmed": "2026-06-10T12:00:00Z"},
+                 {"id": "atlas-memcached", "title": "Atlas uses Memcached", "confidence": 0.45,
+                  "source_count": 1, "last_confirmed": "2026-02-01T12:00:00Z"},
+             ]},
+        ]})
+
+    @tool
+    def mnesis_resolve(review_id: int, keep_id: str) -> str:
+        """Resolve a contradiction (WRITE): keep keep_id, supersede the other. Returns the outcome as JSON."""
+        return json.dumps({"resolved": review_id, "kept": keep_id})
+
+    @tool
+    def mnesis_find_duplicates(limit: int = 20) -> str:
+        """Heuristic near-duplicate candidate pairs as JSON (read-only; proposes nothing)."""
+        return json.dumps({"candidates": [
+            {"page_a": "atlas-redis", "page_b": "atlas-redis-cache",
+             "title_a": "Project Atlas uses Redis for caching", "title_b": "Atlas uses Redis as its cache",
+             "similarity": 0.62, "signals": {"title": 0.5, "tags": 1.0, "edges": 1.0, "fts": True},
+             "rationale": "shared tags 1.00 (project:atlas, library:redis); shared edges 1.00; co-retrieved by FTS"},
+            {"page_a": "pg-backups", "page_b": "pg-restore",
+             "title_a": "Postgres backups run nightly", "title_b": "Postgres restore procedure",
+             "similarity": 0.28, "signals": {"title": 0.33, "tags": 0.5, "edges": 0.0, "fts": True},
+             "rationale": "title overlap 0.33; shared tags 0.50 (library:postgres); co-retrieved by FTS"},
+        ]})
+
+    @tool
+    def mnesis_health_report() -> str:
+        """Read-only system health snapshot as JSON (counts, gaps, cache freshness)."""
+        return json.dumps({
+            "pages_total": 7,
+            "by_status": {"active": 6, "stale": 1},
+            "by_kind": {"fact": 5, "digest": 1, "note": 1},
+            "no_sources": ["orphan-note"],
+            "low_confidence": 2,
+            "low_confidence_pages": ["old-fact", "transient-bug"],
+            "stale": 1,
+            "open_contradictions": 1,
+            "graph": {"entities": 12, "edges": 9, "demoted": 1},
+            "orphan_entities": 1,
+            "undeclared_entities": 1,
+            "dangling_structural": 0,
+            "index": {"markdown_pages": 7, "indexed_pages": 7, "fresh": True,
+                      "missing_from_index": [], "extra_in_index": []},
+            "graph_index": {"present": True, "fresh": True,
+                            "missing_page_nodes": [], "extra_page_nodes": []},
+        })
+
+    return [mnesis_decay, mnesis_graph_lint, mnesis_review, mnesis_resolve,
+            mnesis_find_duplicates, mnesis_health_report]
+
+
+class FakeMaintenanceTools(ToolSource):
+    """Offline deterministic stand-ins for the Mnesis maintenance tools, so the
+    dream-cycle maintenance skills are exercisable without a running Mnesis."""
+
+    namespace = "mnesis"
+
+    async def load_tools(self) -> list["BaseTool"]:
+        return _build_fake_maintenance_tools()
 
 
 # ── Registry ──────────────────────────────────────────────────────────────

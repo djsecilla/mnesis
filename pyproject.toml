@@ -59,7 +59,8 @@ mnesis-agents = "mnesis_agents.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-# Ship the bundled example Agent Skill (SKILL.md + references/ + scripts/).
+# Ship the bundled Agent Skills (example + dream-cycle maintenance routines:
+# SKILL.md + references/ + scripts/).
 "mnesis_agents.skills" = ["bundled/**/*"]
 
 [tool.pytest.ini_options]
