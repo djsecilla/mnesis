@@ -46,10 +46,18 @@ from . import config
 from .categories.maintenance import MaintenanceAgent
 from .governance import GovernanceMiddleware
 from .knowledge import MAINTENANCE_TOOL_NAMES
+from .proposals import ProposalStore
+from .reports import DreamReportStore, format_summary
 from .skills.loader import SkillRegistry
 
 if TYPE_CHECKING:
     from langchain_core.tools import BaseTool
+
+    from .registry import AgentRegistry, ScheduleSubscription
+    from .triggers.schedule import Schedule
+
+#: Tools the cycle uses to crystallize a maintenance digest, best first.
+_CRYSTALLIZE_TOOLS: tuple[str, ...] = ("mnesis_file_back", "mnesis_ingest")
 
 #: The default ordered dream-cycle plan: audit first, then age, tidy the graph,
 #: then the two proposal-only consolidation passes.
@@ -257,14 +265,17 @@ class DreamMaintenanceAgent(MaintenanceAgent):
         skills: SkillRegistry | None = None,
         model=None,
         plan: list[str] | None = None,
-        cadence: str = "0 3 * * *",
+        cadence: str | None = None,
         max_tool_calls: int | None = None,
         wallclock_seconds: float | None = None,
         max_tokens: int | None = None,
+        proposal_store: ProposalStore | None = None,
+        report_store: DreamReportStore | None = None,
+        crystallize: bool | None = None,
     ) -> None:
         super().__init__(tools=tools, skills=skills or SkillRegistry().discover(), model=model)
         self._plan = list(plan) if plan is not None else list(DEFAULT_PLAN)
-        self._cadence = cadence
+        self._cadence = cadence if cadence is not None else config.MNESIS_AGENTS_DREAM_CRON
         self._max_tool_calls = (
             max_tool_calls if max_tool_calls is not None else config.MNESIS_AGENTS_MAX_TOOL_CALLS
         )
@@ -274,6 +285,11 @@ class DreamMaintenanceAgent(MaintenanceAgent):
             else config.MNESIS_AGENTS_WALLCLOCK_SECONDS
         )
         self._max_tokens = max_tokens if max_tokens is not None else config.MNESIS_AGENTS_MAX_TOKENS
+        self._proposals = proposal_store if proposal_store is not None else ProposalStore()
+        self._reports = report_store if report_store is not None else DreamReportStore()
+        self._crystallize = (
+            crystallize if crystallize is not None else config.MNESIS_AGENTS_CRYSTALLIZE
+        )
 
     # -- F4 contract -----------------------------------------------------------
 
@@ -421,3 +437,148 @@ class DreamMaintenanceAgent(MaintenanceAgent):
             started=started, ended=_now_iso(), passes=passes,
             health_before=health_before, health_after=health_after, totals=totals,
         )
+
+    # -- proposals / reporting / crystallization (M4) --------------------------
+
+    @property
+    def proposals(self) -> ProposalStore:
+        return self._proposals
+
+    @property
+    def reports(self) -> DreamReportStore:
+        return self._reports
+
+    def run_and_record(
+        self, plan: list[str] | None = None, *, crystallize: bool | None = None
+    ) -> DreamCycleReport:
+        """Run a dream cycle and do the M4 follow-through: route its proposals to
+        the review/proposals surface (never applying them), optionally crystallize
+        a maintenance digest back into Mnesis, then persist the report (+ audit +
+        summary). Repeated runs are idempotent — proposals upsert by identity and
+        nothing knowledge-changing is auto-applied. Returns the report."""
+        report = self.run_dream_cycle(plan)
+        self._route_proposals(report)
+
+        do_crystallize = self._crystallize if crystallize is None else crystallize
+        if do_crystallize:
+            digest_id = self._crystallize_cycle(report)
+            if digest_id:
+                report.totals["crystallized_digest_id"] = digest_id
+
+        self._reports.save(report)
+        return report
+
+    def _route_proposals(self, report: DreamCycleReport) -> None:
+        """Send each pass's proposals to the queue. Contradiction proposals carry
+        the Mnesis ``review_id`` (annotating that review by id, never resolving);
+        dedup proposals are keyed on the unordered page pair. Both upsert, so a
+        repeated cycle refreshes the same entries instead of duplicating them."""
+        by_name = {p.name: p for p in report.passes}
+
+        triage = by_name.get("contradiction-triage")
+        if triage:
+            for prop in triage.proposals:
+                self._proposals.upsert(
+                    "contradiction",
+                    {"review_id": prop.get("review_id"),
+                     "keep": prop.get("keep"), "supersede": prop.get("supersede")},
+                    detail={**prop, "kind": "contradiction"},
+                    cycle_started=report.started,
+                )
+
+        dedup = by_name.get("deduplication")
+        if dedup:
+            for prop in dedup.proposals:
+                pair = sorted([prop.get("page_a"), prop.get("page_b")])
+                self._proposals.upsert(
+                    "duplicate",
+                    {"pair": pair},
+                    detail={**prop, "kind": "duplicate"},
+                    cycle_started=report.started,
+                )
+
+    def _crystallize_cycle(self, report: DreamCycleReport) -> str | None:
+        """File a bounded, governed maintenance digest of this cycle back into
+        Mnesis (meta-memory). The write goes through a one-shot governance gate
+        (write_policy=apply, single write tool, budget 1); Mnesis's server-side
+        redaction still binds on ingest/file_back. Returns the digest id, or None
+        if no crystallization tool is available / the write did not file."""
+        tools = {t.name.split("__", 1)[-1]: t for t in self._extra_tools}
+        tool_name = next((n for n in _CRYSTALLIZE_TOOLS if n in tools), None)
+        if tool_name is None:
+            return None
+
+        body = format_summary(report)[: config.MNESIS_AGENTS_CRYSTALLIZE_MAX_CHARS]
+        question = f"Mnesis dream cycle {report.started}"
+
+        gov = GovernanceMiddleware(
+            allowlist=frozenset({tool_name}),
+            write_tools=frozenset({tool_name}),
+            write_policy="apply",  # a deliberate, bounded meta-memory write
+            max_tool_calls=1,
+        )
+        gov.begin_run()
+        gt = _GovernedTools([tools[tool_name]], gov)
+
+        if tool_name == "mnesis_file_back":
+            args = {"question": question, "answer": body, "quality_score": 1.0}
+        else:  # mnesis_ingest — record as a maintenance source
+            args = {"text": f"{question}\n\n{body}", "source_ref": f"dream-cycle-{report.started}"}
+        call = gt.call(tool_name, args)
+        return self._parse_digest_id(call.output) if call.ok else None
+
+    @staticmethod
+    def _parse_digest_id(output: str | None) -> str | None:
+        """Pull a filed digest/page id from a crystallization tool's output —
+        tolerating both the fake's JSON and the live tools' text."""
+        if not output:
+            return None
+        try:
+            data = json.loads(output)
+            if isinstance(data, dict):
+                return data.get("digest_id") or data.get("page_id") or data.get("id")
+        except (ValueError, TypeError):
+            pass
+        # Live text: "filed digest: <id> (score ..)" / "ingested page: <id>".
+        for marker in ("filed digest:", "ingested page:"):
+            if marker in output:
+                tail = output.split(marker, 1)[1].strip()
+                return tail.split()[0] if tail else None
+        return None
+
+
+# ── Scheduling (F5) ─────────────────────────────────────────────────────────
+
+
+def default_dream_schedule() -> "Schedule":
+    """The configured dream-cycle cadence. Prefers an explicit interval (the
+    bundled dependency-free scheduler) when set, else the nightly cron (which
+    needs the APScheduler extra to actually fire)."""
+    from .triggers.schedule import Schedule
+
+    if config.MNESIS_AGENTS_DREAM_INTERVAL_SECONDS:
+        return Schedule(interval_seconds=config.MNESIS_AGENTS_DREAM_INTERVAL_SECONDS)
+    return Schedule(cron=config.MNESIS_AGENTS_DREAM_CRON)
+
+
+def register_dream_cycle(
+    registry: "AgentRegistry",
+    agent: DreamMaintenanceAgent,
+    *,
+    schedule: "Schedule | None" = None,
+    name: str = "dream-cycle",
+) -> "ScheduleSubscription":
+    """Subscribe ``agent``'s dream cycle to the registry on a schedule (F5).
+
+    The handler runs ``run_and_record`` off the event loop (the cycle shells out
+    to skill scripts), so a slow cycle never blocks the runner. On-demand running
+    stays available via ``agent.run_and_record()`` / the CLI ``--now``. Each
+    firing is idempotent (proposals upsert; nothing is auto-applied)."""
+    schedule = schedule or default_dream_schedule()
+
+    async def handler():
+        import asyncio
+
+        return await asyncio.to_thread(agent.run_and_record)
+
+    return registry.on_schedule(name, handler, schedule)

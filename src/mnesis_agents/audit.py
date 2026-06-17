@@ -101,6 +101,27 @@ class AgentAuditLog:
         })
 
 
+    def write_dream_cycle(self, report, *, run_id: str) -> None:
+        """Mirror a DreamCycleReport into the audit log — counts, statuses, and
+        ids only (per-pass name/status/auto-applied/proposal counts, totals, the
+        health page counts, and any crystallized digest id). Never the rationale
+        text, tool outputs, or any value."""
+        self._append({
+            "run_id": run_id, "ts": _now(), "type": "dream_cycle",
+            "started": report.started, "ended": report.ended,
+            "passes": [
+                {"name": p.name, "status": p.status,
+                 "auto_applied": len(p.auto_applied), "proposals": len(p.proposals)}
+                for p in report.passes
+            ],
+            "totals": report.totals,
+            "health_pages_before": (report.health_before or {}).get("pages_total")
+            if isinstance(report.health_before, dict) else None,
+            "health_pages_after": (report.health_after or {}).get("pages_total")
+            if isinstance(report.health_after, dict) else None,
+        })
+
+
 def read_run_records(directory: Path | str, run_id: str) -> list[dict]:
     """Read all records for a run id across the audit dir (for inspection/tests)."""
     directory = Path(directory)

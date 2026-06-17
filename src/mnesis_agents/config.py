@@ -92,6 +92,33 @@ MNESIS_AGENTS_WALLCLOCK_SECONDS: float = float(
 )
 
 
+# ── Dream cycle (M4: proposals / reporting / crystallization / schedule) ─────
+
+#: Directory for the dream-cycle proposals queue + persisted reports (defaults to
+#: the audit dir, so all agent-run artefacts live together; gitignored).
+MNESIS_AGENTS_PROPOSALS_DIR: Path = Path(
+    os.environ.get("MNESIS_AGENTS_PROPOSALS_DIR", str(MNESIS_AGENTS_AUDIT_DIR))
+).expanduser()
+
+#: Meta-memory: when on, the dream cycle files a concise digest of itself back
+#: into Mnesis (so Mnesis records its own dream cycles). Default OFF.
+MNESIS_AGENTS_CRYSTALLIZE: bool = _bool("MNESIS_AGENTS_CRYSTALLIZE")
+
+#: Max characters of the crystallized maintenance digest body (bounded write).
+MNESIS_AGENTS_CRYSTALLIZE_MAX_CHARS: int = int(
+    os.environ.get("MNESIS_AGENTS_CRYSTALLIZE_MAX_CHARS", "1500")
+)
+
+#: Dream-cycle cadence. Default a nightly cron (03:00); cron needs the APScheduler
+#: extra. Set an interval (seconds) to use the bundled dependency-free scheduler.
+MNESIS_AGENTS_DREAM_CRON: str = os.environ.get("MNESIS_AGENTS_DREAM_CRON", "0 3 * * *")
+MNESIS_AGENTS_DREAM_INTERVAL_SECONDS: float | None = (
+    float(os.environ["MNESIS_AGENTS_DREAM_INTERVAL_SECONDS"])
+    if os.environ.get("MNESIS_AGENTS_DREAM_INTERVAL_SECONDS")
+    else None
+)
+
+
 def tracing_enabled() -> bool:
     """True only when LangSmith tracing is explicitly turned on via its own env
     (LANGSMITH_TRACING / legacy LANGCHAIN_TRACING_V2). Off by default — a plain
