@@ -100,6 +100,11 @@ MNESIS_AGENTS_PROPOSALS_DIR: Path = Path(
     os.environ.get("MNESIS_AGENTS_PROPOSALS_DIR", str(MNESIS_AGENTS_AUDIT_DIR))
 ).expanduser()
 
+#: Whether the deployed runtime (`mnesis-agents run`) registers the scheduled
+#: dream-cycle maintenance agent. Default ON — it is the single owner of periodic
+#: maintenance (the D5 sidecar is retired). Set 0 to run an idle runtime.
+MNESIS_AGENTS_DREAM_ENABLED: bool = _bool("MNESIS_AGENTS_DREAM_ENABLED", True)
+
 #: Meta-memory: when on, the dream cycle files a concise digest of itself back
 #: into Mnesis (so Mnesis records its own dream cycles). Default OFF.
 MNESIS_AGENTS_CRYSTALLIZE: bool = _bool("MNESIS_AGENTS_CRYSTALLIZE")

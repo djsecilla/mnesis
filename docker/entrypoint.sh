@@ -43,7 +43,11 @@ case "$CMD" in
         exec mnesis "$@"
         ;;
     maintenance)
-        # Periodic upkeep sidecar (decay / graph-lint / rebuild-if-missing).
+        # Manual upkeep loop (decay / graph-lint / rebuild-if-missing). The
+        # scheduled `maintenance` COMPOSE SIDECAR is RETIRED — periodic upkeep is
+        # now owned solely by the dream-cycle agent (profile: agents). This case
+        # remains only as a manual escape hatch (`docker compose run --rm mnesis
+        # maintenance`); do not run it as a service alongside the agents profile.
         exec /usr/local/bin/maintenance.sh
         ;;
     agent)

@@ -155,12 +155,18 @@ services:
   # --- LangGraph agentic runtime (profile: agents) -----------------------------
   # NOT started by a plain `up`. Bring it up with:
   #   docker compose --profile agents up -d
-  # Runs `mnesis-agents run` — the multi-LLM LangGraph foundation host. With NO
-  # concrete agents registered yet it stays IDLE and healthy, awaiting later agent
-  # sets. Reaches Mnesis ONLY over the internal MCP endpoint (it never imports the
-  # core). Durable agent state (checkpoints) + the run audit live on volumes.
-  # Setting MNESIS_LLM_PROVIDER=local in .env keeps the WHOLE stack (Mnesis +
-  # agents + model) on the host's Ollama — no external inference.
+  # Runs `mnesis-agents run` — the multi-LLM LangGraph foundation host. It now
+  # registers the scheduled **dream-cycle MaintenanceAgent** and is the SINGLE
+  # owner of periodic maintenance (the D5 `maintenance` sidecar is retired — see
+  # the note below). Each cycle runs the maintenance passes over Mnesis ONLY via
+  # the internal MCP endpoint (it never imports the core): it auto-applies safe
+  # hygiene (decay + safe graph fixes), queues contradiction/dedup proposals for
+  # human review, and writes a report — all governed; Mnesis's own redaction +
+  # review still gate every write server-side. Durable agent state (checkpoints),
+  # the run audit, the proposals queue, and reports live on volumes. Setting
+  # MNESIS_LLM_PROVIDER=local in .env keeps the WHOLE stack (Mnesis + agents +
+  # model) on the host's Ollama — no external inference. The dream cycle itself is
+  # deterministic and makes no model calls.
   mnesis-agents-runtime:
     build: .
     image: mnesis:latest
@@ -181,14 +187,23 @@ services:
       MNESIS_LLM_MODEL: ${MNESIS_LLM_MODEL:-}
       MNESIS_LLM_BASE_URL: ${MNESIS_LLM_BASE_URL:-http://host.docker.internal:11434}
       MNESIS_AGENTS_STUB: ${MNESIS_AGENTS_STUB:-}
-      # Durable state + audit on the mounted volumes.
+      # Dream cycle: enabled by default (the single periodic-maintenance owner).
+      MNESIS_AGENTS_DREAM_ENABLED: ${MNESIS_AGENTS_DREAM_ENABLED:-1}
+      # Cadence. The bundled scheduler is interval-based; default ~daily (nightly).
+      # Set lower for a smoke test; a precise cron (MNESIS_AGENTS_DREAM_CRON) needs
+      # the APScheduler extra.
+      MNESIS_AGENTS_DREAM_INTERVAL_SECONDS: ${MNESIS_AGENTS_DREAM_INTERVAL_SECONDS:-86400}
+      # Meta-memory: file a digest of each cycle back into Mnesis. Default OFF.
+      MNESIS_AGENTS_CRYSTALLIZE: ${MNESIS_AGENTS_CRYSTALLIZE:-}
+      # Durable state + audit + proposals/reports on the mounted volumes.
       MNESIS_AGENTS_CHECKPOINT_DB: /data/agents_state/checkpoints.db
       MNESIS_AGENTS_AUDIT_DIR: /data/agents_runs
+      MNESIS_AGENTS_PROPOSALS_DIR: /data/agents_runs
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
       - mnesis-agents-state:/data/agents_state    # LangGraph checkpoints (resumable threads)
-      - mnesis-agents-runs:/data/agents_runs       # append-only run audit (JSONL)
+      - mnesis-agents-runs:/data/agents_runs       # run audit (JSONL) + proposals queue + reports
     healthcheck:
       # No HTTP server (idle host); "healthy" = it can reach mnesis over the net.
       test:
@@ -210,24 +225,16 @@ services:
   # Sources still never leave the machine. Ensure Ollama is running on the host
   # (`ollama serve`) and the model is pulled (`ollama pull <tag>`).
 
-  # --- maintenance profile: periodic upkeep sidecar ---------------------------
-  # NOT started by a plain `up`. Bring it up with:
-  #   docker compose --profile maintenance up -d
-  # It shares the data volume with the server and runs decay / graph-lint --fix /
-  # rebuild-if-missing on an interval, committing changes via the CLI (git-audited).
-  # Phase 4 moves this into the app as event hooks; this sidecar can then retire.
-  maintenance:
-    build: .
-    image: mnesis:latest
-    profiles: ["maintenance"]
-    command: maintenance
-    restart: unless-stopped
-    environment:
-      MNESIS_ROOT: /data/mnesis
-      MNESIS_MAINT_INTERVAL: ${MNESIS_MAINT_INTERVAL:-86400}   # default daily
-      MNESIS_LLM_STUB: "1"              # upkeep commands never call the LLM
-    volumes:
-      - mnesis-data:/data/mnesis
+  # --- maintenance: RETIRED (superseded by the dream-cycle agent) -------------
+  # The old `maintenance` profile — a sidecar that ran `mnesis decay` /
+  # `graph-lint --fix` / rebuild-if-missing on an interval against the shared data
+  # volume — has been REMOVED. Periodic maintenance now has exactly ONE owner: the
+  # scheduled dream-cycle MaintenanceAgent in `mnesis-agents-runtime` (profile:
+  # agents), which drives the same upkeep over MCP (decay + safe graph fixes
+  # auto-applied; contradiction/dedup surfaced as proposals) and reports it.
+  # Running both would double-run maintenance, so the sidecar is gone — bring up
+  # `--profile agents` instead. (`docker compose run --rm mnesis cli decay` remains
+  # available as a manual one-off; it is not a scheduler.)
 
   # --- Tier-B services (Phases 5-6) — PLACEHOLDER, intentionally not active -----
   # The core stack is single-service. When Phases 5-6 land (vector stream + RRF,

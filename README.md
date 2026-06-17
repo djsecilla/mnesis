@@ -384,13 +384,48 @@ mnesis-agents run                 # start the runner (healthy idle host; Ctrl-C 
 In Docker, a profile-gated runtime service runs it against the stack:
 
 ```bash
-docker compose --profile agents up -d   # mnesis + an idle, healthy mnesis-agents-runtime
+docker compose --profile agents up -d   # mnesis + mnesis-agents-runtime (scheduled dream cycle)
 ```
 
 The runtime reaches Mnesis over the internal MCP endpoint only, stores durable
-agent state + the run audit on volumes, and — with `MNESIS_LLM_PROVIDER=local`
-in `.env` — keeps the **whole** stack (Mnesis + agents + model) on the host's
-Ollama, no external inference. Concrete agents arrive in later work.
+agent state + the run audit + the proposals queue + reports on volumes, and —
+with `MNESIS_LLM_PROVIDER=local` in `.env` — keeps the **whole** stack (Mnesis +
+agents + model) on the host's Ollama, no external inference.
+
+### Maintenance agents (the dream cycle)
+
+The first concrete agent is the **dream-cycle `MaintenanceAgent`** — a scheduled,
+deterministic curation sweep that keeps Mnesis healthy. It reaches Mnesis **only
+over MCP** and is **governed**: it auto-applies only safe hygiene and turns every
+knowledge-changing op into a **proposal** for human review.
+
+| Pass | Tool(s) | Policy |
+|---|---|---|
+| **quality-sweep** | `mnesis_health_report` | read-only findings |
+| **decay-sweep** | `mnesis_decay` | **auto-apply** (safe hygiene) |
+| **graph-hygiene** | `mnesis_graph_lint` (report → `fix=True`) | **auto-apply** safe fixes only; flag the rest |
+| **contradiction-triage** | `mnesis_review` | **propose** a keep (by confidence/sources/recency) — never resolves |
+| **deduplication** | `mnesis_find_duplicates` | **propose** a merge — never applies |
+
+- **Cadence** — nightly by default (`MNESIS_AGENTS_DREAM_INTERVAL_SECONDS`, default
+  ~daily; a precise cron `MNESIS_AGENTS_DREAM_CRON` needs the APScheduler extra).
+  It is the **single owner** of periodic maintenance — the old `--profile
+  maintenance` sidecar is **retired** (running both would double-run upkeep).
+- **On demand** — `make dream-now` (or `mnesis-agents dream-cycle --now`) runs one
+  cycle immediately; `make dream-report` (or `… --report`) shows the latest report.
+- **Proposals surface** — contradiction and dedup proposals land in a review queue
+  (`proposals.jsonl` on the runtime volume); contradiction proposals annotate the
+  existing Mnesis review by `review_id` and are **never** auto-resolved. The Web UI
+  review screen reads this queue.
+- **Meta-memory** — set `MNESIS_AGENTS_CRYSTALLIZE=1` to file a concise digest of
+  each cycle back into Mnesis (Mnesis's redaction still binds). Default off.
+
+```bash
+make agents-up        # docker compose --profile agents up -d
+make dream-now        # run one cycle now against the running stack
+make dream-report     # show the latest dream-cycle report
+scripts/smoke_dream_cycle.sh   # real-stack smoke (shortened cadence)
+```
 
 ---
 
@@ -416,9 +451,12 @@ and survives `docker compose down`; only `down -v` wipes it. The web UI is on
 ### Optional profiles (not started by a plain `up`)
 
 ```bash
-docker compose --profile maintenance up -d    # periodic decay / graph-lint / rebuild upkeep
+docker compose --profile agents up -d         # the scheduled dream-cycle maintenance agent (periodic upkeep)
 docker compose --profile agent up -d          # the ingest-daemon agent (below)
 ```
+
+> The old `--profile maintenance` upkeep sidecar is **retired** — periodic decay /
+> graph-lint is now owned solely by the dream-cycle agent (`--profile agents`).
 
 ### The ingest-daemon as a service
 
@@ -488,8 +526,8 @@ tagged so they never masquerade as primary sourced facts.
 **Let corroboration and time do their work.** Ingest the same fact from a second
 independent source and confidence rises; the page reinforces rather than
 duplicates. Conversely, don't fight decay — a claim you stop confirming *should*
-lose authority. Run `mnesis decay` (or the maintenance sidecar) so the lifecycle
-stays current.
+lose authority. Run `mnesis decay` (or let the scheduled dream-cycle agent do it)
+so the lifecycle stays current.
 
 **Use the graph before you change things.** Before touching a shared dependency,
 ask `mnesis impact <entity>`. It surfaces the blast radius across pages — including

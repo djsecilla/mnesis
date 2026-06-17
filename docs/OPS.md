@@ -124,12 +124,22 @@ docker compose up -d --force-recreate mnesis
 There is no token stored server-side beyond the env var, so rotation is just an
 env change + recreate. Health (`/health`) stays unauthenticated throughout.
 
-## Maintenance profile & local inference
+## Maintenance (the dream-cycle agent) & local inference
 
-- `docker compose --profile maintenance up -d` — periodic `decay` /
-  `graph-lint --fix` / rebuild-if-missing against the shared volume (committed,
-  git-audited). Tune cadence with `MNESIS_MAINT_INTERVAL`. Not started by a plain
-  `docker compose up`.
+- **Periodic maintenance is owned by the scheduled dream-cycle agent** in the
+  `mnesis-agents-runtime` service: `docker compose --profile agents up -d`. Each
+  cycle runs over MCP — auto-applying safe hygiene (`decay` + safe graph-lint
+  fixes, committed/git-audited server-side) and surfacing contradiction/dedup
+  **proposals** for human review (it never auto-resolves or auto-merges). Cadence:
+  `MNESIS_AGENTS_DREAM_INTERVAL_SECONDS` (default ~daily; a precise cron
+  `MNESIS_AGENTS_DREAM_CRON` needs the APScheduler extra). On demand:
+  `docker compose run --rm mnesis-agents-runtime agents dream-cycle --now`;
+  latest report via `… --report`. Proposals + reports persist on the
+  `mnesis-agents-runs` volume (`proposals.jsonl`, `dream-cycles.jsonl`).
+- **The old `--profile maintenance` sidecar is RETIRED.** It is no longer in
+  `docker-compose.yml`; periodic upkeep now has exactly **one** scheduler (the
+  agent), so there is no double-run. `docker compose run --rm mnesis cli decay`
+  remains a manual one-off (not a scheduler) if you need it.
 - **Local inference** (sources never leave the box): run your own Ollama (or any
   OpenAI-compatible server) on the **host** and set `MNESIS_LLM_PROVIDER=local`
   in `.env` (mnesis reaches it at `MNESIS_LLM_BASE_URL`, default

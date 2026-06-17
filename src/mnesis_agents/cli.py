@@ -24,17 +24,65 @@ def _print_info() -> None:
         if config.MNESIS_LLM_BASE_URL:
             print(f"  base_url    : {config.MNESIS_LLM_BASE_URL}")
     print(f"  mcp endpoint: {config.MNESIS_MCP_URL}")
-    print("  (use `mnesis-agents run` to start the runner)")
+    if config.MNESIS_AGENTS_DREAM_ENABLED:
+        print(f"  dream cycle : ENABLED ({_runner_dream_schedule().describe()})")
+    else:
+        print("  dream cycle : disabled (MNESIS_AGENTS_DREAM_ENABLED=0)")
+    print("  (use `mnesis-agents run` to start the runner, "
+          "or `mnesis-agents dream-cycle --now` to run one now)")
+
+
+def _load_mcp_tools():
+    """Load the Mnesis tools from the live MCP endpoint (read + maintenance +
+    write, so the dream cycle can crystallize). Tests inject fakes instead."""
+    from .knowledge import ToolRegistry, mnesis_mcp_source
+
+    return asyncio.run(ToolRegistry([mnesis_mcp_source()]).get_tools())
+
+
+def _runner_dream_schedule():
+    """The dream-cycle cadence the bundled (interval-only) runner uses.
+
+    Prefers an explicit ``MNESIS_AGENTS_DREAM_INTERVAL_SECONDS``; otherwise
+    approximates the nightly cron as a daily interval (precise cron timing needs
+    the APScheduler extra, which the bundled scheduler does not require)."""
+    from .triggers.schedule import Schedule
+
+    secs = config.MNESIS_AGENTS_DREAM_INTERVAL_SECONDS or 86400.0
+    return Schedule(interval_seconds=secs)
+
+
+def register_maintenance_agent(registry, *, tools=None, schedule=None):
+    """Register the scheduled dream-cycle MaintenanceAgent on ``registry``.
+
+    Reaches Mnesis only over MCP (the injected/loaded tools). The single owner of
+    periodic maintenance now that the D5 sidecar is retired."""
+    from .maintenance_agent import DreamMaintenanceAgent, register_dream_cycle
+
+    if tools is None:
+        tools = _load_mcp_tools()
+    agent = DreamMaintenanceAgent(tools=tools)
+    return register_dream_cycle(registry, agent, schedule=schedule or _runner_dream_schedule())
 
 
 def _build_runner():
-    """Assemble the runner from registered agents. In this scaffold the registry
-    is empty (no concrete agents/connectors), so the runner starts idle."""
+    """Assemble the runner. Registers the scheduled dream-cycle maintenance agent
+    (unless disabled); resilient — if Mnesis is unreachable at startup the runner
+    still comes up idle rather than crashing."""
     from .registry import AgentRegistry
     from .runner import Runner
 
     registry = AgentRegistry()
-    # Concrete agents/connectors register here in later prompts.
+    if config.MNESIS_AGENTS_DREAM_ENABLED:
+        try:
+            sub = register_maintenance_agent(registry)
+            logging.getLogger("mnesis_agents.runner").info(
+                "registered maintenance dream-cycle %r (%s)", sub.name, sub.schedule.describe()
+            )
+        except Exception as exc:  # noqa: BLE001 — never let startup crash the runtime
+            logging.getLogger("mnesis_agents.runner").warning(
+                "could not register dream-cycle maintenance agent (%s); runner stays idle", exc
+            )
     return Runner(registry)
 
 
