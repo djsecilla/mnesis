@@ -133,3 +133,99 @@ class ProposalStore:
         p.updated = _now()
         self._rewrite(items)
         return p
+
+
+# ── Action proposals (A2: the approval-gate surface) ────────────────────────
+
+
+@dataclass
+class ActionProposal:
+    """A proposed outbound action awaiting human approval before any channel runs.
+
+    Recorded durably so it survives a restart and can be listed/approved/rejected
+    out-of-band (the CLI ``mnesis-agents actions``, and the Web review screen
+    later). The ``artifact`` is the serialized :class:`channels.OutboundArtifact`;
+    ``result`` is the serialized :class:`channels.DeliveryResult` once executed.
+    """
+
+    id: str
+    action_type: str
+    channel: str
+    risk_class: str                                 # inert | external (from the channel)
+    artifact: dict[str, Any]
+    destination: str | None
+    rationale: str
+    status: str                                     # pending | executed | rejected | failed
+    created: str
+    updated: str
+    result: dict[str, Any] | None = None
+    decision_note: str | None = None
+    edited: bool = False
+
+    def summary(self) -> str:
+        title = (self.artifact or {}).get("title", "")
+        return (f"{self.id}  [{self.status}]  {self.action_type} via {self.channel} "
+                f"({self.risk_class}) -> {self.destination}  \"{title}\"")
+
+
+class ActionProposalStore:
+    """Durable JSONL queue of action proposals (an extension of the M4 proposals
+    store, same mechanics + directory). Unlike the idempotent dream-cycle queue,
+    each composed action is a **distinct** proposal (a caller-supplied unique id);
+    the gate inserts one and later updates its status/result in place."""
+
+    def __init__(self, directory: Path | str | None = None, *, filename: str = "action_proposals.jsonl") -> None:
+        from .triggers.connector import path_lock
+
+        self.directory = Path(directory or config.MNESIS_AGENTS_PROPOSALS_DIR)
+        self._path = self.directory / filename
+        self._lock = path_lock(self._path)
+
+    def _load(self) -> dict[str, ActionProposal]:
+        out: dict[str, ActionProposal] = {}
+        if not self._path.is_file():
+            return out
+        with open(self._path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if line:
+                    rec = json.loads(line)
+                    out[rec["id"]] = ActionProposal(**rec)
+        return out
+
+    def _rewrite(self, items: dict[str, ActionProposal]) -> None:
+        self.directory.mkdir(parents=True, exist_ok=True)
+        tmp = self._path.with_suffix(self._path.suffix + ".tmp")
+        with open(tmp, "w", encoding="utf-8") as fh:
+            for p in sorted(items.values(), key=lambda p: (p.created, p.id)):
+                fh.write(json.dumps(asdict(p), ensure_ascii=False) + "\n")
+        tmp.replace(self._path)
+
+    def all(self) -> list[ActionProposal]:
+        return sorted(self._load().values(), key=lambda p: (p.created, p.id))
+
+    def list_pending(self) -> list[ActionProposal]:
+        return [p for p in self.all() if p.status == "pending"]
+
+    def get(self, proposal_id: str) -> ActionProposal | None:
+        return self._load().get(proposal_id)
+
+    def put(self, proposal: ActionProposal) -> ActionProposal:
+        with self._lock:
+            items = self._load()
+            items[proposal.id] = proposal
+            self._rewrite(items)
+        return proposal
+
+    def update(self, proposal_id: str, **changes: Any) -> ActionProposal | None:
+        with self._lock:
+            items = self._load()
+            p = items.get(proposal_id)
+            if p is None:
+                return None
+            for k, v in changes.items():
+                setattr(p, k, v)
+            p.updated = _now()
+            items[proposal_id] = p
+            self._rewrite(items)
+        return p

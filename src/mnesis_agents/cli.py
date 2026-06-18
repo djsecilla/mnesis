@@ -205,6 +205,69 @@ def cmd_ingest_note(args: argparse.Namespace) -> int:
     return 0
 
 
+def _build_action_gate():
+    """Build the approval gate over the default inert channels. Tests inject a
+    gate with fakes instead."""
+    from .action_gate import ActionGate
+    from .channels import default_channel_registry
+
+    return ActionGate(default_channel_registry())
+
+
+def cmd_actions(args: argparse.Namespace) -> int:
+    """The approvals surface: list pending action proposals and approve/edit/reject
+    them. No channel executes without an explicit approval here."""
+    from pathlib import Path as _Path
+
+    gate = _build_action_gate()
+    sub = args.subcommand or "list"
+
+    if sub == "list":
+        pending = gate.store.list_pending()
+        if not pending:
+            print("no pending action proposals")
+            return 0
+        print(f"pending action proposals ({len(pending)}):")
+        for p in pending:
+            print(f"  {p.summary()}")
+            if p.rationale:
+                print(f"      rationale: {p.rationale}")
+        return 0
+
+    if not args.proposal_id:
+        print(f"error: `actions {sub}` requires a proposal id")
+        return 2
+
+    if sub == "approve":
+        patch: dict = {}
+        if args.title:
+            patch["title"] = args.title
+        if args.body_file:
+            patch["body"] = _Path(args.body_file).read_text(encoding="utf-8")
+        try:
+            res = gate.approve(
+                args.proposal_id,
+                edited_artifact=patch or None,
+                edited_destination=args.destination,
+                note=args.note,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"error: {exc}")
+            return 2
+        print(f"{res.status}: {args.proposal_id} via {res.channel} -> {res.location or res.error}")
+        return 0 if res.ok else 1
+
+    if sub == "reject":
+        try:
+            gate.reject(args.proposal_id, reason=args.reason or "")
+        except Exception as exc:  # noqa: BLE001
+            print(f"error: {exc}")
+            return 2
+        print(f"rejected: {args.proposal_id} (nothing delivered)")
+        return 0
+    return 2
+
+
 def cmd_dream_cycle(args: argparse.Namespace) -> int:
     """Run the maintenance dream cycle on demand (--now), or show the latest
     persisted report (--report / default)."""
@@ -238,6 +301,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_in = sub.add_parser("ingest-note", help="ingest a note file or directory on demand (backfill)")
     p_in.add_argument("paths", nargs="+", help="one or more .md/.txt files or directories")
     p_in.set_defaults(func=cmd_ingest_note)
+
+    p_act = sub.add_parser("actions", help="approval gate: list/approve/reject pending action proposals")
+    p_act.add_argument("subcommand", nargs="?", choices=["list", "approve", "reject"], default="list")
+    p_act.add_argument("proposal_id", nargs="?", help="the proposal id (for approve/reject)")
+    p_act.add_argument("--destination", help="override the destination on approval (human input)")
+    p_act.add_argument("--title", help="edit the artifact title on approval")
+    p_act.add_argument("--body-file", dest="body_file", help="replace the artifact body from a file")
+    p_act.add_argument("--note", help="a decision note recorded with the approval")
+    p_act.add_argument("--reason", help="a reason recorded with a rejection")
+    p_act.set_defaults(func=cmd_actions)
     return parser
 
 

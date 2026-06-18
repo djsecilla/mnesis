@@ -120,6 +120,30 @@ class AgentAuditLog:
             "error": result.error,
         })
 
+    def write_action_event(self, event: str, proposal, *, run_id: str | None = None) -> None:
+        """Audit an action-gate event — ``proposed`` / ``executed`` /
+        ``execute_failed`` / ``rejected`` / ``auto_executed``. Logs the artifact's
+        IDENTITY (kind/title), the channel, the risk class, and the destination —
+        but **never the artifact body** (it can carry secrets/PII), only its length."""
+        artifact = proposal.artifact or {}
+        result = proposal.result or {}
+        self._append({
+            "run_id": run_id or new_run_id(), "ts": _now(), "type": "action_event",
+            "event": event,
+            "proposal_id": proposal.id,
+            "action_type": proposal.action_type,
+            "channel": proposal.channel,
+            "risk_class": proposal.risk_class,
+            "destination": proposal.destination,
+            "artifact_kind": artifact.get("kind"),
+            "artifact_title": artifact.get("title"),
+            "artifact_body_chars": len(artifact.get("body") or ""),
+            "status": proposal.status,
+            "edited": getattr(proposal, "edited", False),
+            "result_status": result.get("status"),
+            "result_location": result.get("location"),
+        })
+
     def write_dream_cycle(self, report, *, run_id: str) -> None:
         """Mirror a DreamCycleReport into the audit log — counts, statuses, and
         ids only (per-pass name/status/auto-applied/proposal counts, totals, the

@@ -170,6 +170,12 @@ MNESIS_ACTION_NOTIFY_FILE: Path = Path(
     os.environ.get("MNESIS_ACTION_NOTIFY_FILE", str(MNESIS_ACTION_OUTBOX / "notifications.jsonl"))
 ).expanduser()
 
+#: The approval gate (A2): EVERY action is gated (proposed → human-approved) before
+#: any channel runs. This flag is the *future* escape hatch that could let an INERT
+#: channel auto-run — **leave it OFF**. EXTERNAL channels are ALWAYS gated
+#: regardless of this flag (the always-gated rule, enforced in the gate).
+MNESIS_ACTIONS_AUTO_RUN_INERT: bool = _bool("MNESIS_ACTIONS_AUTO_RUN_INERT", False)
+
 #: LangGraph checkpointer backend ("sqlite" default; "memory" for ephemeral).
 MNESIS_AGENTS_CHECKPOINT_BACKEND: str = os.environ.get(
     "MNESIS_AGENTS_CHECKPOINT_BACKEND", "sqlite"
