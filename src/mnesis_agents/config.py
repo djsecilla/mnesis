@@ -176,6 +176,33 @@ MNESIS_ACTION_NOTIFY_FILE: Path = Path(
 #: regardless of this flag (the always-gated rule, enforced in the gate).
 MNESIS_ACTIONS_AUTO_RUN_INERT: bool = _bool("MNESIS_ACTIONS_AUTO_RUN_INERT", False)
 
+# ── Action agent (A4) ───────────────────────────────────────────────────────
+
+#: action_type -> compose-skill mapping (comma-separated ``type:skill`` pairs).
+#: Adding an action is: a compose skill + ONE entry here. Default maps the
+#: prepare-meeting-brief action to its skill.
+MNESIS_AGENTS_ACTION_SKILLS: str = os.environ.get(
+    "MNESIS_AGENTS_ACTION_SKILLS", "prepare-meeting-brief:prepare-meeting-brief"
+)
+
+
+def action_skill_map() -> dict[str, str]:
+    """Resolve ``MNESIS_AGENTS_ACTION_SKILLS`` to a ``{action_type: skill}`` dict."""
+    out: dict[str, str] = {}
+    for pair in MNESIS_AGENTS_ACTION_SKILLS.split(","):
+        pair = pair.strip()
+        if not pair or ":" not in pair:
+            continue
+        atype, skill = pair.split(":", 1)
+        if atype.strip() and skill.strip():
+            out[atype.strip()] = skill.strip()
+    return out
+
+
+#: The default delivery channel the action agent proposes to (POLICY, never from
+#: content). The inert draft outbox — nothing is sent; a human approves at the gate.
+MNESIS_AGENTS_ACTION_CHANNEL: str = os.environ.get("MNESIS_AGENTS_ACTION_CHANNEL", "draft-outbox")
+
 #: LangGraph checkpointer backend ("sqlite" default; "memory" for ephemeral).
 MNESIS_AGENTS_CHECKPOINT_BACKEND: str = os.environ.get(
     "MNESIS_AGENTS_CHECKPOINT_BACKEND", "sqlite"

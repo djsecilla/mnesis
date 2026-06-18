@@ -205,6 +205,51 @@ def cmd_ingest_note(args: argparse.Namespace) -> int:
     return 0
 
 
+def _build_action_agent():
+    """Build the action agent over the LIVE Mnesis MCP read tools. Tests inject
+    fakes instead."""
+    from .action_agent import GroundedActionAgent
+    from .knowledge import ToolRegistry, mnesis_mcp_source
+
+    tools = asyncio.run(ToolRegistry([mnesis_mcp_source()]).get_tools())
+    return GroundedActionAgent(tools=tools)
+
+
+def _load_context(value: str | None) -> dict:
+    from pathlib import Path as _Path
+
+    if not value:
+        return {}
+    p = _Path(value)
+    raw = p.read_text(encoding="utf-8") if p.is_file() else value
+    import json as _json
+
+    return _json.loads(raw)
+
+
+def cmd_action(args: argparse.Namespace) -> int:
+    """On-demand: compose an action artifact and PROPOSE it (nothing is delivered
+    — approve at the gate with `mnesis-agents actions approve <id>`)."""
+    agent = _build_action_agent()
+    try:
+        context = _load_context(args.context)
+    except Exception as exc:  # noqa: BLE001
+        print(f"error: could not read --context ({exc})")
+        return 2
+    res = agent.run_action(args.action_type, context,
+                           destination=args.destination, channel=args.channel)
+    print(f"{res.status}: {res.action_type} -> proposal {res.proposal_id} "
+          f"(cites {len(res.citations)})")
+    if res.title:
+        print(f"  title: {res.title}")
+    if res.status in ("proposed", "duplicate"):
+        print(f"  review/approve: mnesis-agents actions approve {res.proposal_id}")
+    if res.error:
+        print(f"  error: {res.error}")
+        return 1
+    return 0
+
+
 def _build_action_gate():
     """Build the approval gate over the default inert channels. Tests inject a
     gate with fakes instead."""
@@ -301,6 +346,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_in = sub.add_parser("ingest-note", help="ingest a note file or directory on demand (backfill)")
     p_in.add_argument("paths", nargs="+", help="one or more .md/.txt files or directories")
     p_in.set_defaults(func=cmd_ingest_note)
+
+    p_action = sub.add_parser("action", help="compose an action artifact and propose it (gated)")
+    p_action.add_argument("action_type", help="the action type (e.g. prepare-meeting-brief)")
+    p_action.add_argument("--context", help="JSON context (a string or a file path), e.g. the meeting")
+    p_action.add_argument("--destination", help="delivery destination (policy/user input — never content)")
+    p_action.add_argument("--channel", help="override the delivery channel (default: policy)")
+    p_action.set_defaults(func=cmd_action)
 
     p_act = sub.add_parser("actions", help="approval gate: list/approve/reject pending action proposals")
     p_act.add_argument("subcommand", nargs="?", choices=["list", "approve", "reject"], default="list")
