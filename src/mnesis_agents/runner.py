@@ -86,6 +86,15 @@ class Runner:
         if self._consume_tasks:
             await asyncio.gather(*self._consume_tasks, return_exceptions=True)
         self._consume_tasks.clear()
+        # Halt any stateful triggers (source connectors) cleanly — their detection
+        # loops (poll/watch) run independently of the consume task.
+        for trigger in self.event_triggers:
+            stop = getattr(trigger, "stop", None)
+            if callable(stop):
+                try:
+                    await stop()
+                except Exception:  # noqa: BLE001 — a stubborn connector never blocks shutdown
+                    log.warning("trigger %r stop failed", getattr(trigger, "name", "?"), exc_info=True)
         await self._scheduler.stop()
         self._shutdown.set()
         log.info("runner stopped")

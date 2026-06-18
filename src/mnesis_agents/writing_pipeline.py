@@ -67,8 +67,12 @@ class DeadLetterStore:
     the failure reason and the attempt count. Durable, inspectable, gitignored."""
 
     def __init__(self, directory: Path | str | None = None, *, filename: str = "dead-letter.jsonl") -> None:
+        from .triggers.connector import path_lock
+
         self.directory = Path(directory or config.MNESIS_AGENTS_DEAD_LETTER_DIR)
         self._path = self.directory / filename
+        # Guard the read-modify-write against concurrent batch workers.
+        self._lock = path_lock(self._path)
 
     def _load(self) -> dict[str, DeadLetterEntry]:
         out: dict[str, DeadLetterEntry] = {}
@@ -97,17 +101,18 @@ class DeadLetterStore:
         self, *, source_type: str | None, source_ref: str | None, content_hash: str | None,
         reason: str, attempts: int,
     ) -> DeadLetterEntry:
-        items = self._load()
-        kid = _key(source_ref, content_hash)
-        now = _now()
-        existing = items.get(kid)
-        entry = DeadLetterEntry(
-            id=kid, source_type=source_type, source_ref=source_ref, content_hash=content_hash,
-            reason=reason, attempts=attempts,
-            first_seen=existing.first_seen if existing else now, updated=now,
-        )
-        items[kid] = entry
-        self._rewrite(items)
+        with self._lock:
+            items = self._load()
+            kid = _key(source_ref, content_hash)
+            now = _now()
+            existing = items.get(kid)
+            entry = DeadLetterEntry(
+                id=kid, source_type=source_type, source_ref=source_ref, content_hash=content_hash,
+                reason=reason, attempts=attempts,
+                first_seen=existing.first_seen if existing else now, updated=now,
+            )
+            items[kid] = entry
+            self._rewrite(items)
         return entry
 
     def all(self) -> list[DeadLetterEntry]:

@@ -155,18 +155,23 @@ services:
   # --- LangGraph agentic runtime (profile: agents) -----------------------------
   # NOT started by a plain `up`. Bring it up with:
   #   docker compose --profile agents up -d
-  # Runs `mnesis-agents run` — the multi-LLM LangGraph foundation host. It now
-  # registers the scheduled **dream-cycle MaintenanceAgent** and is the SINGLE
-  # owner of periodic maintenance (the D5 `maintenance` sidecar is retired — see
-  # the note below). Each cycle runs the maintenance passes over Mnesis ONLY via
-  # the internal MCP endpoint (it never imports the core): it auto-applies safe
-  # hygiene (decay + safe graph fixes), queues contradiction/dedup proposals for
-  # human review, and writes a report — all governed; Mnesis's own redaction +
-  # review still gate every write server-side. Durable agent state (checkpoints),
-  # the run audit, the proposals queue, and reports live on volumes. Setting
-  # MNESIS_LLM_PROVIDER=local in .env keeps the WHOLE stack (Mnesis + agents +
-  # model) on the host's Ollama — no external inference. The dream cycle itself is
-  # deterministic and makes no model calls.
+  # Runs `mnesis-agents run` — the multi-LLM LangGraph foundation host. It
+  # registers TWO concrete agents over the internal MCP endpoint (it never imports
+  # the core):
+  #   1. the scheduled **dream-cycle MaintenanceAgent** — the SINGLE owner of
+  #      periodic maintenance (the D5 `maintenance` sidecar is retired — see the
+  #      note below): auto-applies safe hygiene (decay + safe graph fixes), queues
+  #      contradiction/dedup proposals for review, and writes a report; and
+  #   2. the **notes-inbox WritingAgent** — watches the mounted /data/notes_inbox
+  #      and ingests new/changed .md/.txt notes via mnesis_ingest (dedup +
+  #      retry/backoff + dead-letter for poison items).
+  # Everything is governed; Mnesis's own redaction + routing + review gate every
+  # write server-side. Durable agent state (checkpoints), the run audit, the
+  # proposals queue, reports, the connector ledger, and the dead-letter live on
+  # volumes. Setting MNESIS_LLM_PROVIDER=local in .env keeps the WHOLE stack
+  # (Mnesis + agents + model) on the host's Ollama — no external inference; neither
+  # agent makes model calls (the dream cycle is deterministic; the writing agent
+  # only calls mnesis_ingest, and Mnesis runs extraction on the local model).
   mnesis-agents-runtime:
     build: .
     image: mnesis:latest
@@ -195,15 +200,30 @@ services:
       MNESIS_AGENTS_DREAM_INTERVAL_SECONDS: ${MNESIS_AGENTS_DREAM_INTERVAL_SECONDS:-86400}
       # Meta-memory: file a digest of each cycle back into Mnesis. Default OFF.
       MNESIS_AGENTS_CRYSTALLIZE: ${MNESIS_AGENTS_CRYSTALLIZE:-}
-      # Durable state + audit + proposals/reports on the mounted volumes.
+      # Notes-inbox writing agent: watch the mounted inbox and ingest new/changed
+      # .md/.txt notes into Mnesis over MCP (Mnesis redacts + routes server-side;
+      # the agent makes no LLM calls, so local-llm stays fully on-prem). poll mode
+      # is the container-friendly default (filesystem events across bind mounts can
+      # be unreliable). Inbound note content is treated as DATA, never instructions.
+      MNESIS_NOTES_ENABLED: ${MNESIS_NOTES_ENABLED:-1}
+      MNESIS_NOTES_INBOX: /data/notes_inbox
+      MNESIS_NOTES_MODE: ${MNESIS_NOTES_MODE:-poll}
+      MNESIS_NOTES_POLL_INTERVAL: ${MNESIS_NOTES_POLL_INTERVAL:-5}
+      # Durable state + audit + proposals/reports + connector ledger + dead-letter
+      # on the mounted volumes.
       MNESIS_AGENTS_CHECKPOINT_DB: /data/agents_state/checkpoints.db
       MNESIS_AGENTS_AUDIT_DIR: /data/agents_runs
       MNESIS_AGENTS_PROPOSALS_DIR: /data/agents_runs
+      MNESIS_AGENTS_CONNECTOR_STATE_DIR: /data/agents_runs/connectors
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
       - mnesis-agents-state:/data/agents_state    # LangGraph checkpoints (resumable threads)
-      - mnesis-agents-runs:/data/agents_runs       # run audit (JSONL) + proposals queue + reports
+      - mnesis-agents-runs:/data/agents_runs       # run audit + proposals + reports + connector ledger + dead-letter
+      # Drop .md/.txt notes here on the host to ingest them. Read-only: the writing
+      # agent only reads notes (it ingests over MCP; the processed ledger lives on
+      # the agents-runs volume, not here).
+      - ${MNESIS_NOTES_INBOX_DIR:-./notes_inbox}:/data/notes_inbox:ro
     healthcheck:
       # No HTTP server (idle host); "healthy" = it can reach mnesis over the net.
       test:

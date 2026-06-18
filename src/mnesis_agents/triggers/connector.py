@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sqlite3
+import threading
 from abc import abstractmethod
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
@@ -44,6 +45,24 @@ log = logging.getLogger("mnesis_agents.connector")
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+# A per-file lock so concurrent threads (the W4 bounded-concurrency batch runs the
+# agent in worker threads, all sharing one ledger) serialize SQLite access — WAL's
+# busy_timeout does not cover the journal-mode pragma, so we guard in-process.
+_FILE_LOCKS: dict[str, threading.Lock] = {}
+_FILE_LOCKS_GUARD = threading.Lock()
+
+
+def path_lock(path: Path | str) -> threading.Lock:
+    """A process-wide lock shared by every accessor of the same file path."""
+    key = str(Path(path).resolve())
+    with _FILE_LOCKS_GUARD:
+        lock = _FILE_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _FILE_LOCKS[key] = lock
+        return lock
 
 
 # ── Processed-state store (durable idempotency ledger) ──────────────────────
@@ -60,12 +79,16 @@ class ProcessedStore:
 
     def __init__(self, path: Path | str) -> None:
         self.path = Path(path)
+        self._lock = path_lock(self.path)
 
     def _connect(self) -> sqlite3.Connection:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(self.path)
+        conn = sqlite3.connect(self.path, timeout=30)
+        # busy_timeout FIRST, so the WAL-mode pragma and the CREATE/INSERTs that
+        # follow WAIT on a lock rather than erroring — the connector ledger is
+        # written concurrently by the W4 pipeline (bounded-concurrency batches).
+        conn.execute("PRAGMA busy_timeout=10000")
         conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=5000")
         conn.row_factory = sqlite3.Row
         conn.execute(
             """
@@ -82,46 +105,49 @@ class ProcessedStore:
         return conn
 
     def seen(self, source_ref: str, content_hash: str) -> bool:
-        conn = self._connect()
-        try:
-            row = conn.execute(
-                "SELECT 1 FROM processed WHERE source_ref = ? AND content_hash = ?",
-                (source_ref, content_hash),
-            ).fetchone()
-        finally:
-            conn.close()
+        with self._lock:
+            conn = self._connect()
+            try:
+                row = conn.execute(
+                    "SELECT 1 FROM processed WHERE source_ref = ? AND content_hash = ?",
+                    (source_ref, content_hash),
+                ).fetchone()
+            finally:
+                conn.close()
         return row is not None
 
     def status(self, source_ref: str, content_hash: str) -> str | None:
         """The recorded status (``emitted``/``processed``) for an item, or ``None``
         if unseen. Lets a consumer skip an item that was already *processed* (acked)
         rather than merely emitted."""
-        conn = self._connect()
-        try:
-            row = conn.execute(
-                "SELECT status FROM processed WHERE source_ref = ? AND content_hash = ?",
-                (source_ref, content_hash),
-            ).fetchone()
-        finally:
-            conn.close()
+        with self._lock:
+            conn = self._connect()
+            try:
+                row = conn.execute(
+                    "SELECT status FROM processed WHERE source_ref = ? AND content_hash = ?",
+                    (source_ref, content_hash),
+                ).fetchone()
+            finally:
+                conn.close()
         return row["status"] if row is not None else None
 
     def record(self, source_ref: str, content_hash: str, status: str = "emitted") -> None:
-        conn = self._connect()
-        try:
-            now = _now()
-            conn.execute(
-                """
-                INSERT INTO processed (source_ref, content_hash, status, first_seen, updated)
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(source_ref, content_hash) DO UPDATE SET
-                    status = excluded.status, updated = excluded.updated
-                """,
-                (source_ref, content_hash, status, now, now),
-            )
-            conn.commit()
-        finally:
-            conn.close()
+        with self._lock:
+            conn = self._connect()
+            try:
+                now = _now()
+                conn.execute(
+                    """
+                    INSERT INTO processed (source_ref, content_hash, status, first_seen, updated)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(source_ref, content_hash) DO UPDATE SET
+                        status = excluded.status, updated = excluded.updated
+                    """,
+                    (source_ref, content_hash, status, now, now),
+                )
+                conn.commit()
+            finally:
+                conn.close()
 
     def mark_processed(self, source_ref: str, content_hash: str) -> None:
         """Mark a previously-emitted item fully processed (after a successful ack)."""
@@ -129,14 +155,15 @@ class ProcessedStore:
             self.record(source_ref, content_hash, "processed")
 
     def all(self) -> list[dict]:
-        conn = self._connect()
-        try:
-            rows = conn.execute(
-                "SELECT source_ref, content_hash, status, first_seen, updated "
-                "FROM processed ORDER BY first_seen"
-            ).fetchall()
-        finally:
-            conn.close()
+        with self._lock:
+            conn = self._connect()
+            try:
+                rows = conn.execute(
+                    "SELECT source_ref, content_hash, status, first_seen, updated "
+                    "FROM processed ORDER BY first_seen"
+                ).fetchall()
+            finally:
+                conn.close()
         return [dict(r) for r in rows]
 
 

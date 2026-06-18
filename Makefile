@@ -91,14 +91,17 @@ agent-assistant: ## Interactive grounded assistant REPL against the running stac
 
 # --- LangGraph agentic runtime: the scheduled dream cycle -------------------
 
-agents-up: ## Start the agentic runtime (scheduled dream-cycle maintenance): docker compose --profile agents up -d
+agents-up: ## Start the agentic runtime (dream-cycle + notes-inbox writing agent): docker compose --profile agents up -d
 	docker compose --profile agents up -d
 
 agents-down: ## Stop the agentic runtime (mnesis stays up)
 	docker compose rm -sf mnesis-agents-runtime
 
-agents-logs: ## Tail the agentic runtime logs (dream-cycle runs)
+agents-logs: ## Tail the agentic runtime logs (dream-cycle + notes-inbox)
 	docker compose logs -f mnesis-agents-runtime
+
+ingest-note: ## Backfill notes on demand (container path): make ingest-note NOTE=/data/notes_inbox
+	docker compose run --rm mnesis-agents-runtime agents ingest-note "$(NOTE)"
 
 dream-now: ## Run one maintenance dream cycle on demand against the running stack
 	docker compose run --rm mnesis-agents-runtime agents dream-cycle --now

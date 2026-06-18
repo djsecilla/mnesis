@@ -9,5 +9,7 @@ dist/
 agent_runs/
 agent_watch/*
 !agent_watch/.gitkeep
+notes_inbox/*
+!notes_inbox/.gitkeep
 mnesis_agents_runs/
 mnesis_agents.checkpoints.db*

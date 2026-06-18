@@ -28,8 +28,12 @@ def _print_info() -> None:
         print(f"  dream cycle : ENABLED ({_runner_dream_schedule().describe()})")
     else:
         print("  dream cycle : disabled (MNESIS_AGENTS_DREAM_ENABLED=0)")
+    if config.MNESIS_NOTES_ENABLED:
+        print(f"  notes inbox : ENABLED ({config.MNESIS_NOTES_INBOX}, {config.MNESIS_NOTES_MODE} mode)")
+    else:
+        print("  notes inbox : disabled (MNESIS_NOTES_ENABLED=0)")
     print("  (use `mnesis-agents run` to start the runner, "
-          "or `mnesis-agents dream-cycle --now` to run one now)")
+          "`mnesis-agents dream-cycle --now`, or `mnesis-agents ingest-note <file|dir>`)")
 
 
 def _load_mcp_tools():
@@ -65,25 +69,81 @@ def register_maintenance_agent(registry, *, tools=None, schedule=None):
     return register_dream_cycle(registry, agent, schedule=schedule or _runner_dream_schedule())
 
 
+def register_notes_writer(
+    registry, *, tools=None, connector=None, agent=None, pipeline=None,
+    processed_store=None, dead_letter=None,
+):
+    """Register the notes-inbox connector + WritingAgent on ``registry``.
+
+    Wires an event subscription whose handler runs the writing pipeline
+    (dedup/retry/dead-letter) per inbound note. The connector and the agent share
+    one ``ProcessedStore`` so a processed note is never re-ingested. Reaches Mnesis
+    only over MCP (the injected/loaded tools). Returns ``(connector, sub,
+    pipeline)`` — the connector is added to the runner's event triggers."""
+    from .connectors.notes import NotesInboxConnector
+    from .triggers.connector import ProcessedStore
+    from .writing_agent import SourceWritingAgent
+    from .writing_pipeline import WritingPipeline
+
+    store = processed_store or ProcessedStore(
+        config.MNESIS_AGENTS_CONNECTOR_STATE_DIR / "notes.sqlite"
+    )
+    if connector is None:
+        connector = NotesInboxConnector(processed_store=store)
+    if agent is None:
+        if tools is None:
+            tools = _load_mcp_tools()
+        agent = SourceWritingAgent(tools=tools, processed_store=store)
+    pipeline = pipeline or WritingPipeline(agent, dead_letter=dead_letter)
+
+    # A file the connector cannot even read (unreadable/oversized) is dead-lettered
+    # with a reason too — no silent loss at the detection boundary either.
+    def _on_connector_error(err):
+        try:
+            pipeline.dead_letter.add(
+                source_type=connector.name, source_ref=err.source_ref, content_hash=None,
+                reason=f"connector/{err.error}: {err.detail}", attempts=0,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+    connector._error_handler = _on_connector_error
+
+    async def handler(event):
+        return await pipeline.process_event(event)
+
+    sub = registry.on_event("notes-writer", handler, source=connector.name)
+    return connector, sub, pipeline
+
+
 def _build_runner():
     """Assemble the runner. Registers the scheduled dream-cycle maintenance agent
-    (unless disabled); resilient — if Mnesis is unreachable at startup the runner
-    still comes up idle rather than crashing."""
+    and the notes-inbox writing agent (each unless disabled); resilient — if Mnesis
+    is unreachable at startup the runner still comes up rather than crashing."""
     from .registry import AgentRegistry
     from .runner import Runner
 
+    log = logging.getLogger("mnesis_agents.runner")
     registry = AgentRegistry()
+    event_triggers: list = []
+
     if config.MNESIS_AGENTS_DREAM_ENABLED:
         try:
             sub = register_maintenance_agent(registry)
-            logging.getLogger("mnesis_agents.runner").info(
-                "registered maintenance dream-cycle %r (%s)", sub.name, sub.schedule.describe()
-            )
+            log.info("registered maintenance dream-cycle %r (%s)", sub.name, sub.schedule.describe())
         except Exception as exc:  # noqa: BLE001 — never let startup crash the runtime
-            logging.getLogger("mnesis_agents.runner").warning(
-                "could not register dream-cycle maintenance agent (%s); runner stays idle", exc
-            )
-    return Runner(registry)
+            log.warning("could not register dream-cycle maintenance agent (%s); continuing", exc)
+
+    if config.MNESIS_NOTES_ENABLED:
+        try:
+            connector, _sub, _pipeline = register_notes_writer(registry)
+            event_triggers.append(connector)
+            log.info("registered notes-inbox writer watching %s (%s mode)",
+                     connector.inbox, connector.mode)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("could not register notes-inbox writer (%s); continuing", exc)
+
+    return Runner(registry, event_triggers=event_triggers)
 
 
 def cmd_run(_args: argparse.Namespace) -> int:

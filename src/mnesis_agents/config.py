@@ -82,6 +82,10 @@ MNESIS_AGENTS_CONNECTOR_STATE_DIR: Path = Path(
     os.environ.get("MNESIS_AGENTS_CONNECTOR_STATE_DIR", str(MNESIS_AGENTS_AUDIT_DIR / "connectors"))
 ).expanduser()
 
+#: Whether the deployed runtime (`mnesis-agents run`) registers the notes-inbox
+#: connector + writing agent (watch the inbox and ingest). Default ON.
+MNESIS_NOTES_ENABLED: bool = _bool("MNESIS_NOTES_ENABLED", True)
+
 #: Notes-inbox connector — the folder it watches for new/changed .md/.txt notes.
 MNESIS_NOTES_INBOX: Path = Path(
     os.environ.get("MNESIS_NOTES_INBOX", "./notes_inbox")

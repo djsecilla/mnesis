@@ -96,7 +96,9 @@ def test_build_runner_idle_when_mcp_unreachable(monkeypatch):
 
 
 def test_build_runner_idle_when_disabled(monkeypatch):
+    # Both agent families disabled → a truly idle runner that never loads tools.
     monkeypatch.setattr(config, "MNESIS_AGENTS_DREAM_ENABLED", False)
+    monkeypatch.setattr(config, "MNESIS_NOTES_ENABLED", False)
     calls = {"n": 0}
 
     def spy():
@@ -105,4 +107,4 @@ def test_build_runner_idle_when_disabled(monkeypatch):
 
     monkeypatch.setattr(cli, "_load_mcp_tools", spy)
     runner = cli._build_runner()
-    assert runner.registry.is_empty and calls["n"] == 0  # not even loaded
+    assert runner.registry.is_empty and not runner.event_triggers and calls["n"] == 0

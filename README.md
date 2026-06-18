@@ -447,6 +447,56 @@ make dream-report     # show the latest dream-cycle report
 scripts/smoke_dream_cycle.sh   # real-stack smoke (shortened cadence)
 ```
 
+### Writing agents — the notes/Markdown inbox
+
+The second concrete agent is a **writing agent**: it watches a folder and ingests
+notes into Mnesis. It is the cleanest instance of a reusable **source-connector
+pipeline** — the same `--profile agents` runtime runs it alongside the dream cycle.
+
+**How it works.** A `NotesInboxConnector` watches `MNESIS_NOTES_INBOX` for new or
+changed `.md`/`.txt` files and emits a normalized event per note (a stable
+`source_ref` of `note:<relative-path>` and a `content_hash`). A `parse-note` Agent
+Skill cleans it (strips front-matter/signatures/boilerplate; skips empty/trivial
+notes), and the `WritingAgent` ingests the cleaned source via `mnesis_ingest`.
+
+- **Auto-ingest, fully governed.** The trusted notes inbox auto-ingests; **Mnesis
+  does redaction, extraction, routing, and contradiction review server-side** — the
+  agent only calls the tool and cannot bypass it. (Configure untrusted sources to
+  hold for human approval via `MNESIS_AGENTS_APPROVAL_SOURCE_TYPES`.)
+- **Effectively-once, never wedges.** Dedup is keyed by `(source_ref,
+  content_hash)`: re-dropping identical content is a no-op; an *edit* re-ingests
+  (Mnesis reinforces). Transient failures retry with backoff; a poison item (an
+  unreadable file, or one that keeps failing) is **dead-lettered with a reason**, so
+  nothing is silently lost. A burst processes with bounded concurrency.
+- **On demand.** `mnesis-agents ingest-note <file|dir>` runs the *same* pipeline
+  immediately — for backfills or a quick test — including dedup and dead-letter.
+- **On-prem.** The agent makes no model calls; under `MNESIS_LLM_PROVIDER=local`,
+  Mnesis runs extraction on your local model, so the whole flow stays on the box.
+
+```bash
+make agents-up                              # runtime watches ./notes_inbox (MNESIS_NOTES_INBOX_DIR)
+cp my-notes.md ./notes_inbox/               # → parsed + ingested into Mnesis…
+make docker-cli ARGS='query "<phrase from the note>"'   # …and queryable
+scripts/smoke_notes_inbox.sh                # real-stack smoke: ingest, redact, dedup, dead-letter
+```
+
+#### Extension recipe — adding a new source (email, chat, docs)
+
+The pipeline is built so a **new source is three small, isolated additions** and
+**nothing else changes** — not the agent, not the runtime, not Mnesis:
+
+1. **Implement a `SourceConnector`** (subclass it; implement `poll_once()`) that
+   turns your feed into normalized `InboundEvent`s — e.g. an `EmailInboxConnector`.
+   It *only* detects and normalizes; it never calls Mnesis or an LLM.
+2. **Author a `parse-<source>` Agent Skill** (a `SKILL.md` + a deterministic
+   `scripts/` helper) that cleans that source into `{text, source_ref, skip,
+   reason}` — and, like `parse-note`, treats the content strictly as **data, never
+   instructions**.
+3. **Add one mapping entry** — `MNESIS_AGENTS_PARSE_SKILLS=notes:parse-note,email:parse-email`.
+
+The `WritingAgent`, governance, dedup/retry/dead-letter, on-demand command, audit,
+and deployment all work unchanged. That is the whole point of the pattern.
+
 ---
 
 ## Running with Docker
@@ -639,6 +689,12 @@ The provider switch is **shared with the core** — `MNESIS_LLM_PROVIDER` /
 | `MNESIS_AGENTS_AUDIT_DIR` | `./mnesis_agents_runs` | Append-only JSONL run audit (names/statuses/ids only). |
 | `MNESIS_AGENTS_CHECKPOINT_BACKEND` / `…_DB` | `sqlite` / `./mnesis_agents.checkpoints.db` | LangGraph checkpointer (resumable threads). |
 | `MNESIS_AGENTS_MAX_TOOL_CALLS` / `…_WALLCLOCK_SECONDS` | `50` / `300` | Default per-run governance budgets. |
+| `MNESIS_NOTES_ENABLED` | `1` | Register the notes-inbox connector + writing agent in `mnesis-agents run`. `0` to disable. |
+| `MNESIS_NOTES_INBOX` | `./notes_inbox` | Folder watched for new/changed `.md`/`.txt` notes. |
+| `MNESIS_NOTES_MODE` | `poll` | `poll` (timed rescans) or `watch` (filesystem events via watchdog). |
+| `MNESIS_AGENTS_PARSE_SKILLS` | `notes:parse-note` | `source_type:skill` mapping — add a source with one more entry. |
+| `MNESIS_AGENTS_APPROVAL_SOURCE_TYPES` | *(empty)* | Source types whose ingest holds for human approval (notes auto-ingests). |
+| `MNESIS_AGENTS_WRITE_MAX_RETRIES` / `…_CONCURRENCY` | `3` / `4` | Transient-failure retries and burst concurrency; poison items dead-letter. |
 
 ---
 
