@@ -20,6 +20,16 @@ Rule of thumb: **everything in `.index/` except `state.db` is a cache** that
 `mnesis rebuild` reconstructs from Markdown (+ `state.db`). Confidence and the
 graph degrade gracefully to their Markdown-only values if `state.db` is lost.
 
+**Agent runtimes are stateless w.r.t. knowledge.** The `--profile agent` /
+`--profile agents` services hold **no canonical state** — all knowledge lives in
+`mnesis`. Their volumes (`mnesis-agent-runs`, and `mnesis-agents-runs` /
+`mnesis-agents-state`) carry only agent artefacts: the append-only run audit, the
+LangGraph checkpoints (resumable threads), and the dream-cycle **proposals queue +
+reports**. None of it is canonical: losing it is survivable (the next dream cycle
+re-derives its proposals; reports are a log), so it is **not** part of the
+must-back-up layer above. Knowledge changes the agents make still go through
+`mnesis` and are captured in its git history.
+
 ## Backup
 
 A backup is the **git bundle of the canonical layer** plus a **copy of

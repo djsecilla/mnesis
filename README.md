@@ -25,7 +25,8 @@ is the intended design.
 - [Quickstart](#quickstart)
 - [Using the CLI](#using-the-cli)
 - [The three surfaces](#the-three-surfaces) — CLI · MCP · Web UI
-- [The agent layer](#the-agent-layer)
+- [The agent layer](#the-agent-layer) — the runtime agent (`mnesis-agent`)
+- [The LangGraph agent foundation](#the-langgraph-agent-foundation) — multi-LLM agents + the maintenance **dream cycle**
 - [Running with Docker](#running-with-docker)
 - [Making the most of mnesis](#making-the-most-of-mnesis) — best practices
 - [Configuration reference](#configuration-reference)
@@ -45,6 +46,7 @@ is the intended design.
 | **Typed knowledge graph** | Entities and typed relations are extracted into a graph you can traverse and run **impact analysis** over ("what breaks if I change Redis?"). |
 | **Three surfaces, one core** | The same core is reached by a **CLI** (humans/scripts), an **MCP server** (agents), and a **web UI** (browser) — none has private state. |
 | **A runtime agent layer** | A separately-deployable agent that uses mnesis as memory — grounded assistant, multi-step researcher, and an ingest daemon — reaching it **only over MCP**. |
+| **Self-curating maintenance** | A multi-LLM LangGraph foundation whose first agent is a scheduled **dream cycle** that keeps the KB healthy — auto-applying safe hygiene (decay, graph fixes) and surfacing contradiction/dedup **proposals** for review, all over MCP and governed. |
 | **Runs offline & on-prem** | A deterministic stub runs with no network; a local-model mode (Ollama) keeps inference and sources entirely on your machine. |
 
 ---
@@ -258,11 +260,20 @@ For humans, scripts, and maintenance — the full command set above.
 
 ### MCP server (for agents)
 
-mnesis exposes **15 tools** over MCP: `mnesis_ingest`, `mnesis_query`,
-`mnesis_get`, `mnesis_file_back`, `mnesis_list`, `mnesis_rebuild`, `mnesis_decay`,
-`mnesis_review`, `mnesis_resolve`, and the graph tools `mnesis_entity`,
-`mnesis_neighbors`, `mnesis_traverse`, `mnesis_impact`, `mnesis_graph_stats`,
-`mnesis_graph_lint`.
+mnesis exposes **17 tools** over MCP:
+
+- **knowledge** — `mnesis_ingest`, `mnesis_query`, `mnesis_get`,
+  `mnesis_file_back`, `mnesis_list`, `mnesis_rebuild`;
+- **lifecycle** — `mnesis_decay`, `mnesis_review`, `mnesis_resolve`;
+- **graph** — `mnesis_entity`, `mnesis_neighbors`, `mnesis_traverse`,
+  `mnesis_impact`, `mnesis_graph_stats`, `mnesis_graph_lint`;
+- **maintenance / curation** (read-only diagnostics) — `mnesis_health_report`
+  (a side-effect-free system-health snapshot) and `mnesis_find_duplicates` (a
+  heuristic near-duplicate finder that proposes nothing).
+
+These are the same internals the CLI and Web UI use, behind the same authenticated
+endpoint — and the surface the scheduled [maintenance dream
+cycle](#maintenance-agents-the-dream-cycle) drives.
 
 **Local (stdio), zero config.** This repo ships [`.mcp.json`](.mcp.json), so
 running `claude` from the project root auto-discovers the server (approve it, then
@@ -349,12 +360,14 @@ The dockerized daemon and one-off runs are covered under
 
 ---
 
-## Agentic layer (LangChain foundation)
+## The LangGraph agent foundation
 
-A second, **LangGraph-based** agent foundation (`mnesis_agents`) provides the
-substrate that concrete agents will be built on. It is **multi-LLM from the
-ground up** and reaches Mnesis **only over MCP**. There are **no concrete agents
-yet** — this is the base, the category abstractions, and an idle runtime.
+A second, **LangGraph-based** agent foundation (`mnesis_agents`) is the substrate
+concrete agents are built on. It is **multi-LLM from the ground up** and reaches
+Mnesis **only over MCP**. The base, the category abstractions, the runtime, and
+the **first concrete agent — the scheduled
+[dream-cycle `MaintenanceAgent`](#maintenance-agents-the-dream-cycle)** — exist
+today.
 
 - **Multi-LLM, shared by Mnesis too.** A single provider switch
   (`MNESIS_LLM_PROVIDER`) selects the model for **both** Mnesis's own
@@ -368,20 +381,27 @@ yet** — this is the base, the category abstractions, and an idle runtime.
 - **Agent Skills (agentskills.io)** — SKILL.md folders with progressive
   disclosure (the same format Claude Code uses): discovery loads name+description
   only; activation loads the full instructions; bundled scripts run guarded.
+- **Agent categories** — three trigger/write-policy shapes concrete agents extend:
+  **WritingAgent** (event / ingest), **ActionAgent** (event-or-schedule / propose),
+  and **MaintenanceAgent** (schedule / propose — the dream cycle below).
 - **Governance built in** — allowlists, write policy, budgets, a SQLite
   checkpointer (resumable threads), human-in-the-loop approval interrupts, an
   append-only audit (names/statuses only), and **opt-in** LangSmith tracing
   (off unless its env is set).
 
-Run the foundation locally (idle until agents are registered):
+Run the foundation locally — `mnesis-agents run` registers the scheduled dream
+cycle when it can reach Mnesis, and otherwise comes up idle (it never crashes at
+startup):
 
 ```bash
-uv pip install -e ".[agents]"     # the LangGraph core (no provider extra needed for idle)
-mnesis-agents                     # print the resolved model / MCP config
-mnesis-agents run                 # start the runner (healthy idle host; Ctrl-C to stop)
+uv pip install -e ".[agents]"     # the LangGraph core (no provider extra needed)
+mnesis-agents                     # print the resolved model / MCP config + dream-cycle status
+mnesis-agents run                 # start the runner (Ctrl-C to stop)
+mnesis-agents dream-cycle --now   # run one maintenance cycle now; --report shows the latest
 ```
 
-In Docker, a profile-gated runtime service runs it against the stack:
+In Docker, a profile-gated runtime service runs it against the stack, with the
+dream cycle scheduled:
 
 ```bash
 docker compose --profile agents up -d   # mnesis + mnesis-agents-runtime (scheduled dream cycle)
@@ -602,6 +622,24 @@ class, weights, auto-resolve margin, stale thresholds) — all env-overridable; 
 | `MNESIS_AGENT_ENABLE_LOCAL_TOOLS` | unset | When set, registers example local tools (research profile only). Off by default. |
 | `MNESIS_AGENT_WATCH_DIR` | `./agent_watch` | Directory the dockerized ingest-daemon watches. |
 
+### LangGraph agent foundation (`mnesis-agents`)
+
+The provider switch is **shared with the core** — `MNESIS_LLM_PROVIDER` /
+`MNESIS_LLM_MODEL` select the model for both. MCP connection uses the same
+`MNESIS_MCP_URL` / `MNESIS_MCP_TOKEN` as above.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `MNESIS_AGENTS_STUB` | unset | `1` forces the deterministic offline fake model (no keys/network). |
+| `MNESIS_AGENTS_DREAM_ENABLED` | `1` | Register the scheduled dream-cycle maintenance agent in `mnesis-agents run` (the single owner of periodic maintenance). `0` = idle runtime. |
+| `MNESIS_AGENTS_DREAM_INTERVAL_SECONDS` | `86400` | Cadence for the bundled (interval) scheduler — default ~daily/nightly. |
+| `MNESIS_AGENTS_DREAM_CRON` | `0 3 * * *` | Cron cadence (documented; precise cron needs the APScheduler extra). |
+| `MNESIS_AGENTS_CRYSTALLIZE` | unset | `1` files a concise digest of each dream cycle back into Mnesis (meta-memory). Off by default. |
+| `MNESIS_AGENTS_PROPOSALS_DIR` | = audit dir | Where the proposals queue + persisted reports live (gitignored). |
+| `MNESIS_AGENTS_AUDIT_DIR` | `./mnesis_agents_runs` | Append-only JSONL run audit (names/statuses/ids only). |
+| `MNESIS_AGENTS_CHECKPOINT_BACKEND` / `…_DB` | `sqlite` / `./mnesis_agents.checkpoints.db` | LangGraph checkpointer (resumable threads). |
+| `MNESIS_AGENTS_MAX_TOOL_CALLS` / `…_WALLCLOCK_SECONDS` | `50` / `300` | Default per-run governance budgets. |
+
 ---
 
 ## Verify it works
@@ -650,9 +688,12 @@ rebuildable cache — asserted by `tests/test_phase3_e2e.py`.
 
 ```
 src/mnesis/          the core: store · filters · ingest · search · graph · confidence ·
-                     lifecycle · vocab · MCP server · REST/SSE gateway · CLI
+                     lifecycle · vocab · maintenance · MCP server · REST/SSE gateway · CLI
 src/mnesis_agent/    the runtime agent: MCP client · provider tool-use · bounded loop ·
                      memory/grounding · policy · audit · daemon · the three archetypes
+src/mnesis_agents/   the LangGraph agent foundation: multi-LLM base · category ABCs · skills ·
+                     governance · triggers/runner · the dream-cycle MaintenanceAgent · proposals/reports
+src/mnesis_llm/      the shared, provider-agnostic chat-model factory (used by core + agents)
 ui/                  the React + Vite web UI (served by nginx in Docker)
 wiki/                pages/ (canonical, tracked) · sources/ (redacted, tracked) · .index/ (cache, gitignored)
 tests/               the full offline test suite
@@ -663,14 +704,19 @@ CLAUDE.md            the authoritative design contract (read this to extend the 
 **In scope and implemented:** filtered ingest · Markdown + git canonical store ·
 FTS5 keyword search · confidence scoring & decay lifecycle · relation-aware ingest
 (reinforce/supersede/contradict/create) · contradiction review queue · the typed
-knowledge graph with impact analysis · three surfaces (CLI, MCP, web UI) · the
-runtime agent layer with policy, budgets, and audit · Docker deployment with
+knowledge graph with impact analysis · maintenance/curation MCP tools (health
+report, duplicate finder) · three surfaces (CLI, MCP, web UI) · the runtime agent
+layer with policy, budgets, and audit · the multi-LLM **LangGraph agent
+foundation** with Agent Skills, governance, and triggers/runner · the scheduled
+**dream-cycle MaintenanceAgent** (auto-applied safe hygiene + reviewable
+proposals + reports + optional crystallization) · Docker deployment with
 local-first inference.
 
-**Deferred** (see [`CLAUDE.md` §13](CLAUDE.md) for the full map): automation hooks
-& scheduler (Phase 4); vector stream + reciprocal rank fusion and LLM-as-judge
-quality scoring (Phase 5); multi-agent mesh sync and private/shared scoping
-(Phase 6).
+**Deferred** (see [`CLAUDE.md` §13](CLAUDE.md) for the full map): general
+automation hooks (on-source/session/query) and a general scheduler beyond the
+maintenance dream cycle (Phase 4); vector stream + reciprocal rank fusion and
+LLM-as-judge quality scoring (Phase 5); multi-agent mesh sync and private/shared
+scoping (Phase 6).
 
 ---
 
