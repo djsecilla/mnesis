@@ -83,27 +83,36 @@ class NotesInboxConnector(SourceConnector):
             await self._handle_file(path)
 
     async def _handle_file(self, path: Path) -> None:
+        event = self.build_event(path)
+        if event is not None:
+            await self.submit(event)
+
+    def build_event(self, path: Path) -> InboundEvent | None:
+        """Normalize one note file into an :class:`InboundEvent`, or ``None`` if it
+        is unreadable/oversized (surfaced as an error). Pure normalization — no
+        dedup, no submit — so the on-demand path (``ingest-note``) can reuse it."""
+        path = Path(path)
         source_ref = self._source_ref(path)
         try:
             stat = path.stat()
         except OSError as exc:
             self._surface_once(source_ref, 0.0, "unreadable", str(exc))
-            return
+            return None
 
         if stat.st_size > self.max_bytes:
             self._surface_once(
                 source_ref, stat.st_mtime, "oversized",
                 f"{stat.st_size} bytes > MNESIS_NOTES_MAX_BYTES ({self.max_bytes})",
             )
-            return
+            return None
 
         try:
             text = path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError) as exc:
             self._surface_once(source_ref, stat.st_mtime, "unreadable", str(exc))
-            return
+            return None
 
-        event = InboundEvent.from_source(
+        return InboundEvent.from_source(
             source_type="notes",
             source_ref=source_ref,
             kind="file_added",
@@ -117,7 +126,6 @@ class NotesInboxConnector(SourceConnector):
                 "suffix": path.suffix.lower(),
             },
         )
-        await self.submit(event)
 
     def _surface_once(self, source_ref: str, mtime: float, error: str, detail: str) -> None:
         """Surface a file error at most once per (ref, mtime), so a bad file does

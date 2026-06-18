@@ -70,7 +70,7 @@ class WritingResult:
 
     source_type: str | None
     source_ref: str | None
-    status: str                       # ingested | skipped | pending_approval | duplicate | error
+    status: str                       # ingested | skipped | pending_approval | duplicate | error | dead_letter
     action: str | None = None         # created | reinforced | superseded | contradiction_queued
     page_id: str | None = None
     redaction_count: int | None = None
@@ -79,6 +79,8 @@ class WritingResult:
     skip_reason: str | None = None
     error: str | None = None
     acked: bool = False
+    retryable: bool = False           # an error worth retrying (transient) vs poison
+    attempts: int = 1                 # how many times the pipeline tried this item
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -163,7 +165,11 @@ class SourceWritingAgent(WritingAgent):
         Resilient: any failure becomes an ``error`` WritingResult (the event is
         NOT acked, so it can be retried), never an exception. Idempotent: an event
         already processed is a no-op ``duplicate``."""
-        result = self._handle(event, approved=approved)
+        try:
+            result = self._handle(event, approved=approved)
+        except Exception as exc:  # noqa: BLE001 — never raise out of handling
+            result = WritingResult(event.source_type, event.source_ref,
+                                   status="error", error=f"unexpected: {exc}", retryable=False)
         try:
             self._audit.write_writing_event(result, run_id=new_run_id())
         except Exception:  # noqa: BLE001 — auditing never breaks handling
@@ -255,10 +261,16 @@ class SourceWritingAgent(WritingAgent):
         gov.begin_run()
         gt = GovernedTools(self._tools_by_purpose(), gov, id_prefix="ingest")
 
-        call = gt.call(_INGEST_TOOL, {"text": parsed.text, "source_ref": ref})
+        try:
+            call = gt.call(_INGEST_TOOL, {"text": parsed.text, "source_ref": ref})
+        except Exception as exc:  # noqa: BLE001 — the tool raised: Mnesis transiently down
+            # A raised tool call is a TRANSIENT failure (e.g. Mnesis momentarily
+            # unavailable): not acked, worth a retry.
+            return WritingResult(stype, ref, status="error", error=f"ingest: {exc}", retryable=True)
         if not call.ok:
-            # Governance/availability refusal — not acked, retryable.
-            return WritingResult(stype, ref, status="error", error=call.refusal)
+            # A governance/availability refusal is a CONFIG/permanent issue — not
+            # transient, so don't spin on it; the pipeline dead-letters it.
+            return WritingResult(stype, ref, status="error", error=call.refusal, retryable=False)
 
         fields = self._parse_ingest_output(call.output)
         action = _ACTION_MAP.get(fields.get("action", ""), fields.get("action"))

@@ -132,6 +132,26 @@ def approval_source_types() -> frozenset[str]:
         s.strip() for s in MNESIS_AGENTS_APPROVAL_SOURCE_TYPES.split(",") if s.strip()
     )
 
+# ── Writing pipeline robustness (W4) ────────────────────────────────────────
+
+#: Transient-failure retry policy (exponential backoff) for an ingest.
+MNESIS_AGENTS_WRITE_MAX_RETRIES: int = int(os.environ.get("MNESIS_AGENTS_WRITE_MAX_RETRIES", "3"))
+MNESIS_AGENTS_WRITE_BACKOFF_BASE: float = float(
+    os.environ.get("MNESIS_AGENTS_WRITE_BACKOFF_BASE", "0.5")
+)
+MNESIS_AGENTS_WRITE_BACKOFF_FACTOR: float = float(
+    os.environ.get("MNESIS_AGENTS_WRITE_BACKOFF_FACTOR", "2")
+)
+
+#: Max notes processed concurrently in a batch/burst (bounded concurrency).
+MNESIS_AGENTS_WRITE_CONCURRENCY: int = int(os.environ.get("MNESIS_AGENTS_WRITE_CONCURRENCY", "4"))
+
+#: Dead-letter store for poison items (repeatedly-failing parse/ingest). JSONL
+#: under the connector state dir by default (gitignored).
+MNESIS_AGENTS_DEAD_LETTER_DIR: Path = Path(
+    os.environ.get("MNESIS_AGENTS_DEAD_LETTER_DIR", str(MNESIS_AGENTS_CONNECTOR_STATE_DIR))
+).expanduser()
+
 #: LangGraph checkpointer backend ("sqlite" default; "memory" for ephemeral).
 MNESIS_AGENTS_CHECKPOINT_BACKEND: str = os.environ.get(
     "MNESIS_AGENTS_CHECKPOINT_BACKEND", "sqlite"

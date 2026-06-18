@@ -107,6 +107,44 @@ def _build_dream_agent(plan=None, crystallize=None):
     return DreamMaintenanceAgent(tools=tools, plan=plan, crystallize=crystallize)
 
 
+def _build_writing_agent():
+    """Build a writing agent over the LIVE Mnesis MCP tools. Tests monkeypatch
+    this to inject fakes."""
+    from .knowledge import ToolRegistry, mnesis_mcp_source
+    from .writing_agent import SourceWritingAgent
+
+    tools = asyncio.run(ToolRegistry([mnesis_mcp_source()]).get_tools())
+    return SourceWritingAgent(tools=tools)
+
+
+def cmd_ingest_note(args: argparse.Namespace) -> int:
+    """On-demand: run the writing pipeline over a file or directory immediately
+    (backfills/tests). Same path as the live connector — dedup/retry/dead-letter
+    all apply."""
+    from .writing_pipeline import WritingPipeline, ingest_note_paths
+
+    agent = _build_writing_agent()
+    pipeline = WritingPipeline(agent)
+    results = asyncio.run(ingest_note_paths(args.paths, agent=agent, pipeline=pipeline))
+    if not results:
+        print("no notes found to ingest")
+        return 0
+    counts: dict[str, int] = {}
+    for r in results:
+        counts[r.status] = counts.get(r.status, 0) + 1
+        line = f"  {r.status:16} {r.source_ref}"
+        if r.action:
+            line += f"  ({r.action})"
+        if r.status == "dead_letter":
+            line += f"  reason: {r.error}"
+        print(line)
+    print("summary: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))
+    dead = pipeline.dead_letter.all()
+    if dead:
+        print(f"dead-letter: {len(dead)} item(s) — inspect {pipeline.dead_letter._path}")
+    return 0
+
+
 def cmd_dream_cycle(args: argparse.Namespace) -> int:
     """Run the maintenance dream cycle on demand (--now), or show the latest
     persisted report (--report / default)."""
@@ -136,6 +174,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_dc.add_argument("--crystallize", action="store_true", help="file a maintenance digest back into Mnesis")
     p_dc.add_argument("--plan", default=None, help="comma-separated pass plan (default: the standard plan)")
     p_dc.set_defaults(func=cmd_dream_cycle)
+
+    p_in = sub.add_parser("ingest-note", help="ingest a note file or directory on demand (backfill)")
+    p_in.add_argument("paths", nargs="+", help="one or more .md/.txt files or directories")
+    p_in.set_defaults(func=cmd_ingest_note)
     return parser
 
 
