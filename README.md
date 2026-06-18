@@ -26,7 +26,7 @@ is the intended design.
 - [Using the CLI](#using-the-cli)
 - [The three surfaces](#the-three-surfaces) — CLI · MCP · Web UI
 - [The agent layer](#the-agent-layer) — the runtime agent (`mnesis-agent`)
-- [The LangGraph agent foundation](#the-langgraph-agent-foundation) — multi-LLM agents + the maintenance **dream cycle**
+- [The LangGraph agent foundation](#the-langgraph-agent-foundation) — multi-LLM agents: the maintenance **dream cycle** + the notes-inbox **writing agent**
 - [Running with Docker](#running-with-docker)
 - [Making the most of mnesis](#making-the-most-of-mnesis) — best practices
 - [Configuration reference](#configuration-reference)
@@ -46,7 +46,8 @@ is the intended design.
 | **Typed knowledge graph** | Entities and typed relations are extracted into a graph you can traverse and run **impact analysis** over ("what breaks if I change Redis?"). |
 | **Three surfaces, one core** | The same core is reached by a **CLI** (humans/scripts), an **MCP server** (agents), and a **web UI** (browser) — none has private state. |
 | **A runtime agent layer** | A separately-deployable agent that uses mnesis as memory — grounded assistant, multi-step researcher, and an ingest daemon — reaching it **only over MCP**. |
-| **Self-curating maintenance** | A multi-LLM LangGraph foundation whose first agent is a scheduled **dream cycle** that keeps the KB healthy — auto-applying safe hygiene (decay, graph fixes) and surfacing contradiction/dedup **proposals** for review, all over MCP and governed. |
+| **Self-curating maintenance** | A multi-LLM LangGraph foundation whose scheduled **dream cycle** keeps the KB healthy — auto-applying safe hygiene (decay, graph fixes) and surfacing contradiction/dedup **proposals** for review, all over MCP and governed. |
+| **Source-connector ingestion** | A reusable pipeline turns inbound sources into governed ingestions — the first is a **notes/Markdown inbox** that watches a folder and ingests notes (dedup + retry + dead-letter). A new source = connector + parse skill + one mapping entry. |
 | **Runs offline & on-prem** | A deterministic stub runs with no network; a local-model mode (Ollama) keeps inference and sources entirely on your machine. |
 
 ---
@@ -365,9 +366,10 @@ The dockerized daemon and one-off runs are covered under
 A second, **LangGraph-based** agent foundation (`mnesis_agents`) is the substrate
 concrete agents are built on. It is **multi-LLM from the ground up** and reaches
 Mnesis **only over MCP**. The base, the category abstractions, the runtime, and
-the **first concrete agent — the scheduled
-[dream-cycle `MaintenanceAgent`](#maintenance-agents-the-dream-cycle)** — exist
-today.
+**two concrete agents** — the scheduled
+[dream-cycle `MaintenanceAgent`](#maintenance-agents-the-dream-cycle) and the
+event-triggered [notes-inbox `WritingAgent`](#writing-agents--the-notesmarkdown-inbox)
+— exist today.
 
 - **Multi-LLM, shared by Mnesis too.** A single provider switch
   (`MNESIS_LLM_PROVIDER`) selects the model for **both** Mnesis's own
@@ -382,42 +384,47 @@ today.
   disclosure (the same format Claude Code uses): discovery loads name+description
   only; activation loads the full instructions; bundled scripts run guarded.
 - **Agent categories** — three trigger/write-policy shapes concrete agents extend:
-  **WritingAgent** (event / ingest), **ActionAgent** (event-or-schedule / propose),
-  and **MaintenanceAgent** (schedule / propose — the dream cycle below).
+  **WritingAgent** (event / ingest — the notes inbox below), **ActionAgent**
+  (event-or-schedule / propose), and **MaintenanceAgent** (schedule / propose —
+  the dream cycle below).
+- **Source connectors** — a reusable `SourceConnector` pattern turns an external
+  feed (notes, email, chat, docs) into normalized `InboundEvent`s with idempotent,
+  resilient detection; a parse skill cleans each item; the writing agent ingests it.
 - **Governance built in** — allowlists, write policy, budgets, a SQLite
   checkpointer (resumable threads), human-in-the-loop approval interrupts, an
   append-only audit (names/statuses only), and **opt-in** LangSmith tracing
   (off unless its env is set).
 
 Run the foundation locally — `mnesis-agents run` registers the scheduled dream
-cycle when it can reach Mnesis, and otherwise comes up idle (it never crashes at
-startup):
+cycle **and** the notes-inbox writing agent when it can reach Mnesis, and otherwise
+comes up idle (it never crashes at startup):
 
 ```bash
 uv pip install -e ".[agents]"     # the LangGraph core (no provider extra needed)
-mnesis-agents                     # print the resolved model / MCP config + dream-cycle status
-mnesis-agents run                 # start the runner (Ctrl-C to stop)
+mnesis-agents                     # print the resolved model / MCP config + agent status
+mnesis-agents run                 # start the runner (watches the inbox; Ctrl-C to stop)
 mnesis-agents dream-cycle --now   # run one maintenance cycle now; --report shows the latest
+mnesis-agents ingest-note <path>  # ingest a note file/dir on demand (backfill)
 ```
 
-In Docker, a profile-gated runtime service runs it against the stack, with the
-dream cycle scheduled:
+In Docker, a profile-gated runtime service runs both agents against the stack:
 
 ```bash
-docker compose --profile agents up -d   # mnesis + mnesis-agents-runtime (scheduled dream cycle)
+docker compose --profile agents up -d   # mnesis + mnesis-agents-runtime (dream cycle + notes inbox)
 ```
 
 The runtime reaches Mnesis over the internal MCP endpoint only, stores durable
-agent state + the run audit + the proposals queue + reports on volumes, and —
-with `MNESIS_LLM_PROVIDER=local` in `.env` — keeps the **whole** stack (Mnesis +
-agents + model) on the host's Ollama, no external inference.
+agent state + the run audit + proposals/reports + the connector ledger and
+dead-letter on volumes, and — with `MNESIS_LLM_PROVIDER=local` in `.env` — keeps
+the **whole** stack (Mnesis + agents + model) on the host's Ollama, no external
+inference.
 
 ### Maintenance agents (the dream cycle)
 
-The first concrete agent is the **dream-cycle `MaintenanceAgent`** — a scheduled,
-deterministic curation sweep that keeps Mnesis healthy. It reaches Mnesis **only
-over MCP** and is **governed**: it auto-applies only safe hygiene and turns every
-knowledge-changing op into a **proposal** for human review.
+The **dream-cycle `MaintenanceAgent`** is a scheduled, deterministic curation
+sweep that keeps Mnesis healthy. It reaches Mnesis **only over MCP** and is
+**governed**: it auto-applies only safe hygiene and turns every knowledge-changing
+op into a **proposal** for human review.
 
 | Pass | Tool(s) | Policy |
 |---|---|---|
@@ -748,7 +755,8 @@ src/mnesis/          the core: store · filters · ingest · search · graph · 
 src/mnesis_agent/    the runtime agent: MCP client · provider tool-use · bounded loop ·
                      memory/grounding · policy · audit · daemon · the three archetypes
 src/mnesis_agents/   the LangGraph agent foundation: multi-LLM base · category ABCs · skills ·
-                     governance · triggers/runner · the dream-cycle MaintenanceAgent · proposals/reports
+                     governance · triggers/runner · the dream-cycle MaintenanceAgent (proposals/
+                     reports) · source connectors · the WritingAgent + ingestion pipeline
 src/mnesis_llm/      the shared, provider-agnostic chat-model factory (used by core + agents)
 ui/                  the React + Vite web UI (served by nginx in Docker)
 wiki/                pages/ (canonical, tracked) · sources/ (redacted, tracked) · .index/ (cache, gitignored)
@@ -765,14 +773,16 @@ report, duplicate finder) · three surfaces (CLI, MCP, web UI) · the runtime ag
 layer with policy, budgets, and audit · the multi-LLM **LangGraph agent
 foundation** with Agent Skills, governance, and triggers/runner · the scheduled
 **dream-cycle MaintenanceAgent** (auto-applied safe hygiene + reviewable
-proposals + reports + optional crystallization) · Docker deployment with
+proposals + reports + optional crystallization) · the **source-connector
+ingestion pipeline** and the **notes-inbox WritingAgent** (idempotent detection,
+governed ingest, retry/dead-letter, on-demand backfill) · Docker deployment with
 local-first inference.
 
-**Deferred** (see [`CLAUDE.md` §13](CLAUDE.md) for the full map): general
-automation hooks (on-source/session/query) and a general scheduler beyond the
-maintenance dream cycle (Phase 4); vector stream + reciprocal rank fusion and
-LLM-as-judge quality scoring (Phase 5); multi-agent mesh sync and private/shared
-scoping (Phase 6).
+**Deferred** (see [`CLAUDE.md` §13](CLAUDE.md) for the full map): session/query
+automation hooks and a general hook framework — *on-source ingestion (the
+connectors/writing agent) and scheduled maintenance (the dream cycle) already
+exist* (Phase 4); vector stream + reciprocal rank fusion and LLM-as-judge quality
+scoring (Phase 5); multi-agent mesh sync and private/shared scoping (Phase 6).
 
 ---
 

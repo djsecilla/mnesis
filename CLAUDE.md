@@ -289,7 +289,7 @@ A page is acceptable when it: states a clear, declarative claim in the `title`; 
 
 | Capability | Phase |
 |---|---|
-| Automation hooks (on-source/session/query/schedule) & scheduler | 4 |
+| Session/query automation hooks + a general config-driven hook framework *(on-source ingestion via the W-series connectors/WritingAgent, and scheduled maintenance via the dream cycle, are delivered in §14b)* | 4 |
 | Vector stream + reciprocal rank fusion; LLM-as-judge quality scoring | 5 |
 | Multi-agent mesh sync; private/shared scoping | 6 |
 
