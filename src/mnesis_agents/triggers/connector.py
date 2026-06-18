@@ -92,6 +92,20 @@ class ProcessedStore:
             conn.close()
         return row is not None
 
+    def status(self, source_ref: str, content_hash: str) -> str | None:
+        """The recorded status (``emitted``/``processed``) for an item, or ``None``
+        if unseen. Lets a consumer skip an item that was already *processed* (acked)
+        rather than merely emitted."""
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT status FROM processed WHERE source_ref = ? AND content_hash = ?",
+                (source_ref, content_hash),
+            ).fetchone()
+        finally:
+            conn.close()
+        return row["status"] if row is not None else None
+
     def record(self, source_ref: str, content_hash: str, status: str = "emitted") -> None:
         conn = self._connect()
         try:

@@ -36,7 +36,6 @@ from __future__ import annotations
 import json
 import operator
 import tempfile
-import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -127,72 +126,13 @@ class DreamCycleReport:
         }
 
 
-# ── Governed, deterministic tool dispatch ───────────────────────────────────
-
-
-class _BudgetStop(Exception):
-    """A governed call was refused because a budget/wall-clock limit tripped."""
-
-
-class _PassError(Exception):
-    """A governed call was refused for a non-budget reason (allowlist/policy/missing)."""
-
-
-@dataclass
-class _Call:
-    name: str
-    ok: bool
-    output: str | None = None
-    refusal: str | None = None
-
-
-class _GovernedTools:
-    """Dispatches the maintenance MCP tools through F6 governance, outside the LLM
-    loop. Reuses :meth:`GovernanceMiddleware._gate` so the allowlist, write-policy,
-    and tool-call budget are enforced identically to an agent run; wall-clock is
-    checked here (the gate's wall-clock hook only fires inside the model loop)."""
-
-    def __init__(self, tools: list["BaseTool"], governance: GovernanceMiddleware) -> None:
-        self._by_name: dict[str, BaseTool] = {}
-        for t in tools:
-            self._by_name[t.name] = t
-            self._by_name.setdefault(t.name.split("__", 1)[-1], t)  # tolerate namespacing
-        self._gov = governance
-        self.executed: list[dict[str, Any]] = []
-
-    def stopped(self) -> bool:
-        return bool(self._gov.state.stop_reason)
-
-    def stop_reason(self) -> str | None:
-        return self._gov.state.stop_reason
-
-    def call(self, name: str, args: dict[str, Any]) -> _Call:
-        # Wall-clock first (the gate doesn't check it outside the model loop).
-        g = self._gov
-        if g.wallclock and g.state.started and (time.monotonic() - g.state.started) > g.wallclock:
-            g.state.stop_reason = g.state.stop_reason or "deadline"
-            return _Call(name, ok=False, refusal="wall-clock budget exceeded")
-
-        tc = {"name": name, "args": args, "id": f"dc-{len(self.executed)}"}
-        refusal = g._gate(tc)
-        if refusal is not None:
-            return _Call(name, ok=False, refusal=str(getattr(refusal, "content", refusal)))
-
-        tool = self._by_name.get(name)
-        if tool is None:
-            return _Call(name, ok=False, refusal=f"tool {name!r} not available")
-        output = tool.invoke(args)
-        self.executed.append({"tool": name, "args_keys": sorted(args)})
-        return _Call(name, ok=True, output=output if isinstance(output, str) else str(output))
-
-    def require(self, name: str, args: dict[str, Any]) -> _Call:
-        """Call a tool, raising on refusal so the pass runner can classify it."""
-        c = self.call(name, args)
-        if not c.ok:
-            if self.stopped():
-                raise _BudgetStop(self.stop_reason() or "budget")
-            raise _PassError(c.refusal or "refused")
-        return c
+# ── Governed, deterministic tool dispatch (shared) ──────────────────────────
+# The governed dispatch lives in `governed.py` (shared with the writing agent).
+# Keep the original private names here so the rest of this module is unchanged.
+from .governed import BudgetStop as _BudgetStop  # noqa: E402
+from .governed import Call as _Call  # noqa: E402, F401  (kept for symmetry)
+from .governed import GovernedTools as _GovernedTools  # noqa: E402
+from .governed import ToolRefused as _PassError  # noqa: E402
 
 
 # ── Pass procedures (the tool I/O each skill's procedure prescribes) ─────────

@@ -101,6 +101,25 @@ class AgentAuditLog:
         })
 
 
+    def write_writing_event(self, result, *, run_id: str) -> None:
+        """Audit one WritingAgent outcome — ids / statuses / counts only (the
+        source_ref, status, routing action, page/review ids, redaction COUNT, the
+        skip reason category, and the ack flag). Never the note text or values."""
+        self._append({
+            "run_id": run_id, "ts": _now(), "type": "writing_event",
+            "source_type": result.source_type,
+            "source_ref": result.source_ref,
+            "status": result.status,
+            "action": result.action,
+            "page_id": result.page_id,
+            "redaction_count": result.redaction_count,
+            "superseded_id": result.superseded_id,
+            "review_id": result.review_id,
+            "skip_reason": result.skip_reason,
+            "acked": result.acked,
+            "error": result.error,
+        })
+
     def write_dream_cycle(self, report, *, run_id: str) -> None:
         """Mirror a DreamCycleReport into the audit log — counts, statuses, and
         ids only (per-pass name/status/auto-applied/proposal counts, totals, the

@@ -100,6 +100,38 @@ MNESIS_NOTES_MAX_BYTES: int = int(os.environ.get("MNESIS_NOTES_MAX_BYTES", "1000
 #: Comma-separated file extensions the notes inbox ingests (lowercased).
 MNESIS_NOTES_SUFFIXES: str = os.environ.get("MNESIS_NOTES_SUFFIXES", ".md,.txt")
 
+# ── Writing agent (W3) ──────────────────────────────────────────────────────
+
+#: source_type -> parse-skill mapping (comma-separated ``type:skill`` pairs).
+#: Adding a source is: connector + parse skill + ONE entry here. Default maps the
+#: notes connector to the parse-note skill.
+MNESIS_AGENTS_PARSE_SKILLS: str = os.environ.get("MNESIS_AGENTS_PARSE_SKILLS", "notes:parse-note")
+
+
+def parse_skill_map() -> dict[str, str]:
+    """Resolve ``MNESIS_AGENTS_PARSE_SKILLS`` to a ``{source_type: skill}`` dict."""
+    out: dict[str, str] = {}
+    for pair in MNESIS_AGENTS_PARSE_SKILLS.split(","):
+        pair = pair.strip()
+        if not pair or ":" not in pair:
+            continue
+        stype, skill = pair.split(":", 1)
+        if stype.strip() and skill.strip():
+            out[stype.strip()] = skill.strip()
+    return out
+
+
+#: Source types whose ingest requires human approval (an F6-style gate) before it
+#: happens. Comma-separated. Empty by default — the trusted notes inbox
+#: auto-ingests; configure untrusted sources here to hold them for review.
+MNESIS_AGENTS_APPROVAL_SOURCE_TYPES: str = os.environ.get("MNESIS_AGENTS_APPROVAL_SOURCE_TYPES", "")
+
+
+def approval_source_types() -> frozenset[str]:
+    return frozenset(
+        s.strip() for s in MNESIS_AGENTS_APPROVAL_SOURCE_TYPES.split(",") if s.strip()
+    )
+
 #: LangGraph checkpointer backend ("sqlite" default; "memory" for ephemeral).
 MNESIS_AGENTS_CHECKPOINT_BACKEND: str = os.environ.get(
     "MNESIS_AGENTS_CHECKPOINT_BACKEND", "sqlite"
