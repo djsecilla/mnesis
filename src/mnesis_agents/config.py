@@ -156,6 +156,20 @@ MNESIS_AGENTS_DEAD_LETTER_DIR: Path = Path(
     os.environ.get("MNESIS_AGENTS_DEAD_LETTER_DIR", str(MNESIS_AGENTS_CONNECTOR_STATE_DIR))
 ).expanduser()
 
+# ── Outbound channels (A1: action agent delivery) ───────────────────────────
+
+#: Where the inert DraftOutboxChannel writes draft artifacts (a brief, a message
+#: draft). NOTHING is sent anywhere — drafts wait here for a human. Gitignored.
+MNESIS_ACTION_OUTBOX: Path = Path(
+    os.environ.get("MNESIS_ACTION_OUTBOX", "./action_outbox")
+).expanduser()
+
+#: Where the inert LocalNotifyChannel appends operator-only notifications (JSONL).
+#: Defaults under the outbox. No third-party recipient is ever involved.
+MNESIS_ACTION_NOTIFY_FILE: Path = Path(
+    os.environ.get("MNESIS_ACTION_NOTIFY_FILE", str(MNESIS_ACTION_OUTBOX / "notifications.jsonl"))
+).expanduser()
+
 #: LangGraph checkpointer backend ("sqlite" default; "memory" for ephemeral).
 MNESIS_AGENTS_CHECKPOINT_BACKEND: str = os.environ.get(
     "MNESIS_AGENTS_CHECKPOINT_BACKEND", "sqlite"
