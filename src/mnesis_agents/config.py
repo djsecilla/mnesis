@@ -74,6 +74,32 @@ MNESIS_AGENTS_AUDIT_DIR: Path = Path(
     os.environ.get("MNESIS_AGENTS_AUDIT_DIR", "./mnesis_agents_runs")
 ).expanduser()
 
+# ── Source connectors (W1) ──────────────────────────────────────────────────
+
+#: Durable state for source connectors (the processed-item ledger that makes
+#: detection idempotent). A subdir of the agents' artefact dir (gitignored).
+MNESIS_AGENTS_CONNECTOR_STATE_DIR: Path = Path(
+    os.environ.get("MNESIS_AGENTS_CONNECTOR_STATE_DIR", str(MNESIS_AGENTS_AUDIT_DIR / "connectors"))
+).expanduser()
+
+#: Notes-inbox connector — the folder it watches for new/changed .md/.txt notes.
+MNESIS_NOTES_INBOX: Path = Path(
+    os.environ.get("MNESIS_NOTES_INBOX", "./notes_inbox")
+).expanduser()
+
+#: Detection mode: "poll" (timed rescans; no extra dep) or "watch" (filesystem
+#: events via watchdog, falling back to poll if watchdog isn't installed).
+MNESIS_NOTES_MODE: str = os.environ.get("MNESIS_NOTES_MODE", "poll").strip().lower()
+
+#: Seconds between rescans in poll mode (also the debounce floor in watch mode).
+MNESIS_NOTES_POLL_INTERVAL: float = float(os.environ.get("MNESIS_NOTES_POLL_INTERVAL", "2"))
+
+#: Max bytes a single note may be; larger files surface as an error, not a crash.
+MNESIS_NOTES_MAX_BYTES: int = int(os.environ.get("MNESIS_NOTES_MAX_BYTES", "1000000"))
+
+#: Comma-separated file extensions the notes inbox ingests (lowercased).
+MNESIS_NOTES_SUFFIXES: str = os.environ.get("MNESIS_NOTES_SUFFIXES", ".md,.txt")
+
 #: LangGraph checkpointer backend ("sqlite" default; "memory" for ephemeral).
 MNESIS_AGENTS_CHECKPOINT_BACKEND: str = os.environ.get(
     "MNESIS_AGENTS_CHECKPOINT_BACKEND", "sqlite"

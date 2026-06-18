@@ -28,6 +28,7 @@ agents = [
     "langchain-mcp-adapters",   # Mnesis tools over MCP (F2)
     "langgraph-checkpoint-sqlite",  # durable agent state/threads (F6, default)
     "langsmith",                # opt-in tracing (F6); off unless its env is set
+    "watchdog>=4",              # filesystem-event "watch" mode for source connectors (W1)
 ]
 # Provider extras — install only the one(s) you use. Each pulls the matching
 # LangChain integration; the model factory raises a clear error if you select a
