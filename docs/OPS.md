@@ -25,14 +25,17 @@ graph degrade gracefully to their Markdown-only values if `state.db` is lost.
 `mnesis`. Their volumes (`mnesis-agent-runs`, and `mnesis-agents-runs` /
 `mnesis-agents-state`) carry only agent artefacts: the append-only run audit, the
 LangGraph checkpoints (resumable threads), the dream-cycle **proposals queue +
-reports**, and the notes-inbox writer's **connector ledger + dead-letter** (under
-`/data/agents_runs/connectors`). None of it is canonical: losing it is survivable
-(the next dream cycle re-derives its proposals; reports are a log; the connector
-ledger only de-duplicates already-ingested notes; dead-lettered files can be
-re-dropped), so it is **not** part of the must-back-up layer above. Knowledge
-changes the agents make still go through `mnesis` and are captured in its git
-history. (The notes **inbox** itself is a read-only input — back up the source
-notes wherever you keep them, not on the runtime.)
+reports**, the notes-inbox writer's **connector ledger + dead-letter** (under
+`/data/agents_runs/connectors`), and the action agent's **action proposals**.
+None of it is canonical: losing it is survivable (the next dream cycle re-derives
+its proposals; reports are a log; the connector ledger only de-duplicates
+already-ingested notes; dead-lettered files can be re-dropped; an action proposal
+can simply be re-composed), so it is **not** part of the must-back-up layer above.
+Knowledge changes the agents make still go through `mnesis` and are captured in
+its git history. (The notes **inbox** is a read-only *input*, and the action
+**outbox** holds *output drafts* a human reviews/sends by hand — back up the
+source notes and any drafts you care about wherever you keep them, not on the
+runtime.)
 
 ## Backup
 

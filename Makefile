@@ -108,3 +108,15 @@ dream-now: ## Run one maintenance dream cycle on demand against the running stac
 
 dream-report: ## Show the latest dream-cycle report
 	docker compose run --rm mnesis-agents-runtime agents dream-cycle --report
+
+action-brief: ## Propose a meeting brief (gated, draft-only): make action-brief CONTEXT='{"topic":"Atlas caching"}'
+	docker compose run --rm mnesis-agents-runtime agents action prepare-meeting-brief --context '$(CONTEXT)'
+
+actions: ## List pending action proposals awaiting approval
+	docker compose run --rm mnesis-agents-runtime agents actions
+
+action-approve: ## Approve a pending proposal -> writes the draft to the outbox: make action-approve ID=<id>
+	docker compose run --rm mnesis-agents-runtime agents actions approve "$(ID)"
+
+action-reject: ## Reject a pending proposal (delivers nothing): make action-reject ID=<id>
+	docker compose run --rm mnesis-agents-runtime agents actions reject "$(ID)"

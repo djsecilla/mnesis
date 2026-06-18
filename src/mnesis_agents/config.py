@@ -203,6 +203,22 @@ def action_skill_map() -> dict[str, str]:
 #: content). The inert draft outbox — nothing is sent; a human approves at the gate.
 MNESIS_AGENTS_ACTION_CHANNEL: str = os.environ.get("MNESIS_AGENTS_ACTION_CHANNEL", "draft-outbox")
 
+#: Whether the runtime registers the action agent's F5 **schedule** hook (compose
+#: proposal-only briefs for *provided* contexts on a cadence). Default OFF — the
+#: action agent is primarily on-demand (`mnesis-agents action …`); there is no real
+#: meeting-context source yet (a future inbound connector). The on-demand CLI and
+#: the approvals CLI are available regardless of this flag.
+MNESIS_AGENTS_ACTIONS_SCHEDULE_ENABLED: bool = _bool("MNESIS_AGENTS_ACTIONS_SCHEDULE_ENABLED", False)
+
+#: Optional JSON file (a list of meeting-context dicts) the scheduled action hook
+#: composes briefs for. Absent/empty → the hook is idle (composes nothing).
+MNESIS_ACTIONS_CONTEXTS_FILE: str | None = _opt("MNESIS_ACTIONS_CONTEXTS_FILE")
+
+#: Cadence (seconds) for the scheduled action hook (when enabled).
+MNESIS_ACTIONS_SCHEDULE_INTERVAL_SECONDS: float = float(
+    os.environ.get("MNESIS_ACTIONS_SCHEDULE_INTERVAL_SECONDS", "3600")
+)
+
 #: LangGraph checkpointer backend ("sqlite" default; "memory" for ephemeral).
 MNESIS_AGENTS_CHECKPOINT_BACKEND: str = os.environ.get(
     "MNESIS_AGENTS_CHECKPOINT_BACKEND", "sqlite"

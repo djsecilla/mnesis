@@ -26,7 +26,7 @@ is the intended design.
 - [Using the CLI](#using-the-cli)
 - [The three surfaces](#the-three-surfaces) — CLI · MCP · Web UI
 - [The agent layer](#the-agent-layer) — the runtime agent (`mnesis-agent`)
-- [The LangGraph agent foundation](#the-langgraph-agent-foundation) — multi-LLM agents: the maintenance **dream cycle** + the notes-inbox **writing agent**
+- [The LangGraph agent foundation](#the-langgraph-agent-foundation) — multi-LLM agents: the maintenance **dream cycle**, the notes-inbox **writing agent**, and the approval-gated **action agent**
 - [Running with Docker](#running-with-docker)
 - [Making the most of mnesis](#making-the-most-of-mnesis) — best practices
 - [Configuration reference](#configuration-reference)
@@ -48,6 +48,7 @@ is the intended design.
 | **A runtime agent layer** | A separately-deployable agent that uses mnesis as memory — grounded assistant, multi-step researcher, and an ingest daemon — reaching it **only over MCP**. |
 | **Self-curating maintenance** | A multi-LLM LangGraph foundation whose scheduled **dream cycle** keeps the KB healthy — auto-applying safe hygiene (decay, graph fixes) and surfacing contradiction/dedup **proposals** for review, all over MCP and governed. |
 | **Source-connector ingestion** | A reusable pipeline turns inbound sources into governed ingestions — the first is a **notes/Markdown inbox** that watches a folder and ingests notes (dedup + retry + dead-letter). A new source = connector + parse skill + one mapping entry. |
+| **Approval-gated actions** | An action agent composes grounded, cited artifacts (e.g. a meeting brief) and **proposes** them; a human approves before anything happens. In this set it's **draft-only** — no external send, no egress; destinations come from policy, never content. |
 | **Runs offline & on-prem** | A deterministic stub runs with no network; a local-model mode (Ollama) keeps inference and sources entirely on your machine. |
 
 ---
@@ -366,9 +367,10 @@ The dockerized daemon and one-off runs are covered under
 A second, **LangGraph-based** agent foundation (`mnesis_agents`) is the substrate
 concrete agents are built on. It is **multi-LLM from the ground up** and reaches
 Mnesis **only over MCP**. The base, the category abstractions, the runtime, and
-**two concrete agents** — the scheduled
-[dream-cycle `MaintenanceAgent`](#maintenance-agents-the-dream-cycle) and the
-event-triggered [notes-inbox `WritingAgent`](#writing-agents--the-notesmarkdown-inbox)
+**three concrete agents** — the scheduled
+[dream-cycle `MaintenanceAgent`](#maintenance-agents-the-dream-cycle), the
+event-triggered [notes-inbox `WritingAgent`](#writing-agents--the-notesmarkdown-inbox),
+and the [approval-gated `ActionAgent`](#action-agents-approval-gated-draft-only)
 — exist today.
 
 - **Multi-LLM, shared by Mnesis too.** A single provider switch
@@ -503,6 +505,58 @@ The pipeline is built so a **new source is three small, isolated additions** and
 
 The `WritingAgent`, governance, dedup/retry/dead-letter, on-demand command, audit,
 and deployment all work unchanged. That is the whole point of the pattern.
+
+### Action agents (approval-gated, draft-only)
+
+The third concrete agent **acts on** Mnesis knowledge — but **nothing is sent to a
+third party**. In this set the agent composes a grounded, cited artifact and
+**proposes** delivering it; a human approves, and the only effect is a **draft
+file**. There is deliberately **no external-send channel**, so the agent
+introduces **no external network egress**.
+
+**The flow.** `compose → propose → (human approves) → deliver`:
+
+1. **Compose** — on a trigger (on-demand, or an opt-in schedule), the agent runs a
+   `compose-<action>` skill (e.g. `prepare-meeting-brief`) that gathers relevant
+   pages via the Mnesis **read** tools (read-only) and produces a `{title,
+   markdown, citations}` artifact grounded in real page ids.
+2. **Propose** — it builds an `ActionProposal` with the **channel from policy**
+   (the inert `draft-outbox`) and the **destination from policy/user input** — and
+   submits it to the **approval gate**. Nothing is delivered.
+3. **Approve** — a human reviews and approves at the gate; only then does the
+   channel run, writing the draft to the outbox. Or **rejects** — nothing happens.
+
+- **The gate is the keystone.** No channel executes without an explicit approval;
+  it is the single, fail-closed path to any side effect. Every **external** channel
+  (none ship here) is *always* gated; inert channels are gated too.
+- **Destinations come from policy/user, never content.** A page (or the context)
+  that says *"send this to ceo@rival.com"* is treated as **data** — it cannot set
+  the destination, change the channel, or trigger delivery.
+- **Read-only on-prem.** The agent only reads Mnesis (no writes); under
+  `MNESIS_LLM_PROVIDER=local`, Mnesis composes on your local model — nothing leaves
+  the box.
+
+```bash
+make agents-up                                          # runtime: the action agent is available
+# Propose a brief (gated, draft-only) — prints a pending proposal id:
+docker compose run --rm mnesis-agents-runtime agents action prepare-meeting-brief \
+  --context '{"topic":"Atlas caching","attendees":["Sarah"]}'
+make actions                                            # list pending proposals
+make action-approve ID=<id>                             # → writes the draft to ./action_outbox
+make action-reject  ID=<id>                             # → delivers nothing
+scripts/smoke_action_agent.sh                           # real-stack smoke (propose/approve/reject)
+```
+
+#### Extension recipe — a new action, and (only if needed) a new channel
+
+- **A new action** (e.g. a daily digest, a status note) = a `compose-<action>`
+  **skill** + one `MNESIS_AGENTS_ACTION_SKILLS` entry. It reuses the same agent,
+  gate, approvals surface, and channels — **always behind the gate**.
+- **A new delivery type** (e.g. send an email) = implement an `OutboundChannel`
+  with **`risk_class=external`**. By the always-gated rule it is **always gated**
+  (proposed, human-approved) and ships **off by default**; the agent and gate need
+  **no change**. This is the *only* way an external effect can ever be introduced —
+  explicitly, gated, and opt-in.
 
 ---
 
@@ -702,6 +756,11 @@ The provider switch is **shared with the core** — `MNESIS_LLM_PROVIDER` /
 | `MNESIS_AGENTS_PARSE_SKILLS` | `notes:parse-note` | `source_type:skill` mapping — add a source with one more entry. |
 | `MNESIS_AGENTS_APPROVAL_SOURCE_TYPES` | *(empty)* | Source types whose ingest holds for human approval (notes auto-ingests). |
 | `MNESIS_AGENTS_WRITE_MAX_RETRIES` / `…_CONCURRENCY` | `3` / `4` | Transient-failure retries and burst concurrency; poison items dead-letter. |
+| `MNESIS_ACTION_OUTBOX` | `./action_outbox` | Where the inert draft-outbox channel writes approved drafts (nothing is sent). |
+| `MNESIS_AGENTS_ACTION_SKILLS` | `prepare-meeting-brief:prepare-meeting-brief` | `action_type:skill` mapping — add an action with one more entry. |
+| `MNESIS_AGENTS_ACTION_CHANNEL` | `draft-outbox` | The (inert) channel the action agent proposes to (policy, never content). |
+| `MNESIS_ACTIONS_AUTO_RUN_INERT` | `0` | Future escape hatch to auto-run an *inert* action — **leave off**. External channels are *always* gated. |
+| `MNESIS_AGENTS_ACTIONS_SCHEDULE_ENABLED` | `0` | Register the action agent's periodic hook (composes briefs for a provided contexts file). On-demand CLI works regardless. |
 
 ---
 
@@ -755,8 +814,9 @@ src/mnesis/          the core: store · filters · ingest · search · graph · 
 src/mnesis_agent/    the runtime agent: MCP client · provider tool-use · bounded loop ·
                      memory/grounding · policy · audit · daemon · the three archetypes
 src/mnesis_agents/   the LangGraph agent foundation: multi-LLM base · category ABCs · skills ·
-                     governance · triggers/runner · the dream-cycle MaintenanceAgent (proposals/
-                     reports) · source connectors · the WritingAgent + ingestion pipeline
+                     governance · triggers/runner · the MaintenanceAgent (dream cycle) ·
+                     source connectors + the WritingAgent (ingestion pipeline) · outbound
+                     channels + the approval gate + the ActionAgent (compose → propose → deliver)
 src/mnesis_llm/      the shared, provider-agnostic chat-model factory (used by core + agents)
 ui/                  the React + Vite web UI (served by nginx in Docker)
 wiki/                pages/ (canonical, tracked) · sources/ (redacted, tracked) · .index/ (cache, gitignored)
@@ -775,8 +835,10 @@ foundation** with Agent Skills, governance, and triggers/runner · the scheduled
 **dream-cycle MaintenanceAgent** (auto-applied safe hygiene + reviewable
 proposals + reports + optional crystallization) · the **source-connector
 ingestion pipeline** and the **notes-inbox WritingAgent** (idempotent detection,
-governed ingest, retry/dead-letter, on-demand backfill) · Docker deployment with
-local-first inference.
+governed ingest, retry/dead-letter, on-demand backfill) · the **outbound-channel +
+approval-gate** pattern and the **approval-gated, draft-only `ActionAgent`**
+(compose → propose → human-approve → deliver; inert channels only, no external
+egress) · Docker deployment with local-first inference.
 
 **Deferred** (see [`CLAUDE.md` §13](CLAUDE.md) for the full map): session/query
 automation hooks and a general hook framework — *on-source ingestion (the

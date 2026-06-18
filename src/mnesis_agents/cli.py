@@ -32,8 +32,10 @@ def _print_info() -> None:
         print(f"  notes inbox : ENABLED ({config.MNESIS_NOTES_INBOX}, {config.MNESIS_NOTES_MODE} mode)")
     else:
         print("  notes inbox : disabled (MNESIS_NOTES_ENABLED=0)")
-    print("  (use `mnesis-agents run` to start the runner, "
-          "`mnesis-agents dream-cycle --now`, or `mnesis-agents ingest-note <file|dir>`)")
+    sched = "scheduled+on-demand" if config.MNESIS_AGENTS_ACTIONS_SCHEDULE_ENABLED else "on-demand"
+    print(f"  action agent: {sched}, draft-only (outbox {config.MNESIS_ACTION_OUTBOX}) — gated, no external send")
+    print("  (use `mnesis-agents run` to start the runner; `mnesis-agents action <type> --context …` "
+          "to propose; `mnesis-agents actions` to approve/reject)")
 
 
 def _load_mcp_tools():
@@ -116,10 +118,50 @@ def register_notes_writer(
     return connector, sub, pipeline
 
 
+def _contexts_from_file() -> list[dict]:
+    """The scheduled action hook's default contexts source — a JSON list in
+    ``MNESIS_ACTIONS_CONTEXTS_FILE`` (absent/empty → idle, composes nothing)."""
+    from pathlib import Path as _Path
+
+    path = config.MNESIS_ACTIONS_CONTEXTS_FILE
+    if not path:
+        return []
+    p = _Path(path)
+    if not p.is_file():
+        return []
+    try:
+        data = json.loads(p.read_text(encoding="utf-8") or "[]")
+        return [c for c in data if isinstance(c, dict)] if isinstance(data, list) else []
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def register_action_agent(registry, *, tools=None, agent=None, contexts_provider=None, schedule=None):
+    """Register the action agent's F5 **schedule** hook on ``registry`` (compose
+    proposal-only briefs for provided contexts on a cadence). Returns ``(agent,
+    sub)``. The on-demand CLI (`mnesis-agents action`) and the approvals CLI
+    (`mnesis-agents actions`) work independently of this. Reaches Mnesis only over
+    the MCP **read** tools; the only side effect (a draft) is gated."""
+    import json as _json  # noqa: F401  (json already imported at module scope)
+
+    from .action_agent import GroundedActionAgent, register_action_schedule
+    from .triggers.schedule import Schedule
+
+    if agent is None:
+        if tools is None:
+            tools = _load_mcp_tools()
+        agent = GroundedActionAgent(tools=tools)
+    provider = contexts_provider or _contexts_from_file
+    sched = schedule or Schedule(interval_seconds=config.MNESIS_ACTIONS_SCHEDULE_INTERVAL_SECONDS)
+    sub = register_action_schedule(registry, agent, provider, schedule=sched)
+    return agent, sub
+
+
 def _build_runner():
-    """Assemble the runner. Registers the scheduled dream-cycle maintenance agent
-    and the notes-inbox writing agent (each unless disabled); resilient — if Mnesis
-    is unreachable at startup the runner still comes up rather than crashing."""
+    """Assemble the runner. Registers the scheduled dream-cycle maintenance agent,
+    the notes-inbox writing agent, and (optionally) the action-agent schedule hook —
+    each unless disabled; resilient — if Mnesis is unreachable at startup the runner
+    still comes up rather than crashing."""
     from .registry import AgentRegistry
     from .runner import Runner
 
@@ -142,6 +184,13 @@ def _build_runner():
                      connector.inbox, connector.mode)
         except Exception as exc:  # noqa: BLE001
             log.warning("could not register notes-inbox writer (%s); continuing", exc)
+
+    if config.MNESIS_AGENTS_ACTIONS_SCHEDULE_ENABLED:
+        try:
+            _agent, sub = register_action_agent(registry)
+            log.info("registered action-agent schedule %r (%s)", sub.name, sub.schedule.describe())
+        except Exception as exc:  # noqa: BLE001
+            log.warning("could not register action-agent schedule (%s); continuing", exc)
 
     return Runner(registry, event_triggers=event_triggers)
 

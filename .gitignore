@@ -11,6 +11,7 @@ agent_watch/*
 !agent_watch/.gitkeep
 notes_inbox/*
 !notes_inbox/.gitkeep
-action_outbox/
+action_outbox/*
+!action_outbox/.gitkeep
 mnesis_agents_runs/
 mnesis_agents.checkpoints.db*

@@ -156,19 +156,26 @@ services:
   # NOT started by a plain `up`. Bring it up with:
   #   docker compose --profile agents up -d
   # Runs `mnesis-agents run` — the multi-LLM LangGraph foundation host. It
-  # registers TWO concrete agents over the internal MCP endpoint (it never imports
-  # the core):
+  # registers concrete agents over the internal MCP endpoint (it never imports the
+  # core):
   #   1. the scheduled **dream-cycle MaintenanceAgent** — the SINGLE owner of
   #      periodic maintenance (the D5 `maintenance` sidecar is retired — see the
   #      note below): auto-applies safe hygiene (decay + safe graph fixes), queues
-  #      contradiction/dedup proposals for review, and writes a report; and
+  #      contradiction/dedup proposals for review, and writes a report;
   #   2. the **notes-inbox WritingAgent** — watches the mounted /data/notes_inbox
   #      and ingests new/changed .md/.txt notes via mnesis_ingest (dedup +
-  #      retry/backoff + dead-letter for poison items).
+  #      retry/backoff + dead-letter for poison items); and
+  #   3. the **ActionAgent** — DRAFT-ONLY and approval-GATED: it composes a
+  #      grounded, cited brief from Mnesis READ tools (read-only) and PROPOSES a
+  #      delivery to the inert draft outbox. NOTHING is sent to a third party (no
+  #      external-send channel exists → no external egress); a human approves at
+  #      the gate to write the draft. Mostly on-demand (`agents action …` /
+  #      `agents actions`); the periodic hook is opt-in.
   # Everything is governed; Mnesis's own redaction + routing + review gate every
   # write server-side. Durable agent state (checkpoints), the run audit, the
-  # proposals queue, reports, the connector ledger, and the dead-letter live on
-  # volumes. Setting MNESIS_LLM_PROVIDER=local in .env keeps the WHOLE stack
+  # proposals queue, reports, the connector ledger, the dead-letter, and the action
+  # proposals live on volumes; approved drafts land in the mounted action outbox.
+  # Setting MNESIS_LLM_PROVIDER=local in .env keeps the WHOLE stack
   # (Mnesis + agents + model) on the host's Ollama — no external inference; neither
   # agent makes model calls (the dream cycle is deterministic; the writing agent
   # only calls mnesis_ingest, and Mnesis runs extraction on the local model).
@@ -209,8 +216,20 @@ services:
       MNESIS_NOTES_INBOX: /data/notes_inbox
       MNESIS_NOTES_MODE: ${MNESIS_NOTES_MODE:-poll}
       MNESIS_NOTES_POLL_INTERVAL: ${MNESIS_NOTES_POLL_INTERVAL:-5}
+      # Action agent: DRAFT-ONLY and approval-GATED. It composes a grounded, cited
+      # brief from Mnesis READ tools (read-only) and PROPOSES a delivery to the
+      # inert draft outbox — NOTHING is sent to a third party (no external-send
+      # channel exists, so this introduces NO external network egress). A human
+      # approves at the gate (`agents actions approve <id>`) to write the draft.
+      # Mostly on-demand (`agents action …`); set the schedule flag to enable the
+      # periodic hook over a provided contexts file. local-llm keeps composition
+      # on-prem (the agent makes no model calls; Mnesis composes via the local model).
+      MNESIS_ACTION_OUTBOX: /data/action_outbox
+      MNESIS_AGENTS_ACTION_CHANNEL: ${MNESIS_AGENTS_ACTION_CHANNEL:-draft-outbox}
+      MNESIS_AGENTS_ACTIONS_SCHEDULE_ENABLED: ${MNESIS_AGENTS_ACTIONS_SCHEDULE_ENABLED:-}
+      MNESIS_ACTIONS_CONTEXTS_FILE: ${MNESIS_ACTIONS_CONTEXTS_FILE:-}
       # Durable state + audit + proposals/reports + connector ledger + dead-letter
-      # on the mounted volumes.
+      # + action proposals on the mounted volumes.
       MNESIS_AGENTS_CHECKPOINT_DB: /data/agents_state/checkpoints.db
       MNESIS_AGENTS_AUDIT_DIR: /data/agents_runs
       MNESIS_AGENTS_PROPOSALS_DIR: /data/agents_runs
@@ -224,6 +243,9 @@ services:
       # agent only reads notes (it ingests over MCP; the processed ledger lives on
       # the agents-runs volume, not here).
       - ${MNESIS_NOTES_INBOX_DIR:-./notes_inbox}:/data/notes_inbox:ro
+      # The action agent writes approved DRAFTS here for a human to review/send by
+      # hand. Read-write (drafts land here on approval); nothing is sent anywhere.
+      - ${MNESIS_ACTION_OUTBOX_DIR:-./action_outbox}:/data/action_outbox
     healthcheck:
       # No HTTP server (idle host); "healthy" = it can reach mnesis over the net.
       test:
