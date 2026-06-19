@@ -254,6 +254,28 @@ MNESIS_EGRESS_STATE_DIR: Path = Path(
     os.environ.get("MNESIS_EGRESS_STATE_DIR", str(MNESIS_AGENTS_CONNECTOR_STATE_DIR))
 ).expanduser()
 
+# ── Email send channel (E2) — DRY-RUN by default ────────────────────────────
+# The first external (risk_class=external) channel. It sends NOTHING unless
+# dry-run is explicitly disabled AND the egress control plane (above) permits it.
+
+#: Dry-run (default true): render the exact message but send NOTHING. A live send
+#: requires this to be false AND egress enabled + allowlisted + within quota.
+MNESIS_EMAIL_DRYRUN: bool = _bool("MNESIS_EMAIL_DRYRUN", True)
+
+#: The configured sender (From). Required for a live send.
+MNESIS_EMAIL_FROM: str | None = _opt("MNESIS_EMAIL_FROM")
+
+#: SMTP endpoint (must be on the egress endpoint allowlist) + TLS + credentials.
+#: Credentials come from env / a secret store — NEVER in code or the image.
+MNESIS_SMTP_HOST: str | None = _opt("MNESIS_SMTP_HOST")
+MNESIS_SMTP_PORT: int = int(os.environ.get("MNESIS_SMTP_PORT", "587"))
+MNESIS_SMTP_USERNAME: str | None = _opt("MNESIS_SMTP_USERNAME")
+MNESIS_SMTP_PASSWORD: str | None = _opt("MNESIS_SMTP_PASSWORD")
+#: TLS is REQUIRED for a live send (STARTTLS). Leaving this on is the only sane
+#: setting; a live send with it off is refused (blocked).
+MNESIS_EMAIL_STARTTLS: bool = _bool("MNESIS_EMAIL_STARTTLS", True)
+MNESIS_EMAIL_TIMEOUT: float = float(os.environ.get("MNESIS_EMAIL_TIMEOUT", "30"))
+
 #: LangGraph checkpointer backend ("sqlite" default; "memory" for ephemeral).
 MNESIS_AGENTS_CHECKPOINT_BACKEND: str = os.environ.get(
     "MNESIS_AGENTS_CHECKPOINT_BACKEND", "sqlite"

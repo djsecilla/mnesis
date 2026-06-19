@@ -72,19 +72,29 @@ class OutboundArtifact:
 
 @dataclass
 class DeliveryResult:
-    """The outcome of a single delivery — what happened and where it landed."""
+    """The outcome of a single delivery — what happened and where it landed.
+
+    Inert channels use ``status`` ``delivered``/``failed``; an external send
+    channel adds ``dry_run``/``sent``/``blocked``/``needs_human`` and records the
+    ``recipient``, ``endpoint``, and ``content_hash`` — but **never the body or any
+    secret**.
+    """
 
     channel: str
     risk_class: str
-    status: str                                 # "delivered" | "failed"
+    status: str                                 # delivered | failed | dry_run | sent | blocked | needs_human
     destination: str | None = None              # the (local/operator-scoped) target
     location: str | None = None                 # where it landed (path / "console")
     detail: str = ""
     error: str | None = None
+    # External-send fields (None for inert channels).
+    recipient: str | None = None
+    endpoint: str | None = None
+    content_hash: str | None = None
 
     @property
     def ok(self) -> bool:
-        return self.status == "delivered"
+        return self.status in ("delivered", "sent")
 
 
 # ── The interface ───────────────────────────────────────────────────────────
