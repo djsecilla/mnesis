@@ -219,6 +219,41 @@ MNESIS_ACTIONS_SCHEDULE_INTERVAL_SECONDS: float = float(
     os.environ.get("MNESIS_ACTIONS_SCHEDULE_INTERVAL_SECONDS", "3600")
 )
 
+# ── Egress control plane (E1) — DEFAULT-DENY ─────────────────────────────────
+# The reusable gate EVERY future risk_class=external channel must pass through.
+# With no configuration, nothing may egress.
+
+#: Master switch. When false (the default), NO external send is permitted at all.
+MNESIS_EGRESS_ENABLED: bool = _bool("MNESIS_EGRESS_ENABLED", False)
+
+#: Global kill-switch. When set, ALL egress is denied immediately — overrides
+#: everything (including ``MNESIS_EGRESS_ENABLED``).
+MNESIS_EGRESS_KILL: bool = _bool("MNESIS_EGRESS_KILL", False)
+
+#: Recipient allowlist — comma-separated exact addresses (``ops@example.com``)
+#: and/or domains (``example.com`` or ``@example.com``). **Default empty → no
+#: recipient is allowed** (add the operator's address to make it operator-only).
+MNESIS_EGRESS_RECIPIENT_ALLOWLIST: str = os.environ.get("MNESIS_EGRESS_RECIPIENT_ALLOWLIST", "")
+
+#: Endpoint allowlist — comma-separated permitted send targets (``smtp.example.com``
+#: or ``smtp.example.com:587``). Default empty → no endpoint is allowed.
+MNESIS_EGRESS_ENDPOINT_ALLOWLIST: str = os.environ.get("MNESIS_EGRESS_ENDPOINT_ALLOWLIST", "")
+
+#: Rate limits (sends per window) and daily quotas (sends per UTC day), per
+#: recipient and global. ``0`` = deny all; negative = unlimited.
+MNESIS_EGRESS_RATE_LIMIT: int = int(os.environ.get("MNESIS_EGRESS_RATE_LIMIT", "10"))
+MNESIS_EGRESS_RATE_WINDOW_SECONDS: float = float(
+    os.environ.get("MNESIS_EGRESS_RATE_WINDOW_SECONDS", "3600")
+)
+MNESIS_EGRESS_DAILY_QUOTA: int = int(os.environ.get("MNESIS_EGRESS_DAILY_QUOTA", "50"))
+MNESIS_EGRESS_GLOBAL_RATE_LIMIT: int = int(os.environ.get("MNESIS_EGRESS_GLOBAL_RATE_LIMIT", "30"))
+MNESIS_EGRESS_GLOBAL_DAILY_QUOTA: int = int(os.environ.get("MNESIS_EGRESS_GLOBAL_DAILY_QUOTA", "200"))
+
+#: Where the egress quota/rate ledger persists (gitignored).
+MNESIS_EGRESS_STATE_DIR: Path = Path(
+    os.environ.get("MNESIS_EGRESS_STATE_DIR", str(MNESIS_AGENTS_CONNECTOR_STATE_DIR))
+).expanduser()
+
 #: LangGraph checkpointer backend ("sqlite" default; "memory" for ephemeral).
 MNESIS_AGENTS_CHECKPOINT_BACKEND: str = os.environ.get(
     "MNESIS_AGENTS_CHECKPOINT_BACKEND", "sqlite"
