@@ -166,9 +166,12 @@ def test_external_channel_never_auto_runs_even_with_the_flag(tmp_path):
     p = gate.propose(action_type="send", channel="ext-send", artifact=_artifact(), destination="op")
     assert p.status == "pending"          # gated despite the flag
     assert ext.sent == []                 # nothing was sent un-gated
-    # It still requires an explicit approval to ever run.
-    gate.approve(p.id)
-    assert len(ext.sent) == 1
+    # And approving an external proposal requires an explicit recipient
+    # confirmation (E3) — a content-only approval does NOT send.
+    from mnesis_agents.action_gate import RecipientConfirmationError
+    with pytest.raises(RecipientConfirmationError):
+        gate.approve(p.id)
+    assert ext.sent == []
 
 
 def test_inert_auto_run_only_when_flag_enabled(tmp_path):

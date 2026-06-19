@@ -161,6 +161,7 @@ class ActionProposal:
     result: dict[str, Any] | None = None
     decision_note: str | None = None
     edited: bool = False
+    recipient_confirmed: bool = False               # external sends only (E3)
 
     def summary(self) -> str:
         title = (self.artifact or {}).get("title", "")

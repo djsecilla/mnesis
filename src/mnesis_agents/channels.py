@@ -97,6 +97,25 @@ class DeliveryResult:
         return self.status in ("delivered", "sent")
 
 
+@dataclass
+class ChannelPreview:
+    """A **dry-run preview** of what a channel WOULD deliver — for the human at the
+    gate to review before approving an external send. Renders nothing externally.
+
+    Shows the body for the *approver's eyes* (the body is never logged/audited);
+    ``content_hash`` and ``secret_findings`` let the gate flag a payload-scan hit.
+    """
+
+    channel: str
+    risk_class: str
+    recipient: str | None
+    endpoint: str | None
+    subject: str
+    body: str
+    content_hash: str | None = None
+    secret_findings: list[str] = field(default_factory=list)
+
+
 # ── The interface ───────────────────────────────────────────────────────────
 
 
@@ -119,6 +138,22 @@ class OutboundChannel(ABC):
         """Deliver ``artifact`` to ``destination`` (channel-specific). Returns a
         :class:`DeliveryResult`; must not raise for an ordinary failure — it
         reports ``status="failed"`` with a reason instead."""
+
+    def endpoint(self) -> str | None:
+        """The egress endpoint this channel would send to (external channels set it;
+        inert channels have none)."""
+        return None
+
+    def preview(
+        self, artifact: OutboundArtifact, destination: str | None = None,
+        context: dict[str, Any] | None = None,
+    ) -> ChannelPreview:
+        """A dry-run preview of what WOULD be delivered (sends nothing). External
+        channels override to render the exact message + run the payload scan."""
+        return ChannelPreview(
+            self.name, self.risk_class, recipient=destination, endpoint=self.endpoint(),
+            subject=artifact.title, body=artifact.body,
+        )
 
     # Small helpers for subclasses to build consistent results.
     def _ok(self, *, destination, location, detail="") -> DeliveryResult:

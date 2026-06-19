@@ -332,6 +332,32 @@ def cmd_actions(args: argparse.Namespace) -> int:
         print(f"error: `actions {sub}` requires a proposal id")
         return 2
 
+    if sub == "show":
+        try:
+            view = gate.present(args.proposal_id)
+        except Exception as exc:  # noqa: BLE001
+            print(f"error: {exc}")
+            return 2
+        print(f"proposal {view['id']} [{view['status']}] — {view['action_type']} via "
+              f"{view['channel']} ({view['risk_class']})")
+        print(f"  recipient : {view['recipient']}")
+        if view.get("endpoint"):
+            print(f"  endpoint  : {view['endpoint']}  (allowlisted: {view.get('recipient_allowlisted')})")
+        print(f"  rationale : {view['rationale']}")
+        print(f"  citations : {', '.join(view['citations']) or '(none)'}")
+        if view.get("recipient_confirmation_required"):
+            pv = view["dry_run_preview"]
+            print("  --- DRY-RUN PREVIEW (the exact message; nothing is sent) ---")
+            print(f"  subject   : {pv['subject']}")
+            if pv["secret_findings"]:
+                print(f"  ⚠ payload secret-scan: {pv['secret_findings']} — send will be BLOCKED")
+            print("  body      :")
+            for line in (pv["body"] or "").splitlines():
+                print(f"    {line}")
+            print(f"\n  To send: approve with the EXACT recipient —\n"
+                  f"    mnesis-agents actions approve {view['id']} --confirm-recipient {view['recipient']}")
+        return 0
+
     if sub == "approve":
         patch: dict = {}
         if args.title:
@@ -341,6 +367,7 @@ def cmd_actions(args: argparse.Namespace) -> int:
         try:
             res = gate.approve(
                 args.proposal_id,
+                confirm_recipient=args.confirm_recipient,
                 edited_artifact=patch or None,
                 edited_destination=args.destination,
                 note=args.note,
@@ -403,9 +430,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_action.add_argument("--channel", help="override the delivery channel (default: policy)")
     p_action.set_defaults(func=cmd_action)
 
-    p_act = sub.add_parser("actions", help="approval gate: list/approve/reject pending action proposals")
-    p_act.add_argument("subcommand", nargs="?", choices=["list", "approve", "reject"], default="list")
-    p_act.add_argument("proposal_id", nargs="?", help="the proposal id (for approve/reject)")
+    p_act = sub.add_parser("actions", help="approval gate: list/show/approve/reject pending action proposals")
+    p_act.add_argument("subcommand", nargs="?", choices=["list", "show", "approve", "reject"], default="list")
+    p_act.add_argument("proposal_id", nargs="?", help="the proposal id (for show/approve/reject)")
+    p_act.add_argument("--confirm-recipient", dest="confirm_recipient",
+                       help="REQUIRED for an external send: the EXACT recipient you are approving")
     p_act.add_argument("--destination", help="override the destination on approval (human input)")
     p_act.add_argument("--title", help="edit the artifact title on approval")
     p_act.add_argument("--body-file", dest="body_file", help="replace the artifact body from a file")

@@ -162,6 +162,24 @@ class EmailSendChannel(OutboundChannel):
     def _endpoint(self) -> str:
         return f"{self._host}:{self._port}" if self._host else ""
 
+    def endpoint(self) -> str | None:
+        return self._endpoint() or None
+
+    def preview(self, artifact, destination=None, context=None):
+        """A dry-run preview: the exact rendered message + recipient + endpoint +
+        payload-scan findings — for the human at the gate. Sends nothing."""
+        from .channels import ChannelPreview
+
+        recipient = (destination or "").strip()
+        message = self._render(artifact, recipient)
+        content_hash = "sha256:" + hashlib.sha256(message.encode("utf-8")).hexdigest()
+        findings = self._scan(f"{artifact.title or ''}\n{artifact.body or ''}\n{message}")
+        return ChannelPreview(
+            channel=self.name, risk_class=self.risk_class, recipient=recipient,
+            endpoint=self._endpoint(), subject=artifact.title or "", body=artifact.body or "",
+            content_hash=content_hash, secret_findings=findings,
+        )
+
     def _render(self, artifact: OutboundArtifact, recipient: str) -> str:
         msg = EmailMessage()
         msg["From"] = self._sender or "(unset-sender)"

@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING
 from . import config
 from .audit import AgentAuditLog
 from .channels import RISK_EXTERNAL, ChannelRegistry, DeliveryResult, OutboundArtifact
+from .egress import EgressPolicy, Recipient
 from .proposals import ActionProposal, ActionProposalStore
 
 if TYPE_CHECKING:
@@ -41,6 +42,9 @@ if TYPE_CHECKING:
 _FORBIDDEN_ARTIFACT_KEYS = frozenset(
     {"destination", "to", "recipient", "recipients", "cc", "bcc", "send_to", "sendto", "address"}
 )
+
+#: Sources a recipient confirmation may legitimately come from (a human, not content).
+_CONFIRM_SOURCES = frozenset({"policy", "user"})
 
 
 def _now() -> str:
@@ -53,6 +57,10 @@ class DestinationIntegrityError(Exception):
 
 class GateError(Exception):
     """A gate operation could not proceed (unknown/already-decided proposal)."""
+
+
+class RecipientConfirmationError(Exception):
+    """An external send was approved without a valid, matching recipient confirmation."""
 
 
 @dataclass
@@ -81,11 +89,15 @@ class ActionGate:
         store: ActionProposalStore | None = None,
         audit: AgentAuditLog | None = None,
         policy: ActionPolicy | None = None,
+        egress: EgressPolicy | None = None,
     ) -> None:
         self._channels = channels
         self._store = store if store is not None else ActionProposalStore()
         self._audit = audit if audit is not None else AgentAuditLog()
         self._policy = policy if policy is not None else default_policy()
+        #: Used to (re)validate recipients for EXTERNAL proposals (E1: allowlist +
+        #: source=policy). External channels still re-run their own egress at send.
+        self._egress = egress if egress is not None else EgressPolicy.from_config()
 
     @property
     def store(self) -> ActionProposalStore:
@@ -152,11 +164,50 @@ class ActionGate:
         self._store.put(proposal)
         if not self._must_gate(risk):
             # Inert + operator-enabled auto-run: execute now (still the gate's path).
+            # EXTERNAL can NEVER reach here — reaffirm A2's always-gated rule.
+            assert risk != RISK_EXTERNAL, "external proposals can never be auto-approved"
             self._execute(proposal, edited=False, auto=True)
             return self._store.get(proposal.id)  # the updated (executed) proposal
 
         self._audit.write_action_event("proposed", proposal)
         return proposal  # PAUSED — execution requires explicit approval
+
+    # -- presentation (what the human reviews before approving) ----------------
+
+    def present(self, proposal_id: str) -> dict:
+        """The review presentation for a proposal. For an **external** proposal it
+        shows prominently — recipient, channel, egress endpoint, a **dry-run
+        rendered preview** of the exact message, the rationale + citations, and that
+        an explicit **recipient confirmation** is required to approve."""
+        p = self._store.get(proposal_id)
+        if p is None:
+            raise GateError(f"no action proposal with id {proposal_id!r}")
+        meta = (p.artifact or {}).get("metadata") or {}
+        view: dict = {
+            "id": p.id, "action_type": p.action_type, "channel": p.channel,
+            "risk_class": p.risk_class, "status": p.status,
+            "recipient": p.destination, "rationale": p.rationale,
+            "citations": list(meta.get("citations") or []),
+        }
+        if p.risk_class == RISK_EXTERNAL:
+            artifact = OutboundArtifact(**p.artifact)
+            preview = self._channels.get(p.channel).preview(artifact, p.destination)
+            allowlisted = self._egress.validate_recipient(
+                Recipient(p.destination or "", "policy")).allowed
+            view.update({
+                "endpoint": preview.endpoint,
+                "recipient_allowlisted": allowlisted,
+                "recipient_confirmation_required": True,
+                "dry_run_preview": {
+                    "subject": preview.subject,
+                    "body": preview.body,                    # for the approver's eyes
+                    "recipient": preview.recipient,
+                    "endpoint": preview.endpoint,
+                    "content_hash": preview.content_hash,
+                    "secret_findings": preview.secret_findings,
+                },
+            })
+        return view
 
     # -- approve / edit / reject -----------------------------------------------
 
@@ -164,13 +215,20 @@ class ActionGate:
         self,
         proposal_id: str,
         *,
+        confirm_recipient: "str | Recipient | None" = None,
         edited_artifact: OutboundArtifact | dict | None = None,
         edited_destination: str | None = None,
         note: str | None = None,
     ) -> DeliveryResult:
-        """Approve a pending proposal and execute it **exactly once** via its
-        channel. ``edited_artifact``/``edited_destination`` (from the human) replace
-        the proposed values; the edited destination is still integrity-checked."""
+        """Approve a pending proposal and execute it **exactly once** via its channel.
+
+        For an **EXTERNAL** proposal, approving content is NOT approving a recipient:
+        ``confirm_recipient`` is **required** and must (a) be policy/user-sourced and
+        (b) exactly match the proposal's (possibly edited) recipient, which must
+        itself pass E1 (allowlist + source=policy). A content-only approval (no
+        ``confirm_recipient``) does **not** send. Editing the recipient re-runs E1;
+        editing content re-renders the preview + re-runs the payload scan (in the
+        channel, at send)."""
         proposal = self._require_pending(proposal_id)
 
         artifact_dict = dict(proposal.artifact)
@@ -184,12 +242,53 @@ class ActionGate:
             destination = edited_destination
             edited = True
 
+        artifact = OutboundArtifact(**artifact_dict)
+        self._validate_destination(destination, artifact)  # artifact never sets the recipient
+
+        recipient_confirmed = False
+        if proposal.risk_class == RISK_EXTERNAL:
+            recipient_confirmed = self._confirm_recipient(destination, confirm_recipient)
+
         proposal.artifact = artifact_dict
         proposal.destination = destination
         proposal.edited = edited
+        proposal.recipient_confirmed = recipient_confirmed
         if note:
             proposal.decision_note = note
         return self._execute(proposal, edited=edited, auto=False)
+
+    def _confirm_recipient(self, destination: str | None, confirm_recipient) -> bool:
+        """Enforce explicit recipient confirmation for an external send. Returns True
+        on success; raises :class:`RecipientConfirmationError` otherwise."""
+        conf_addr, conf_src = self._resolve_confirm(confirm_recipient)
+        if conf_addr is None:
+            raise RecipientConfirmationError(
+                "external send requires an explicit recipient confirmation "
+                "(approve(..., confirm_recipient=<the exact recipient>)) — approving "
+                "content is not approving a recipient"
+            )
+        if conf_src not in _CONFIRM_SOURCES:
+            raise RecipientConfirmationError(
+                f"recipient confirmation must be policy/user-sourced (got source={conf_src!r}); "
+                "a content/model/artifact-sourced recipient is never accepted"
+            )
+        if conf_addr.strip().lower() != (destination or "").strip().lower():
+            raise RecipientConfirmationError(
+                "confirm_recipient does not match the proposal's recipient"
+            )
+        # The (possibly edited) recipient must pass E1: allowlisted + policy-sourced.
+        decision = self._egress.validate_recipient(Recipient(destination or "", "policy"))
+        if decision.denied:
+            raise RecipientConfirmationError(f"recipient refused by egress policy: {decision.reason}")
+        return True
+
+    @staticmethod
+    def _resolve_confirm(confirm) -> tuple[str | None, str | None]:
+        if confirm is None:
+            return None, None
+        if isinstance(confirm, Recipient):
+            return confirm.address.strip(), (confirm.source or "").strip().lower()
+        return str(confirm).strip(), "user"  # a bare string is a human's confirmation
 
     def reject(self, proposal_id: str, reason: str = "") -> ActionProposal:
         """Reject a pending proposal — discard it, deliver nothing. Audited."""
@@ -198,6 +297,14 @@ class ActionGate:
             proposal_id, status="rejected", decision_note=reason or "rejected",
         )
         self._audit.write_action_event("rejected", updated)
+        return updated
+
+    def expire(self, proposal_id: str, reason: str = "expired") -> ActionProposal:
+        """Expire a pending proposal (e.g. it sat too long) — deliver nothing. A
+        distinct terminal status from ``rejected``; like it, it cannot then run."""
+        proposal = self._require_pending(proposal_id)
+        updated = self._store.update(proposal_id, status="expired", decision_note=reason)
+        self._audit.write_action_event("expired", updated)
         return updated
 
     # -- the single execution path (the only place a channel is invoked) -------
@@ -210,15 +317,27 @@ class ActionGate:
 
         result = self._channels.deliver(
             proposal.channel, artifact, proposal.destination,
-            context={"proposal_id": proposal.id, "action_type": proposal.action_type},
+            context={
+                "proposal_id": proposal.id,           # at-most-once idempotency key
+                "action_type": proposal.action_type,
+                # The recipient was human-confirmed at the gate → policy-sourced, so
+                # the channel's own egress (E1) check accepts the source.
+                "recipient_source": "policy",
+            },
         )
-        status = "executed" if result.ok else "failed"
+        # Reflect the channel's outcome on the proposal: a delivered/sent send is
+        # "executed"; a dry-run/blocked/needs_human/failed result keeps that status
+        # (all terminal — the proposal ran exactly once at the gate).
+        status = "executed" if result.ok else result.status
         updated = self._store.update(
             proposal.id, status=status, artifact=proposal.artifact,
             destination=proposal.destination, edited=edited, result=asdict(result),
-            decision_note=proposal.decision_note,
+            decision_note=proposal.decision_note, recipient_confirmed=proposal.recipient_confirmed,
         )
-        event = ("auto_executed" if auto else "executed") if result.ok else "execute_failed"
+        if result.ok:
+            event = "auto_executed" if auto else "executed"
+        else:
+            event = "execute_failed" if result.status == "failed" else f"execute_{result.status}"
         self._audit.write_action_event(event, updated)
         return result
 

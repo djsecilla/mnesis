@@ -140,8 +140,10 @@ class AgentAuditLog:
             "artifact_body_chars": len(artifact.get("body") or ""),
             "status": proposal.status,
             "edited": getattr(proposal, "edited", False),
+            "recipient_confirmed": getattr(proposal, "recipient_confirmed", False),
             "result_status": result.get("status"),
             "result_location": result.get("location"),
+            "result_content_hash": result.get("content_hash"),
         })
 
     def write_dream_cycle(self, report, *, run_id: str) -> None:
