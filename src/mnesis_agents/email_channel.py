@@ -36,6 +36,7 @@ from typing import Any, Callable
 from . import config, secret_scan
 from .channels import RISK_EXTERNAL, DeliveryResult, OutboundArtifact, OutboundChannel
 from .egress import EgressPolicy, Recipient
+from .send_audit import SendAuditLog
 from .triggers.connector import path_lock
 
 log = logging.getLogger("mnesis_agents.email")
@@ -55,39 +56,53 @@ class AmbiguousSendError(Exception):
     """Raised by a transport when it cannot tell whether the message was sent."""
 
 
-# ── At-most-once ledger ─────────────────────────────────────────────────────
+# ── At-most-once idempotency ledger (crash-safe state machine) ──────────────
+# Per send key (a stable id per approved proposal): in_flight | sent | needs_human.
+# The key is marked ``in_flight`` BEFORE transmit, so a process crash mid-send
+# leaves it ``in_flight`` — which a duplicate path resolves to **needs_human**
+# (never an automatic resend).
+
+_IN_FLIGHT = "in_flight"
+_SENT = "sent"
+_NEEDS_HUMAN = "needs_human"
 
 
 class _SentStore:
-    """Durable set of idempotency keys already sent (or attempted ambiguously), so
-    a send happens **at most once**. JSON, lock-guarded."""
+    """Durable ``{send_key: state}`` ledger for at-most-once delivery. JSON,
+    lock-guarded, atomic writes."""
 
     def __init__(self, path: Path | str) -> None:
         self.path = Path(path)
         self._lock = path_lock(self.path)
 
-    def contains(self, key: str) -> bool:
-        with self._lock:
-            if not self.path.is_file():
-                return False
-            try:
-                return key in set(json.loads(self.path.read_text(encoding="utf-8") or "[]"))
-            except Exception:  # noqa: BLE001
-                return False
+    def _load(self) -> dict[str, str]:
+        if not self.path.is_file():
+            return {}
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8") or "{}")
+            return data if isinstance(data, dict) else {}
+        except Exception:  # noqa: BLE001
+            return {}
 
-    def add(self, key: str) -> None:
+    def state(self, key: str) -> str | None:
         with self._lock:
-            keys = []
-            if self.path.is_file():
-                try:
-                    keys = json.loads(self.path.read_text(encoding="utf-8") or "[]")
-                except Exception:  # noqa: BLE001
-                    keys = []
-            if key not in keys:
-                keys.append(key)
-                self.path.parent.mkdir(parents=True, exist_ok=True)
+            return self._load().get(key)
+
+    def set(self, key: str, state: str) -> None:
+        with self._lock:
+            data = self._load()
+            data[key] = state
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.path.with_suffix(self.path.suffix + ".tmp")
+            tmp.write_text(json.dumps(data), encoding="utf-8")
+            tmp.replace(self.path)
+
+    def delete(self, key: str) -> None:
+        with self._lock:
+            data = self._load()
+            if data.pop(key, None) is not None:
                 tmp = self.path.with_suffix(self.path.suffix + ".tmp")
-                tmp.write_text(json.dumps(keys), encoding="utf-8")
+                tmp.write_text(json.dumps(data), encoding="utf-8")
                 tmp.replace(self.path)
 
 
@@ -141,6 +156,7 @@ class EmailSendChannel(OutboundChannel):
         transport: Transport | None = None,
         sent_store: _SentStore | None = None,
         scanner: Callable[[str], list[str]] | None = None,
+        send_audit: SendAuditLog | None = None,
     ) -> None:
         self._egress = egress if egress is not None else EgressPolicy.from_config()
         self._dryrun = config.MNESIS_EMAIL_DRYRUN if dryrun is None else dryrun
@@ -156,6 +172,7 @@ class EmailSendChannel(OutboundChannel):
             config.MNESIS_EGRESS_STATE_DIR / "email_sent.json"
         )
         self._scan = scanner or secret_scan.scan
+        self._send_audit = send_audit if send_audit is not None else SendAuditLog()
 
     # -- helpers ---------------------------------------------------------------
 
@@ -206,54 +223,79 @@ class EmailSendChannel(OutboundChannel):
         # The recipient SOURCE must be supplied by the caller (the gate passes
         # policy/user); absent → unknown → the egress plane fails closed.
         source = context.get("recipient_source") or "unknown"
-        idem = context.get("idempotency_key") or context.get("proposal_id")
+        # The stable send key per approved proposal (at-most-once across the path).
+        key = str(context.get("idempotency_key") or context.get("proposal_id") or "")
+        approval_id = context.get("approval_id")
         endpoint = self._endpoint()
         now = context.get("now") or datetime.now(timezone.utc)
 
+        content_hash = None
         try:
             message = self._render(artifact, recipient)
             content_hash = "sha256:" + hashlib.sha256(message.encode("utf-8")).hexdigest()
 
-            def res(status, **kw):
+            def finish(status, *, decision, detail="", error=None) -> DeliveryResult:
+                """Write exactly ONE immutable send-audit record, then return."""
+                try:
+                    self._send_audit.record(
+                        proposal_id=context.get("proposal_id"), approval_id=approval_id,
+                        channel=self.name, recipient=recipient, endpoint=endpoint,
+                        content_hash=content_hash, decision=decision, status=status,
+                    )
+                except Exception:  # noqa: BLE001 — auditing never breaks delivery
+                    log.exception("send-audit write failed")
                 return self._result(status, recipient=recipient, endpoint=endpoint,
-                                    content_hash=content_hash, **kw)
+                                    content_hash=content_hash, detail=detail, error=error)
 
-            # At-most-once: this idempotency key already sent (or ambiguously
-            # attempted) → never send again.
-            if idem and self._sent.contains(str(idem)):
-                return res("sent", detail="already sent for this idempotency key (no re-send)")
+            # 1) At-most-once: resolve an already-seen send key BEFORE anything.
+            state = self._sent.state(key) if key else None
+            if state == _SENT:
+                return finish("sent", decision="idempotent", detail="already sent (no re-send)")
+            if state in (_IN_FLIGHT, _NEEDS_HUMAN):
+                # A prior attempt's outcome is unknown (possible crash mid-send) →
+                # resolve to needs_human; NEVER an automatic resend.
+                return finish("needs_human", decision="idempotent",
+                              detail="a prior send attempt is unresolved (possible crash); "
+                                     "NOT resent — a human must verify delivery")
 
-            # Egress decision (computed once; enforced for any live send).
-            decision = self._egress.check_send_allowed(
-                RISK_EXTERNAL, Recipient(recipient, source), endpoint, now=now)
-
-            # Payload secret-scan ALWAYS (defense in depth) — block, dry-run or live.
-            # Scan the PLAINTEXT payload (subject + body) as well as the rendered
-            # message, so a transfer-encoding (quoted-printable/base64) can't hide a
-            # secret the recipient would simply decode.
-            scan_text = f"{artifact.title or ''}\n{artifact.body or ''}\n{message}"
-            findings = self._scan(scan_text)
+            # 2) Payload secret-scan ALWAYS (defense in depth) — over plaintext +
+            #    rendered, so a transfer-encoding can't hide a secret.
+            findings = self._scan(f"{artifact.title or ''}\n{artifact.body or ''}\n{message}")
             if findings:
                 log.warning("email send BLOCKED by secret-scan (%d finding(s))", len(findings))
-                return res("blocked", error="payload secret-scan hit",
-                           detail=f"blocked: payload secret-scan found {findings} — flagged for review, not sent")
+                return finish("blocked", decision="secret_scan", error="payload secret-scan hit",
+                              detail=f"blocked: payload secret-scan found {findings} — flagged, not sent")
 
-            # Dry-run (default): render + return; send NOTHING. Surface the egress
-            # decision so the operator sees whether a live send WOULD be allowed.
+            # 3) Dry-run (default): render + return; send NOTHING.
             if self._dryrun:
-                verdict = "would ALLOW" if decision.allowed else f"would DENY ({decision.reason})"
-                return res("dry_run", detail=f"DRY-RUN: rendered, not sent; egress {verdict}")
+                preview = self._egress.check_send_allowed(
+                    RISK_EXTERNAL, Recipient(recipient, source), endpoint, now=now)
+                verdict = "would ALLOW" if preview.allowed else f"would DENY ({preview.reason})"
+                return finish("dry_run", decision=f"dry_run/{verdict}",
+                              detail=f"DRY-RUN: rendered, not sent; egress {verdict}")
 
             # --- live send path ---
-            if decision.denied:
-                return res("blocked", error="egress denied",
-                           detail=f"blocked by egress control plane: {decision.reason}")
             if not self._starttls:
-                return res("blocked", error="tls required",
-                           detail="blocked: TLS (STARTTLS) is required for a live send")
+                return finish("blocked", decision="tls_required", error="tls required",
+                              detail="blocked: TLS (STARTTLS) is required for a live send")
             if not (self._host and self._sender):
-                return res("failed", error="misconfigured",
-                           detail="blocked: SMTP host and sender (From) are required for a live send")
+                return finish("failed", decision="misconfigured", error="misconfigured",
+                              detail="blocked: SMTP host and sender (From) are required")
+
+            # 4) E1 at the LAST moment before transmit: kill-switch + quota +
+            #    allowlist + endpoint, re-evaluated NOW (a kill/quota change after
+            #    approval still halts the send).
+            decision = self._egress.check_send_allowed(
+                RISK_EXTERNAL, Recipient(recipient, source), endpoint, now=now)
+            if decision.denied:
+                return finish("blocked", decision=f"egress_deny/{decision.reason}",
+                              error="egress denied", detail=f"blocked by egress: {decision.reason}")
+
+            # 5) Commit: count the send against quotas, then mark the key IN-FLIGHT
+            #    BEFORE transmit — a crash now leaves it in_flight → needs_human.
+            self._egress.record_send(Recipient(recipient, "policy"), now=now)
+            if key:
+                self._sent.set(key, _IN_FLIGHT)
 
             try:
                 self._transport(
@@ -262,24 +304,38 @@ class EmailSendChannel(OutboundChannel):
                     sender=self._sender, recipient=recipient, message=message,
                     timeout=self._timeout,
                 )
+            # NOTE: a real crash (SystemExit/KeyboardInterrupt — BaseException) is
+            # NOT caught here, so it propagates and the key stays IN-FLIGHT → a
+            # later duplicate resolves to needs_human (no resend).
             except AmbiguousSendError as exc:
-                # Delivery is uncertain → at-most-once means DO NOT retry. Record the
-                # key so a re-trigger can't re-send, and flag for a human to verify.
-                if idem:
-                    self._sent.add(str(idem))
-                log.warning("email send AMBIGUOUS — flagged needs_human, not retried")
-                return res("needs_human",
-                           detail="ambiguous transport failure after a send attempt; "
-                                  "NOT auto-retried — a human must verify delivery", error=str(exc))
-            except Exception as exc:  # noqa: BLE001 — a clean failure (definitely not sent)
+                if key:
+                    self._sent.set(key, _NEEDS_HUMAN)
+                log.warning("email send AMBIGUOUS — needs_human, not retried")
+                return finish("needs_human", decision="allow", error=str(exc),
+                              detail="ambiguous transport failure after a send attempt; "
+                                     "NOT auto-retried — a human must verify delivery")
+            except Exception as exc:  # noqa: BLE001 — a CLEAN failure (definitely not sent)
+                if key:
+                    self._sent.delete(key)  # safe: nothing was sent
                 log.warning("email send failed (clean, not sent): %s", exc)
-                return res("failed", detail="send failed (not delivered)", error=str(exc))
+                return finish("failed", decision="allow", error=str(exc),
+                              detail="send failed (not delivered)")
 
-            # Clean success → record idempotency key (at-most-once) and report sent.
-            if idem:
-                self._sent.add(str(idem))
+            # Clean success → mark SENT (at-most-once) and report.
+            if key:
+                self._sent.set(key, _SENT)
             log.info("email sent to %s via %s", recipient.split("@")[-1] if "@" in recipient else "?", endpoint)
-            return res("sent", detail="sent via SMTP+TLS")
+            return finish("sent", decision="allow", detail="sent via SMTP+TLS")
         except Exception as exc:  # noqa: BLE001 — a channel reports, never crashes
+            # (A true crash — SystemExit/KeyboardInterrupt — is BaseException, so it
+            # is NOT caught here: it propagates, leaving the key in_flight.)
+            try:
+                self._send_audit.record(
+                    proposal_id=context.get("proposal_id"), approval_id=approval_id,
+                    channel=self.name, recipient=recipient, endpoint=endpoint,
+                    content_hash=content_hash, decision="error", status="failed",
+                )
+            except Exception:  # noqa: BLE001
+                pass
             return self._result("failed", recipient=recipient, endpoint=endpoint,
-                                content_hash=None, detail="unexpected error", error=str(exc))
+                                content_hash=content_hash, detail="unexpected error", error=str(exc))

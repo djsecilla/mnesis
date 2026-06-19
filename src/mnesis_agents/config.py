@@ -276,6 +276,13 @@ MNESIS_SMTP_PASSWORD: str | None = _opt("MNESIS_SMTP_PASSWORD")
 MNESIS_EMAIL_STARTTLS: bool = _bool("MNESIS_EMAIL_STARTTLS", True)
 MNESIS_EMAIL_TIMEOUT: float = float(os.environ.get("MNESIS_EMAIL_TIMEOUT", "30"))
 
+#: The immutable, append-only, hash-chained **send-audit** log — one record per
+#: external send attempt (ids, recipient, endpoint, content hash, decision,
+#: status; NEVER the body or a secret). Gitignored.
+MNESIS_SEND_AUDIT_FILE: Path = Path(
+    os.environ.get("MNESIS_SEND_AUDIT_FILE", str(MNESIS_EGRESS_STATE_DIR / "send_audit.jsonl"))
+).expanduser()
+
 #: LangGraph checkpointer backend ("sqlite" default; "memory" for ephemeral).
 MNESIS_AGENTS_CHECKPOINT_BACKEND: str = os.environ.get(
     "MNESIS_AGENTS_CHECKPOINT_BACKEND", "sqlite"

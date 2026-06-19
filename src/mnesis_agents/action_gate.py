@@ -315,10 +315,12 @@ class ActionGate:
         # could have introduced a content-sourced destination).
         self._validate_destination(proposal.destination, artifact)
 
+        approval_id = uuid.uuid4().hex[:16]   # one approval → one execution
         result = self._channels.deliver(
             proposal.channel, artifact, proposal.destination,
             context={
                 "proposal_id": proposal.id,           # at-most-once idempotency key
+                "approval_id": approval_id,           # which approval triggered the send
                 "action_type": proposal.action_type,
                 # The recipient was human-confirmed at the gate → policy-sourced, so
                 # the channel's own egress (E1) check accepts the source.

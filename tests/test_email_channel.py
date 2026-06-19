@@ -157,9 +157,9 @@ def test_ambiguous_failure_is_needs_human_and_not_retried(tmp_path):
     res = ch.deliver(_artifact(), _RCPT, _ctx(proposal_id="amb"))
     assert res.status == "needs_human" and "NOT auto-retried" in res.detail
     assert len(transport.calls) == 1
-    # A repeat does NOT re-send (the ambiguous attempt was recorded).
+    # A repeat does NOT re-send — the unresolved attempt stays needs_human.
     again = ch.deliver(_artifact(), _RCPT, _ctx(proposal_id="amb"))
-    assert again.status == "sent" and len(transport.calls) == 1
+    assert again.status == "needs_human" and len(transport.calls) == 1
 
 
 def test_clean_failure_reports_failed_without_retry(tmp_path):
