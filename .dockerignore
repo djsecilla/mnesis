@@ -16,9 +16,10 @@ scripts/
 tests/
 .pytest_cache
 
-# Agent host scratch (watch inbox + run audit) — mounted at runtime, never baked.
-agent_watch/
-agent_runs/
+# Agent host scratch (notes inbox + outbox + run audit) — mounted at runtime, never baked.
+notes_inbox/
+action_outbox/
+mnesis_agents_runs/
 
 # Packaging / docs noise.
 *.egg-info

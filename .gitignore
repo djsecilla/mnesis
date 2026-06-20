@@ -6,9 +6,6 @@ __pycache__/
 *.egg-info/
 build/
 dist/
-agent_runs/
-agent_watch/*
-!agent_watch/.gitkeep
 notes_inbox/*
 !notes_inbox/.gitkeep
 action_outbox/*

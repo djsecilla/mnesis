@@ -6,10 +6,9 @@ set -e
 CMD="${1:-serve}"
 
 # --- wiki prep (server / cli / maintenance only) ----------------------------
-# The agent runtimes are stateless MCP CLIENTS — no local store, so they skip all
-# of this (no /data/mnesis git repo, no rebuild). Both the A-series `agent` and
-# the LangGraph `agents` runtime are clients.
-if [ "$CMD" != "agent" ] && [ "$CMD" != "agents" ]; then
+# The `agents` runtime is a stateless MCP CLIENT — no local store, so it skips all
+# of this (no /data/mnesis git repo, no rebuild).
+if [ "$CMD" != "agents" ]; then
     ROOT="${MNESIS_ROOT:-/data/mnesis}"
 
     # ensure the wiki tree and the canonical git repo exist
@@ -50,15 +49,9 @@ case "$CMD" in
         # maintenance`); do not run it as a service alongside the agents profile.
         exec /usr/local/bin/maintenance.sh
         ;;
-    agent)
-        # A-series runtime agent — reaches Mnesis only over the MCP endpoint
-        # (no volume, no local store). e.g. `agent ingest-daemon --watch /watch`.
-        shift
-        exec mnesis-agent "$@"
-        ;;
     agents)
-        # LangGraph agentic runtime — also an MCP-only client. e.g. `agents run`
-        # (idle/healthy with no agents registered yet).
+        # LangGraph agentic runtime — an MCP-only client (no volume, no local
+        # store). e.g. `agents run` (dream cycle + notes inbox + action agent).
         shift
         exec mnesis-agents "$@"
         ;;

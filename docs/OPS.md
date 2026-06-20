@@ -20,10 +20,10 @@ Rule of thumb: **everything in `.index/` except `state.db` is a cache** that
 `mnesis rebuild` reconstructs from Markdown (+ `state.db`). Confidence and the
 graph degrade gracefully to their Markdown-only values if `state.db` is lost.
 
-**Agent runtimes are stateless w.r.t. knowledge.** The `--profile agent` /
-`--profile agents` services hold **no canonical state** — all knowledge lives in
-`mnesis`. Their volumes (`mnesis-agent-runs`, and `mnesis-agents-runs` /
-`mnesis-agents-state`) carry only agent artefacts: the append-only run audit, the
+**The agent runtime is stateless w.r.t. knowledge.** The `--profile agents`
+service holds **no canonical state** — all knowledge lives in `mnesis`. Its
+volumes (`mnesis-agents-runs` / `mnesis-agents-state`) carry only agent artefacts:
+the append-only run audit, the
 LangGraph checkpoints (resumable threads), the dream-cycle **proposals queue +
 reports**, the notes-inbox writer's **connector ledger + dead-letter** (under
 `/data/agents_runs/connectors`), and the action agent's **action proposals**.

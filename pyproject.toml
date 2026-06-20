@@ -53,7 +53,6 @@ agents-all = [
 
 [project.scripts]
 mnesis = "mnesis.cli:main"
-mnesis-agent = "mnesis_agent.cli:main"
 mnesis-agents = "mnesis_agents.cli:main"
 
 [tool.setuptools.packages.find]

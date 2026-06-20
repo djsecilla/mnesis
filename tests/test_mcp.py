@@ -49,15 +49,15 @@ def test_mnesis_ingest_reports_summary_and_redacts(wiki):
     assert FAKE_SECRET not in page_text
 
 
-def test_mnesis_ingest_action_line_is_parseable(wiki):
-    """The agent's daemon parses the action/page_id from the tool's text output."""
-    from mnesis_agent.daemon import _parse_ingest_result
-
+def test_mnesis_ingest_action_line_is_present(wiki):
+    """mnesis_ingest's text output carries the routing action + page id (the
+    machine-readable lines an MCP client parses)."""
     out = mcp_server.mnesis_ingest("Project Atlas uses Redis for caching.", "atlas-notes")
-    parsed = _parse_ingest_result(out)
-    assert parsed["action"] == "new"
-    assert parsed["page_id"]  # the real page id, extracted from "ingested page: <id>"
-    assert parsed["page_id"] in {p.id for p in store.list_pages()}
+    assert "action: new" in out
+    assert "ingested page:" in out
+    page_id = next(line.split(":", 1)[1].strip() for line in out.splitlines()
+                   if line.startswith("ingested page:"))
+    assert page_id in {p.id for p in store.list_pages()}
 
 
 # --- HTTP transport: DNS-rebinding Host allowlist ---------------------------

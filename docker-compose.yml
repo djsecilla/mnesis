@@ -89,69 +89,6 @@ services:
       retries: 5
       start_period: 10s
 
-  # --- runtime agent: the ingest-daemon (profile: agent) -----------------------
-  # NOT started by a plain `up`. Bring it up with:
-  #   docker compose --profile agent up -d
-  # A separately-deployable MCP CLIENT of mnesis (it never imports the core and
-  # holds no knowledge state): it reaches Mnesis ONLY over the MCP endpoint on
-  # the internal compose network, so Mnesis's own governance (redaction,
-  # contradiction review) still gates every write — the agent merely calls the
-  # tool. It watches /watch and ingests new files via mnesis_ingest; run logs go
-  # to a volume (knowledge stays in mnesis). The same service definition backs
-  # the one-off `make agent-research` / `make agent-assistant` (docker compose
-  # run --rm mnesis-agent agent <research|assistant> ...).
-  mnesis-agent:
-    build: .
-    image: mnesis:latest
-    profiles: ["agent"]
-    command: agent ingest-daemon --watch /watch --poll-interval ${MNESIS_AGENT_POLL_INTERVAL:-5}
-    restart: unless-stopped
-    depends_on:
-      mnesis:
-        condition: service_healthy
-    env_file:
-      - path: .env
-        required: false
-    environment:
-      # Reach Mnesis over the internal network only (no published port needed).
-      MNESIS_MCP_URL: ${MNESIS_AGENT_MCP_URL:-http://mnesis:8080/mcp}
-      # Must match the server's token so the bearer-authenticated /mcp accepts us.
-      MNESIS_MCP_TOKEN: ${MNESIS_MCP_TOKEN:-}
-      # Inference provider for the interactive archetypes (the ingest-daemon does
-      # NOT call an LLM — extraction runs server-side in mnesis). Mirrors the core
-      # stack: set MNESIS_LLM_PROVIDER=local in .env for fully-local, on-prem
-      # inference via host Ollama (no external calls).
-      MNESIS_LLM_PROVIDER: ${MNESIS_LLM_PROVIDER:-anthropic}
-      MNESIS_LLM_MODEL: ${MNESIS_LLM_MODEL:-claude-sonnet-4-6}
-      MNESIS_LLM_BASE_URL: ${MNESIS_LLM_BASE_URL:-http://host.docker.internal:11434}
-      MNESIS_LLM_STUB: ${MNESIS_LLM_STUB:-}
-      # Append-only JSONL run audit (statuses + ids only — never values).
-      MNESIS_AGENT_AUDIT_DIR: /data/agent_runs
-      # Optional in-process local tools (e.g. web_search) — off unless set; only
-      # the research profile may ever use them.
-      MNESIS_AGENT_ENABLE_LOCAL_TOOLS: ${MNESIS_AGENT_ENABLE_LOCAL_TOOLS:-}
-    # Reach the host's Ollama as host.docker.internal when provider=local.
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    volumes:
-      # Drop files here on the host to ingest them. Read-only: the daemon only
-      # reads — it ingests via MCP and never modifies the watch dir.
-      - ${MNESIS_AGENT_WATCH_DIR:-./agent_watch}:/watch:ro
-      # Run audit (logs only). Knowledge state lives in mnesis, not here.
-      - mnesis-agent-runs:/data/agent_runs
-    healthcheck:
-      # No port to probe; "healthy" means the daemon can reach mnesis over the
-      # internal network. /health is unauthenticated; python is already present.
-      test:
-        - CMD
-        - python
-        - -c
-        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://mnesis:8080/health', timeout=3).status==200 else 1)"
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
-
   # --- LangGraph agentic runtime (profile: agents) -----------------------------
   # NOT started by a plain `up`. Bring it up with:
   #   docker compose --profile agents up -d
@@ -304,7 +241,6 @@ services:
 
 volumes:
   mnesis-data:
-  mnesis-agent-runs:         # A-series agent run audit (JSONL); --profile agent
   mnesis-agents-state:       # LangGraph checkpoints (resumable threads); --profile agents
   mnesis-agents-runs:        # LangGraph run audit (JSONL); --profile agents
   # postgres-data:           # (Tier-B) uncomment alongside the postgres service

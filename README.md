@@ -25,8 +25,7 @@ is the intended design.
 - [Quickstart](#quickstart)
 - [Using the CLI](#using-the-cli)
 - [The three surfaces](#the-three-surfaces) — CLI · MCP · Web UI
-- [The agent layer](#the-agent-layer) — the runtime agent (`mnesis-agent`)
-- [The LangGraph agent foundation](#the-langgraph-agent-foundation) — multi-LLM agents: the maintenance **dream cycle**, the notes-inbox **writing agent**, and the approval-gated **action agent**
+- [The agent layer](#the-langgraph-agent-foundation) — multi-LLM agents: the maintenance **dream cycle**, the notes-inbox **writing agent**, and the approval-gated **action agent**
 - [Running with Docker](#running-with-docker)
 - [Making the most of mnesis](#making-the-most-of-mnesis) — best practices
 - [Configuration reference](#configuration-reference)
@@ -45,7 +44,7 @@ is the intended design.
 | **Relation-aware lifecycle** | A new source can **reinforce**, **supersede**, **contradict**, or **create** — mnesis routes it, and flags conflicts it can't resolve for review. |
 | **Typed knowledge graph** | Entities and typed relations are extracted into a graph you can traverse and run **impact analysis** over ("what breaks if I change Redis?"). |
 | **Three surfaces, one core** | The same core is reached by a **CLI** (humans/scripts), an **MCP server** (agents), and a **web UI** (browser) — none has private state. |
-| **A runtime agent layer** | A separately-deployable agent that uses mnesis as memory — grounded assistant, multi-step researcher, and an ingest daemon — reaching it **only over MCP**. |
+| **A multi-LLM agent layer** | A separately-deployable LangGraph agent runtime that uses mnesis as memory — reaching it **only over MCP**, governed, with on-prem inference. |
 | **Self-curating maintenance** | A multi-LLM LangGraph foundation whose scheduled **dream cycle** keeps the KB healthy — auto-applying safe hygiene (decay, graph fixes) and surfacing contradiction/dedup **proposals** for review, all over MCP and governed. |
 | **Source-connector ingestion** | A reusable pipeline turns inbound sources into governed ingestions — the first is a **notes/Markdown inbox** that watches a folder and ingests notes (dedup + retry + dead-letter). A new source = connector + parse skill + one mapping entry. |
 | **Approval-gated actions** | An action agent composes grounded, cited artifacts (e.g. a meeting brief) and **proposes** them; a human approves before anything happens. In this set it's **draft-only** — no external send, no egress; destinations come from policy, never content. |
@@ -361,46 +360,9 @@ bearer token (nginx injects it server-side).
 
 ---
 
-## The agent layer
-
-mnesis ships a **runtime agent** (`mnesis_agent`, console script `mnesis-agent`)
-that uses the knowledge base as long-term memory. It is a *separately-deployable
-client*: it reaches mnesis **only over the MCP endpoint** and never imports the
-core — so **mnesis's governance still gates every write** (redaction and
-contradiction review run server-side; the agent merely calls the tool and cannot
-bypass them). One core, three profiles:
-
-| Archetype | Tools | Writes | Entry |
-|---|---|---|---|
-| **assistant** | read/graph (query, get, entity, impact, traverse) | **proposes** a digest; never writes itself — the human confirms | interactive REPL |
-| **research** | read/graph + `file_back` | **applies** — files exactly one digest (digests only; never ingests or supersedes) | one-shot batch |
-| **ingest-daemon** | `ingest` (+ read for dedup) | **applies** — ingests files dropped in a watched directory | long-running watcher |
-
-Each run is bounded by guardrails (max tool calls, token budget, wall-clock
-deadline, no-progress detection) and writes an **append-only audit** (statuses
-and ids only — never argument values or results).
-
-**Native use** (point the agent at a running HTTP MCP server):
-
-```bash
-# terminal 1 — run mnesis as an HTTP MCP server
-MNESIS_MCP_TRANSPORT=http MNESIS_MCP_TOKEN=secret uv run python -m mnesis.mcp_server
-
-# terminal 2 — point the agent at it
-export MNESIS_MCP_URL=http://localhost:8080/mcp MNESIS_MCP_TOKEN=secret
-uv run mnesis-agent research "what depends on redis in atlas"   # cited report + a filed digest
-uv run mnesis-agent assistant                                   # grounded REPL; proposes a file-back you confirm
-uv run mnesis-agent ingest-daemon --watch ./inbox               # ingest new files as they appear
-```
-
-The dockerized daemon and one-off runs are covered under
-[Running with Docker](#running-with-docker).
-
----
-
 ## The LangGraph agent foundation
 
-A second, **LangGraph-based** agent foundation (`mnesis_agents`) is the substrate
+The **LangGraph-based** agent foundation (`mnesis_agents`) is the substrate
 concrete agents are built on. It is **multi-LLM from the ground up** and reaches
 Mnesis **only over MCP**. The base, the category abstractions, the runtime, and
 **three concrete agents** — the scheduled
@@ -618,37 +580,15 @@ and survives `docker compose down`; only `down -v` wipes it. The web UI is on
 ### Optional profiles (not started by a plain `up`)
 
 ```bash
-docker compose --profile agents up -d         # the scheduled dream-cycle maintenance agent (periodic upkeep)
-docker compose --profile agent up -d          # the ingest-daemon agent (below)
+docker compose --profile agents up -d         # the agent runtime: dream cycle + notes inbox + action agent
 ```
+
+The agent runtime (`--profile agents`) is covered in
+[The LangGraph agent foundation](#the-langgraph-agent-foundation) — drop a note in
+`./notes_inbox` to ingest it, run a dream cycle, or propose/approve an action.
 
 > The old `--profile maintenance` upkeep sidecar is **retired** — periodic decay /
 > graph-lint is now owned solely by the dream-cycle agent (`--profile agents`).
-
-### The ingest-daemon as a service
-
-`make agent-up` starts the daemon, which watches `./agent_watch`
-(`MNESIS_AGENT_WATCH_DIR`) and ingests any file dropped there:
-
-```bash
-make agent-up                                       # docker compose --profile agent up -d
-cp notes.txt ./agent_watch/                         # → ingested into mnesis…
-make docker-cli ARGS='query "<phrase from notes.txt>"'   # …and queryable
-make agent-logs                                     # one log line per ingest outcome
-make agent-down
-```
-
-The daemon is **resilient** (a bad file is logged and skipped, the loop survives)
-and **idempotent** (re-seeing a file is a no-op). It reaches mnesis only over the
-internal compose network and is **stateless** — knowledge stays in mnesis; the run
-audit goes to the `mnesis-agent-runs` volume.
-
-Research and assistant run as one-off containers sharing the same service env:
-
-```bash
-make agent-research GOAL="what depends on redis in atlas"   # cited report + created digest id
-make agent-assistant                                        # interactive grounded REPL
-```
 
 ### Local-first inference (nothing leaves the box)
 
@@ -669,7 +609,7 @@ MNESIS_LLM_STUB=0
 MNESIS_LLM_BASE_URL=http://host.docker.internal:11434   # the default
 
 # 3. Bring it up — sources, the KB, and inference all stay inside one trust boundary.
-docker compose --profile agent up -d
+docker compose --profile agents up -d
 ```
 
 ---
@@ -712,8 +652,8 @@ that's how the KB stays trustworthy. A resolved review never reappears.
 
 **Pick the right surface.** Humans curate fastest in the **web UI** (preview +
 confirm) or the **CLI**; agents reach the **MCP** tools; long-running ingestion
-belongs to a **connector** (the notes inbox) or the A-series daemon. They all hit
-the same store, so mix freely.
+belongs to a **connector** (the notes inbox). They all hit the same store, so mix
+freely.
 
 **Trust the redaction boundary — and keep it strict.** Secrets/PII are scrubbed
 before anything is written, including in reports and in anything an agent ingests.
@@ -811,21 +751,12 @@ class, weights, auto-resolve margin, stale thresholds) — all env-overridable; 
 | `MNESIS_MAX_UPLOAD_BYTES` | `2000000` | Max bytes accepted by the ingestion upload endpoints. |
 | `MNESIS_UI_PORT` | `3000` | Host port for the web UI. |
 
-### Agent layer (`mnesis-agent`)
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `MNESIS_MCP_URL` | `http://localhost:8080/mcp` | The MCP endpoint the agent connects to. |
-| `MNESIS_MCP_TOKEN` | unset | Bearer token; must match the server's. |
-| `MNESIS_AGENT_AUDIT_DIR` | `./agent_runs` | Directory for the append-only JSONL run audit. |
-| `MNESIS_AGENT_ENABLE_LOCAL_TOOLS` | unset | When set, registers example local tools (research profile only). Off by default. |
-| `MNESIS_AGENT_WATCH_DIR` | `./agent_watch` | Directory the dockerized ingest-daemon watches. |
-
-### LangGraph agent foundation (`mnesis-agents`)
+### Agent layer (`mnesis-agents`)
 
 The provider switch is **shared with the core** — `MNESIS_LLM_PROVIDER` /
-`MNESIS_LLM_MODEL` select the model for both. MCP connection uses the same
-`MNESIS_MCP_URL` / `MNESIS_MCP_TOKEN` as above.
+`MNESIS_LLM_MODEL` select the model for both. The agent runtime connects to Mnesis
+over MCP via `MNESIS_MCP_URL` (default `http://localhost:8080/mcp`) and
+`MNESIS_MCP_TOKEN` (must match the server's).
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -899,8 +830,6 @@ rebuildable cache — asserted by `tests/test_phase3_e2e.py`.
 ```
 src/mnesis/          the core: store · filters · ingest · search · graph · confidence ·
                      lifecycle · vocab · maintenance · MCP server · REST/SSE gateway · CLI
-src/mnesis_agent/    the runtime agent: MCP client · provider tool-use · bounded loop ·
-                     memory/grounding · policy · audit · daemon · the three archetypes
 src/mnesis_agents/   the LangGraph agent foundation: multi-LLM base · category ABCs · skills ·
                      governance · triggers/runner · the MaintenanceAgent (dream cycle) ·
                      source connectors + the WritingAgent (ingestion pipeline) · outbound

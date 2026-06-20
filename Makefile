@@ -72,23 +72,6 @@ docker-demo: ## Run the latest-phase demo inside the container (offline, self-co
 	docker compose run --rm -e MNESIS_LLM_STUB=1 -v "$(PWD)/scripts:/scripts:ro" \
 		--entrypoint python mnesis "/scripts/$$d.py"
 
-# --- Agent layer ------------------------------------------------------------
-
-agent-up: ## Start the ingest-daemon agent alongside mnesis (docker compose --profile agent)
-	docker compose --profile agent up -d
-
-agent-down: ## Stop the agent service (mnesis stays up)
-	docker compose rm -sf mnesis-agent
-
-agent-logs: ## Tail the ingest-daemon logs
-	docker compose logs -f mnesis-agent
-
-agent-research: ## Bounded research investigation against the running stack: make agent-research GOAL="what uses redis"
-	docker compose run --rm mnesis-agent agent research "$(GOAL)"
-
-agent-assistant: ## Interactive grounded assistant REPL against the running stack
-	docker compose run --rm mnesis-agent agent assistant
-
 # --- LangGraph agentic runtime: the scheduled dream cycle -------------------
 
 agents-up: ## Start the agentic runtime (dream-cycle + notes-inbox writing agent): docker compose --profile agents up -d
