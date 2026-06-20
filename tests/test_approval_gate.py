@@ -47,7 +47,7 @@ class _FakeExternalChannel(OutboundChannel):
         return self._ok(destination=destination, location="EXTERNAL-SENT", detail="sent")
 
 
-def _gate(tmp_path, *, policy=None, external=None):
+def _gate(tmp_path, *, policy=None, external=None, egress=None):
     channels = [DraftOutboxChannel(tmp_path / "outbox"), LocalNotifyChannel(tmp_path / "n.jsonl")]
     if external is not None:
         channels.append(external)
@@ -56,6 +56,7 @@ def _gate(tmp_path, *, policy=None, external=None):
         store=ActionProposalStore(tmp_path),
         audit=AgentAuditLog(tmp_path),
         policy=policy,
+        egress=egress,
     )
 
 
@@ -159,11 +160,20 @@ def test_edit_cannot_smuggle_a_content_destination(tmp_path):
 
 
 def test_external_channel_never_auto_runs_even_with_the_flag(tmp_path):
-    ext = _FakeExternalChannel()
-    # The future escape hatch is ON — but it can only ever apply to INERT channels.
-    gate = _gate(tmp_path, policy=ActionPolicy(auto_run_inert=True), external=ext)
+    from mnesis_agents.egress import EgressPolicy, EgressQuotaStore
 
-    p = gate.propose(action_type="send", channel="ext-send", artifact=_artifact(), destination="op")
+    ext = _FakeExternalChannel()
+    # An external proposal forms only for a policy-sourced, allowlisted recipient
+    # (E1 at proposal time); allowlist the operator so we can test the GATING.
+    egress = EgressPolicy(
+        enabled=True, recipient_allowlist=frozenset({"op@example.com"}),
+        endpoint_allowlist=frozenset({"x"}), quota_store=EgressQuotaStore(tmp_path / "eg.json"),
+    )
+    # The future escape hatch is ON — but it can only ever apply to INERT channels.
+    gate = _gate(tmp_path, policy=ActionPolicy(auto_run_inert=True), external=ext, egress=egress)
+
+    p = gate.propose(action_type="send", channel="ext-send", artifact=_artifact(),
+                     destination="op@example.com")
     assert p.status == "pending"          # gated despite the flag
     assert ext.sent == []                 # nothing was sent un-gated
     # And approving an external proposal requires an explicit recipient
@@ -171,6 +181,14 @@ def test_external_channel_never_auto_runs_even_with_the_flag(tmp_path):
     from mnesis_agents.action_gate import RecipientConfirmationError
     with pytest.raises(RecipientConfirmationError):
         gate.approve(p.id)
+    assert ext.sent == []
+
+    # A non-allowlisted recipient is refused at PROPOSAL time — no sendable
+    # proposal ever forms (E5).
+    from mnesis_agents.action_gate import RecipientValidationError
+    with pytest.raises(RecipientValidationError):
+        gate.propose(action_type="send", channel="ext-send", artifact=_artifact(),
+                     destination="stranger@elsewhere.com")
     assert ext.sent == []
 
 

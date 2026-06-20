@@ -254,9 +254,15 @@ MNESIS_EGRESS_STATE_DIR: Path = Path(
     os.environ.get("MNESIS_EGRESS_STATE_DIR", str(MNESIS_AGENTS_CONNECTOR_STATE_DIR))
 ).expanduser()
 
-# ── Email send channel (E2) — DRY-RUN by default ────────────────────────────
-# The first external (risk_class=external) channel. It sends NOTHING unless
-# dry-run is explicitly disabled AND the egress control plane (above) permits it.
+# ── Email send channel (E2/E5) — DISABLED + DRY-RUN by default ───────────────
+# The first external (risk_class=external) channel. It is not even a *registered*
+# delivery option unless explicitly enabled, and even then sends NOTHING unless
+# dry-run is disabled AND the egress control plane (above) permits it.
+
+#: Register the email channel as an available delivery option (E5). Default OFF —
+#: when unset, `email` is not a known channel at all, so an email proposal fails
+#: closed (unknown channel). Turning it on still leaves it dry-run + egress-gated.
+MNESIS_EMAIL_ENABLED: bool = _bool("MNESIS_EMAIL_ENABLED", False)
 
 #: Dry-run (default true): render the exact message but send NOTHING. A live send
 #: requires this to be false AND egress enabled + allowlisted + within quota.

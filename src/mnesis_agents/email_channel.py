@@ -339,3 +339,31 @@ class EmailSendChannel(OutboundChannel):
                 pass
             return self._result("failed", recipient=recipient, endpoint=endpoint,
                                 content_hash=content_hash, detail="unexpected error", error=str(exc))
+
+
+# ── Registration into the action channel registry (E5) ──────────────────────
+
+
+def register_email_channel(registry, *, enabled: bool | None = None, **channel_kwargs):
+    """Register an :class:`EmailSendChannel` onto ``registry`` — but **only when
+    explicitly enabled** (``MNESIS_EMAIL_ENABLED``, default OFF).
+
+    Disabled (the default), ``email`` is not a known channel, so an email proposal
+    fails closed at the gate (unknown channel). Even when enabled, the channel is
+    **dry-run by default** and behind the **E1 egress plane** — registering it is
+    not the same as permitting a send. Returns the (possibly unchanged) registry."""
+    enabled = config.MNESIS_EMAIL_ENABLED if enabled is None else enabled
+    if enabled:
+        registry.register(EmailSendChannel(**channel_kwargs))
+    return registry
+
+
+def action_channel_registry(*, email_enabled: bool | None = None, **channel_kwargs):
+    """The action agent's channel registry: the bundled **inert** channels plus the
+    **email** channel *iff* enabled (E5). The default (email off) is byte-identical
+    to :func:`channels.default_channel_registry` — email is opt-in."""
+    from .channels import default_channel_registry
+
+    return register_email_channel(
+        default_channel_registry(), enabled=email_enabled, **channel_kwargs
+    )

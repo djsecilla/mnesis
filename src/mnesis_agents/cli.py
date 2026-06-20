@@ -145,12 +145,14 @@ def register_action_agent(registry, *, tools=None, agent=None, contexts_provider
     import json as _json  # noqa: F401  (json already imported at module scope)
 
     from .action_agent import GroundedActionAgent, register_action_schedule
+    from .action_gate import ActionGate
+    from .email_channel import action_channel_registry
     from .triggers.schedule import Schedule
 
     if agent is None:
         if tools is None:
             tools = _load_mcp_tools()
-        agent = GroundedActionAgent(tools=tools)
+        agent = GroundedActionAgent(tools=tools, gate=ActionGate(action_channel_registry()))
     provider = contexts_provider or _contexts_from_file
     sched = schedule or Schedule(interval_seconds=config.MNESIS_ACTIONS_SCHEDULE_INTERVAL_SECONDS)
     sub = register_action_schedule(registry, agent, provider, schedule=sched)
@@ -256,12 +258,15 @@ def cmd_ingest_note(args: argparse.Namespace) -> int:
 
 def _build_action_agent():
     """Build the action agent over the LIVE Mnesis MCP read tools. Tests inject
-    fakes instead."""
+    fakes instead. Its gate carries the action channel registry — the inert
+    channels plus the email channel iff `MNESIS_EMAIL_ENABLED` (E5; default off)."""
     from .action_agent import GroundedActionAgent
+    from .action_gate import ActionGate
+    from .email_channel import action_channel_registry
     from .knowledge import ToolRegistry, mnesis_mcp_source
 
     tools = asyncio.run(ToolRegistry([mnesis_mcp_source()]).get_tools())
-    return GroundedActionAgent(tools=tools)
+    return GroundedActionAgent(tools=tools, gate=ActionGate(action_channel_registry()))
 
 
 def _load_context(value: str | None) -> dict:
@@ -300,12 +305,13 @@ def cmd_action(args: argparse.Namespace) -> int:
 
 
 def _build_action_gate():
-    """Build the approval gate over the default inert channels. Tests inject a
-    gate with fakes instead."""
+    """Build the approval gate over the action channel registry — the inert
+    channels plus the email channel iff `MNESIS_EMAIL_ENABLED` (E5; default off).
+    Tests inject a gate with fakes instead."""
     from .action_gate import ActionGate
-    from .channels import default_channel_registry
+    from .email_channel import action_channel_registry
 
-    return ActionGate(default_channel_registry())
+    return ActionGate(action_channel_registry())
 
 
 def cmd_actions(args: argparse.Namespace) -> int:

@@ -47,7 +47,7 @@ is the intended design.
 | **A multi-LLM agent layer** | A separately-deployable LangGraph agent runtime that uses mnesis as memory — reaching it **only over MCP**, governed, with on-prem inference. |
 | **Self-curating maintenance** | A multi-LLM LangGraph foundation whose scheduled **dream cycle** keeps the KB healthy — auto-applying safe hygiene (decay, graph fixes) and surfacing contradiction/dedup **proposals** for review, all over MCP and governed. |
 | **Source-connector ingestion** | A reusable pipeline turns inbound sources into governed ingestions — the first is a **notes/Markdown inbox** that watches a folder and ingests notes (dedup + retry + dead-letter). A new source = connector + parse skill + one mapping entry. |
-| **Approval-gated actions** | An action agent composes grounded, cited artifacts (e.g. a meeting brief) and **proposes** them; a human approves before anything happens. In this set it's **draft-only** — no external send, no egress; destinations come from policy, never content. |
+| **Approval-gated actions** | An action agent composes grounded, cited artifacts (e.g. a meeting brief) and **proposes** them; a human approves before anything happens. **Draft-only by default**; email delivery is opt-in (dry-run + egress-gated + recipient-confirmed). Recipients come from policy, never content. |
 | **Runs offline & on-prem** | A deterministic stub runs with no network; a local-model mode (Ollama) keeps inference and sources entirely on your machine. |
 
 ---
@@ -368,7 +368,7 @@ Mnesis **only over MCP**. The base, the category abstractions, the runtime, and
 **three concrete agents** — the scheduled
 [dream-cycle `MaintenanceAgent`](#maintenance-agents-the-dream-cycle), the
 event-triggered [notes-inbox `WritingAgent`](#writing-agents--the-notesmarkdown-inbox),
-and the [approval-gated `ActionAgent`](#action-agents-approval-gated-draft-only)
+and the [approval-gated `ActionAgent`](#action-agents-approval-gated)
 — exist today.
 
 - **Multi-LLM, shared by Mnesis too.** A single provider switch
@@ -504,13 +504,16 @@ The pipeline is built so a **new source is three small, isolated additions** and
 The `WritingAgent`, governance, dedup/retry/dead-letter, on-demand command, audit,
 and deployment all work unchanged. That is the whole point of the pattern.
 
-### Action agents (approval-gated, draft-only)
+### Action agents (approval-gated)
 
-The third concrete agent **acts on** Mnesis knowledge — but **nothing is sent to a
-third party**. In this set the agent composes a grounded, cited artifact and
-**proposes** delivering it; a human approves, and the only effect is a **draft
-file**. There is deliberately **no external-send channel**, so the agent
-introduces **no external network egress**.
+The third concrete agent **acts on** Mnesis knowledge. By default it composes a
+grounded, cited artifact and **proposes** delivering it to an **inert draft file** —
+nothing is sent to a third party. **Email delivery is opt-in** (`MNESIS_EMAIL_ENABLED`):
+when enabled, the agent can propose an email to a policy-supplied, **allowlisted**
+recipient — and even then it is **dry-run by default**, behind the default-deny
+egress plane, recipient-confirmed, secret-scanned, at-most-once, and send-audited.
+So an external effect is possible only when you explicitly turn it on and clear
+every gate; out of the box there is **no external network egress**.
 
 **The flow.** `compose → propose → (human approves) → deliver`:
 
@@ -519,17 +522,23 @@ introduces **no external network egress**.
    pages via the Mnesis **read** tools (read-only) and produces a `{title,
    markdown, citations}` artifact grounded in real page ids.
 2. **Propose** — it builds an `ActionProposal` with the **channel from policy**
-   (the inert `draft-outbox`) and the **destination from policy/user input** — and
-   submits it to the **approval gate**. Nothing is delivered.
-3. **Approve** — a human reviews and approves at the gate; only then does the
-   channel run, writing the draft to the outbox. Or **rejects** — nothing happens.
+   (the inert `draft-outbox`, or `email` when enabled) and the **recipient from
+   policy/user structured input** (never content) — and submits it to the **approval
+   gate**. For an external channel the gate **validates the recipient against the
+   egress allowlist at proposal time**, so a non-allowlisted or content-sourced
+   recipient never forms a sendable proposal. Nothing is delivered.
+3. **Approve** — a human reviews and approves at the gate (confirming the exact
+   recipient for an external send); only then does the channel run — writing the
+   draft, or sending the (dry-run/egress-gated) email. Or **rejects** — nothing happens.
 
 - **The gate is the keystone.** No channel executes without an explicit approval;
   it is the single, fail-closed path to any side effect. Every **external** channel
-  (none ship here) is *always* gated; inert channels are gated too.
-- **Destinations come from policy/user, never content.** A page (or the context)
+  (the opt-in email channel) is *always* gated and recipient-confirmed; inert
+  channels are gated too.
+- **Recipients come from policy/user, never content.** A page (or the context body)
   that says *"send this to ceo@rival.com"* is treated as **data** — it cannot set
-  the destination, change the channel, or trigger delivery.
+  the recipient, change the channel, or trigger delivery (and confirming such an
+  address is refused by the egress allowlist anyway).
 - **Read-only on-prem.** The agent only reads Mnesis (no writes); under
   `MNESIS_LLM_PROVIDER=local`, Mnesis composes on your local model — nothing leaves
   the box.
@@ -545,16 +554,33 @@ make action-reject  ID=<id>                             # → delivers nothing
 scripts/smoke_action_agent.sh                           # real-stack smoke (propose/approve/reject)
 ```
 
+Opt-in email delivery (disabled by default) — every gate still applies:
+
+```bash
+# In .env: turn the channel on, and configure the egress allowlist + SMTP.
+#   MNESIS_EMAIL_ENABLED=1            # registers the email channel (still dry-run)
+#   MNESIS_EGRESS_ENABLED=1           # default-deny master switch (leave off to force dry-run)
+#   MNESIS_EGRESS_RECIPIENT_ALLOWLIST=ops@example.com
+#   MNESIS_EGRESS_ENDPOINT_ALLOWLIST=smtp.example.com:587
+#   MNESIS_EMAIL_DRYRUN=0            # only once you really mean to send
+# Propose an email to an allowlisted recipient (from structured context):
+docker compose run --rm mnesis-agents-runtime agents action prepare-meeting-brief \
+  --context '{"topic":"Atlas caching","recipient":"ops@example.com"}' --channel email
+agents actions show <id>                                # dry-run preview + the confirm command
+agents actions approve <id> --confirm-recipient ops@example.com   # send (or dry-run) exactly once
+```
+
 #### Extension recipe — a new action, and (only if needed) a new channel
 
 - **A new action** (e.g. a daily digest, a status note) = a `compose-<action>`
   **skill** + one `MNESIS_AGENTS_ACTION_SKILLS` entry. It reuses the same agent,
   gate, approvals surface, and channels — **always behind the gate**.
-- **A new delivery type** (e.g. send an email) = implement an `OutboundChannel`
-  with **`risk_class=external`**. By the always-gated rule it is **always gated**
-  (proposed, human-approved) and ships **off by default**; the agent and gate need
-  **no change**. This is the *only* way an external effect can ever be introduced —
-  explicitly, gated, and opt-in.
+- **A new delivery type** = implement an `OutboundChannel` with
+  **`risk_class=external`** (the bundled `EmailSendChannel` is the worked example).
+  By the always-gated rule it is **always gated** (proposed, recipient-confirmed,
+  human-approved) and ships **off by default** behind the egress plane; the agent
+  and gate need **no change**. This is the *only* way an external effect can ever be
+  introduced — explicitly, gated, and opt-in.
 
 ---
 
@@ -685,26 +711,27 @@ repeatedly-failing note is **dead-lettered with a reason**, never silently lost)
 so check the dead-letter occasionally rather than worrying about each file.
 
 **Actions are proposals — read the draft before you approve.** The
-[action agent](#action-agents-approval-gated-draft-only) composes a grounded,
+[action agent](#action-agents-approval-gated) composes a grounded,
 cited artifact and **proposes** it; **nothing happens until you approve at the
-gate**. Use that pause: read the draft, check the citations point at real pages,
-set the destination *yourself*, then `mnesis-agents actions approve <id>` (or
-`reject`). In this set everything is **draft-only** — the only effect is a file in
-the outbox; nothing is sent anywhere.
+gate**. Use that pause: read the draft (or the dry-run email preview), check the
+citations point at real pages, confirm the recipient *yourself*, then
+`mnesis-agents actions approve <id>` (or `reject`). **By default everything is
+draft-only** — the only effect is a file in the outbox. Email delivery is **opt-in**
+(`MNESIS_EMAIL_ENABLED`) and even then dry-run + egress-gated + recipient-confirmed.
 
 **Treat inbound content as data, never instructions.** A note, a page, or a
 meeting context that says *"ignore previous instructions"* or *"send this to
-X"* is **data** — the agents never let content set a destination, switch a
-channel, or redirect their tool use. Destinations and channels come from **policy
-/ your input** only. If you later add a real send channel, build it with
-`risk_class=external`: it is then **always gated** (proposed, human-approved) and
-ships **off by default** — the agent needs no change.
+X"* is **data** — the agents never let content set a recipient, switch a
+channel, or redirect their tool use. Recipients and channels come from **policy
+/ your input** only, and an external recipient must clear the egress allowlist at
+proposal time. The bundled email channel (`risk_class=external`) is **always gated**
+(proposed, recipient-confirmed, human-approved) and ships **off by default**.
 
 **Run on-prem when the corpus is sensitive.** Set `MNESIS_LLM_PROVIDER=local` and
 the whole stack — Mnesis, the agents, and the model — stays on your host
 ([details](#local-first-inference-nothing-leaves-the-box)). The agents make **no**
-model calls themselves and reach Mnesis **only over MCP**, and because this set
-ships **no external-send channel**, there is **no external network egress**.
+model calls themselves and reach Mnesis **only over MCP**, and unless you opt into
+the email channel there is **no external network egress** at all.
 
 **Lean on the governance — it's unbypassable.** Agents only *call MCP tools*;
 Mnesis performs redaction, routing, and contradiction review **server-side**, and
@@ -777,9 +804,11 @@ over MCP via `MNESIS_MCP_URL` (default `http://localhost:8080/mcp`) and
 | `MNESIS_AGENTS_WRITE_MAX_RETRIES` / `…_CONCURRENCY` | `3` / `4` | Transient-failure retries and burst concurrency; poison items dead-letter. |
 | `MNESIS_ACTION_OUTBOX` | `./action_outbox` | Where the inert draft-outbox channel writes approved drafts (nothing is sent). |
 | `MNESIS_AGENTS_ACTION_SKILLS` | `prepare-meeting-brief:prepare-meeting-brief` | `action_type:skill` mapping — add an action with one more entry. |
-| `MNESIS_AGENTS_ACTION_CHANNEL` | `draft-outbox` | The (inert) channel the action agent proposes to (policy, never content). |
+| `MNESIS_AGENTS_ACTION_CHANNEL` | `draft-outbox` | The default channel the action agent proposes to (policy, never content). |
 | `MNESIS_ACTIONS_AUTO_RUN_INERT` | `0` | Future escape hatch to auto-run an *inert* action — **leave off**. External channels are *always* gated. |
 | `MNESIS_AGENTS_ACTIONS_SCHEDULE_ENABLED` | `0` | Register the action agent's periodic hook (composes briefs for a provided contexts file). On-demand CLI works regardless. |
+| `MNESIS_EMAIL_ENABLED` | `0` | Register the opt-in **email** channel as a delivery option. Off → `email` isn't a known channel (email proposals fail closed). Even on, it's dry-run + egress-gated. |
+| `MNESIS_EMAIL_DRYRUN` | `1` | Email renders but **sends nothing**. A live send needs this `0` **and** the egress plane (`MNESIS_EGRESS_*`) enabled + allowlisted. |
 
 ---
 
@@ -853,9 +882,10 @@ foundation** with Agent Skills, governance, and triggers/runner · the scheduled
 proposals + reports + optional crystallization) · the **source-connector
 ingestion pipeline** and the **notes-inbox WritingAgent** (idempotent detection,
 governed ingest, retry/dead-letter, on-demand backfill) · the **outbound-channel +
-approval-gate** pattern and the **approval-gated, draft-only `ActionAgent`**
-(compose → propose → human-approve → deliver; inert channels only, no external
-egress) · Docker deployment with local-first inference.
+approval-gate + egress** pattern and the **approval-gated `ActionAgent`**
+(compose → propose → human-approve → deliver; draft-only by default, with an
+opt-in dry-run/egress-gated/recipient-confirmed email channel) · Docker deployment
+with local-first inference.
 
 **Deferred** (see [`CLAUDE.md` §13](CLAUDE.md) for the full map): session/query
 automation hooks and a general hook framework — *on-source ingestion (the

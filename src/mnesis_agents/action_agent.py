@@ -195,10 +195,20 @@ class GroundedActionAgent(ActionAgent):
         """Trigger: compose via the skill → build a proposal → submit to the gate.
 
         Returns an ``ActionResult`` (``status="proposed"`` — paused for approval).
-        Idempotent: a repeat of the same ``(action_type, context)`` returns the
-        existing proposal without re-composing or re-delivering. Resilient: a
-        compose failure is an ``error`` result, never an exception."""
-        fingerprint = self._fingerprint(action_type, context)
+        Idempotent: a repeat of the same ``(action_type, context, channel,
+        recipient)`` returns the existing proposal without re-composing or
+        re-delivering. Resilient: a compose failure is an ``error`` result, never an
+        exception.
+
+        The ``channel`` and the recipient both come from **policy/user structured
+        input** — the recipient from the explicit ``destination`` argument or the
+        structured ``context`` (never from composed content or a Mnesis page). For
+        an EXTERNAL channel (e.g. ``email``) the gate validates the recipient
+        against E1 *before* the proposal forms, so a non-allowlisted or
+        content-sourced recipient never becomes a sendable proposal."""
+        eff_channel = channel or self._channel
+        eff_destination = destination if destination is not None else self._recipient_from_context(context)
+        fingerprint = self._fingerprint(action_type, context, eff_channel, eff_destination)
         existing_id = self._dedup.get(fingerprint)
         if existing_id:
             prop = self._gate.store.get(existing_id)
@@ -213,9 +223,9 @@ class GroundedActionAgent(ActionAgent):
         try:
             proposal = self._gate.propose(
                 action_type=action_type,
-                channel=channel or self._channel,           # POLICY, never content
+                channel=eff_channel,                         # POLICY, never content
                 artifact=artifact,
-                destination=destination,                     # POLICY/USER, never content
+                destination=eff_destination,                 # POLICY/USER, never content
                 rationale=f"composed via {self._action_skills.get(action_type, '?')} skill",
             )
         except Exception as exc:  # noqa: BLE001 (e.g. destination-integrity refusal)
@@ -225,17 +235,23 @@ class GroundedActionAgent(ActionAgent):
         return self._result_from_proposal(proposal, citations=citations)
 
     def approve(
-        self, proposal_id: str, *, edited_artifact=None, edited_destination=None, note=None
+        self, proposal_id: str, *, confirm_recipient=None, edited_artifact=None,
+        edited_destination=None, note=None,
     ) -> ActionResult:
-        """Approve a pending proposal → deliver via its channel (exactly once)."""
+        """Approve a pending proposal → deliver via its channel (exactly once).
+
+        For an **EXTERNAL** proposal (e.g. ``email``) ``confirm_recipient`` is
+        **required** (E3): it must be the exact, policy/user-sourced recipient — a
+        content-only approval does not send."""
         result = self._gate.approve(
-            proposal_id, edited_artifact=edited_artifact,
-            edited_destination=edited_destination, note=note,
+            proposal_id, confirm_recipient=confirm_recipient,
+            edited_artifact=edited_artifact, edited_destination=edited_destination, note=note,
         )
         prop = self._gate.store.get(proposal_id)
-        return self._result_from_proposal(
-            prop, status="delivered" if result.ok else "failed", delivery=asdict(result)
-        )
+        # Reflect the real outcome: an inert/external success is "delivered"; an
+        # external non-success keeps its precise status (dry_run/blocked/needs_human/failed).
+        status = "delivered" if result.ok else result.status
+        return self._result_from_proposal(prop, status=status, delivery=asdict(result))
 
     def reject(self, proposal_id: str, reason: str = "") -> ActionResult:
         """Reject a pending proposal — deliver nothing."""
@@ -322,8 +338,21 @@ class GroundedActionAgent(ActionAgent):
     # -- helpers ---------------------------------------------------------------
 
     @staticmethod
-    def _fingerprint(action_type: str, context: dict) -> str:
-        blob = json.dumps({"a": action_type, "c": context}, sort_keys=True, default=str)
+    def _recipient_from_context(context: dict) -> str | None:
+        """The recipient as **structured policy/user input** — the ``recipient`` key
+        of the trigger context only. It is *never* read from composed content or a
+        Mnesis page (those are DATA), so hostile page/body text can never address a
+        send. ``None`` (the default for the inert draft outbox) when unset."""
+        recipient = (context or {}).get("recipient")
+        recipient = str(recipient).strip() if recipient is not None else ""
+        return recipient or None
+
+    @staticmethod
+    def _fingerprint(action_type: str, context: dict, channel: str, destination: str | None) -> str:
+        blob = json.dumps(
+            {"a": action_type, "c": context, "ch": channel, "d": destination},
+            sort_keys=True, default=str,
+        )
         return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:16]
 
     def _result_from_proposal(self, prop, *, status=None, citations=None, delivery=None) -> ActionResult:

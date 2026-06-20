@@ -63,6 +63,11 @@ class RecipientConfirmationError(Exception):
     """An external send was approved without a valid, matching recipient confirmation."""
 
 
+class RecipientValidationError(Exception):
+    """An EXTERNAL proposal's recipient failed E1 at **proposal time** — it is not
+    policy/user-sourced + allowlisted, so no sendable proposal is ever formed."""
+
+
 @dataclass
 class ActionPolicy:
     """Action-gate policy. In this set **everything is gated**.
@@ -147,6 +152,19 @@ class ActionGate:
         ch = self._channels.get(channel)  # KeyError → unknown channel (fail closed)
         risk = ch.risk_class
         self._validate_destination(destination, artifact)
+        # E1 at PROPOSAL time for an EXTERNAL channel: the recipient (attached by
+        # the agent from policy/user structured input) must be policy/user-sourced
+        # AND on the egress allowlist, or no sendable proposal is ever formed. A
+        # content-sourced or non-allowlisted recipient is refused here, before the
+        # proposal exists. (The send still re-runs the full E1 gate at transmit.)
+        if risk == RISK_EXTERNAL:
+            decision = self._egress.validate_recipient(Recipient(destination or "", "policy"))
+            if decision.denied:
+                raise RecipientValidationError(
+                    f"external proposal refused at proposal time: {decision.reason} "
+                    "— the recipient must be policy/user-sourced and on the egress "
+                    "allowlist (it is never taken from content)"
+                )
 
         proposal = ActionProposal(
             id=uuid.uuid4().hex[:16],
