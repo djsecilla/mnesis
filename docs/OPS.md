@@ -162,3 +162,96 @@ env change + recreate. Health (`/health`) stays unauthenticated throughout.
   in `.env` (mnesis reaches it at `MNESIS_LLM_BASE_URL`, default
   `http://host.docker.internal:11434`), then
   `docker compose up -d --force-recreate mnesis`. No Ollama container is run.
+
+## External send (email) — staged rollout
+
+The action agent can send an **email** (the one external channel). It is
+**default-off**: with the shipped config, `docker compose --profile agents up -d`
+runs with **no egress at all** — the channel isn't registered, the egress plane is
+disabled, and email is dry-run. Enable a real send only through the staged sequence
+below; each stage is one reviewed `.env` change + a runtime recreate
+(`docker compose up -d --force-recreate mnesis-agents-runtime`).
+
+**Secrets.** `MNESIS_SMTP_PASSWORD` (and any credential) lives **only in `.env`**
+(gitignored) or your secret store, loaded via `env_file`. It is **never** written
+into `docker-compose.yml` or baked into the image, and it never appears in any log,
+proposal, draft, or send-audit record. Rotate it by editing `.env` and recreating
+the runtime.
+
+**Durability.** The egress quota ledger (`egress.json`) and the immutable,
+hash-chained **send-audit** (`send_audit.jsonl`) persist under
+`/data/agents_runs/connectors` on the `mnesis-agents-runs` volume — one record per
+send attempt (ids, recipient, endpoint, content hash, decision, status; never the
+body or a secret). Verify the chain at any time with
+`docker compose run --rm --entrypoint python mnesis-agents-runtime -c
+'from mnesis_agents.send_audit import SendAuditLog; print(SendAuditLog().verify())'`
+→ `(True, None)`.
+
+### Stage 1 — dry-run only (renders, sends nothing)
+
+```ini
+# .env
+MNESIS_EMAIL_ENABLED=1        # register the email channel (still cannot send)
+# MNESIS_EGRESS_ENABLED stays unset → default-deny
+# MNESIS_EMAIL_DRYRUN defaults to 1 → render only
+```
+
+```bash
+docker compose up -d --force-recreate mnesis-agents-runtime
+docker compose run --rm mnesis-agents-runtime agents action prepare-meeting-brief \
+  --context '{"topic":"Atlas caching","recipient":"you@example.com"}' --channel email
+docker compose run --rm mnesis-agents-runtime agents actions show <id>      # dry-run preview
+docker compose run --rm mnesis-agents-runtime agents actions approve <id> \
+  --confirm-recipient you@example.com                                       # → status dry_run; nothing sent
+```
+
+Confirm the rendered subject/body/recipient are exactly right before going further.
+
+### Stage 2 — self-send drill (one real email, to yourself)
+
+Allowlist **only your own verified address**, point at your SMTP endpoint, put the
+password in `.env`, then turn dry-run off:
+
+```ini
+# .env
+MNESIS_EMAIL_ENABLED=1
+MNESIS_EGRESS_ENABLED=1
+MNESIS_EGRESS_RECIPIENT_ALLOWLIST=you@example.com     # ONLY your own address
+MNESIS_EGRESS_ENDPOINT_ALLOWLIST=smtp.example.com:587
+MNESIS_EMAIL_FROM=you@example.com
+MNESIS_SMTP_HOST=smtp.example.com
+MNESIS_SMTP_PORT=587
+MNESIS_SMTP_USERNAME=you@example.com
+MNESIS_SMTP_PASSWORD=__from_your_secret_store__       # in .env only, never compose/image
+MNESIS_EMAIL_STARTTLS=1
+MNESIS_EMAIL_DRYRUN=0                                  # the live switch — set LAST
+```
+
+```bash
+docker compose up -d --force-recreate mnesis-agents-runtime
+# Propose → confirm the recipient is yourself → approve:
+docker compose run --rm mnesis-agents-runtime agents action prepare-meeting-brief \
+  --context '{"topic":"Self-send test","recipient":"you@example.com"}' --channel email
+docker compose run --rm mnesis-agents-runtime agents actions approve <id> \
+  --confirm-recipient you@example.com                 # → status sent (exactly once)
+```
+
+Verify: the email arrives in your inbox; the send-audit has one new `sent` record
+for your address and `verify()` is `(True, None)`. A second approval of the same
+proposal does **not** re-send (at-most-once). Any recipient *not* on the allowlist
+is refused even now.
+
+### Stage 3 — add further recipients, one at a time
+
+Append each additional **verified** address to `MNESIS_EGRESS_RECIPIENT_ALLOWLIST`
+individually, recreate, and test a single send to it before adding the next. Keep
+the list as small as the use case allows.
+
+### Kill-switch & rollback
+
+Set `MNESIS_EGRESS_KILL=1` (and recreate) to deny **all** egress immediately — it is
+re-checked at the last moment before transmit, so it halts even an already-approved
+send. To stand down entirely, unset `MNESIS_EGRESS_ENABLED` (or `MNESIS_EMAIL_ENABLED`)
+and recreate; the channel falls back to dry-run / unregistered. Quotas
+(`MNESIS_EGRESS_*_QUOTA` / `_RATE_LIMIT`; `0` = deny all) cap volume per recipient
+and globally — an over-quota send is `blocked` and audited.

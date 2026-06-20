@@ -2,12 +2,13 @@
 # Real-stack smoke test for the approval-gated, draft-only action agent (A5).
 #
 # Brings up Mnesis + the agentic runtime (profile: agents) and proves the action
-# flow end to end — draft-only, gated, no external egress:
+# flow end to end — draft-only by default, gated, no external egress here:
 #   - seed a little knowledge so a brief is grounded;
 #   - `agents action prepare-meeting-brief` → a PENDING proposal, NOTHING delivered;
 #   - `agents actions approve <id>` → writes the draft to the outbox volume;
 #   - a second proposal `reject`ed → nothing delivered;
-#   - confirm only INERT channels exist (no external-send channel → no egress).
+#   - confirm the DEFAULT channel registry is inert-only (the email channel is
+#     opt-in via MNESIS_EMAIL_ENABLED and not enabled here → no egress possible).
 #
 # Usage:   scripts/smoke_action_agent.sh
 #          MNESIS_LLM_PROVIDER=local scripts/smoke_action_agent.sh   # on-prem
@@ -33,7 +34,7 @@ cleanup() {
 trap cleanup EXIT
 mkdir -p "$OUTBOX"
 
-echo "==> 1. only INERT channels exist (no external egress is possible)"
+echo "==> 1. the default channel registry is inert-only (email opt-in, off here)"
 docker compose run --rm --entrypoint python mnesis-agents-runtime -c \
   'from mnesis_agents.channels import default_channel_registry as r; reg=r(); \
    import sys; sys.exit(0 if all(reg.risk_class(n)=="inert" for n in reg.names()) else 1)' \

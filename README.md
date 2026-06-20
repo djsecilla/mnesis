@@ -582,6 +582,66 @@ agents actions approve <id> --confirm-recipient ops@example.com   # send (or dry
   and gate need **no change**. This is the *only* way an external effect can ever be
   introduced — explicitly, gated, and opt-in.
 
+### External send (email) — the control plane & staged rollout
+
+The email channel is the **first and only** mechanism that can send to a third
+party, and it is built to be safe by construction. **Out of the box it is fully
+off**: `docker compose --profile agents up -d` runs with **no egress** — the
+channel isn't even registered, the egress plane is disabled, and email is dry-run.
+Turning on a real send is a deliberate, **staged** sequence of reviewed `.env`
+changes.
+
+**What guards every send** (all enforced server-side, at send time):
+
+- **Default-deny egress plane.** `MNESIS_EGRESS_ENABLED` is off by default — with it
+  off, nothing egresses (the channel can only ever dry-run).
+- **Recipient allowlist.** A send is allowed only to an address on
+  `MNESIS_EGRESS_RECIPIENT_ALLOWLIST` (exact addresses and/or domains). **Empty ⇒
+  nothing is allowed.** The recipient must be **policy/user-sourced** — a recipient
+  taken from page/model/artifact content is *always* rejected (anti-exfiltration),
+  and the action gate re-checks this at **proposal time** so a bad recipient never
+  becomes a sendable proposal.
+- **Dry-run by default.** `MNESIS_EMAIL_DRYRUN=1` renders the exact message and
+  **sends nothing**, surfacing the egress verdict. A live send needs it explicitly `0`.
+- **Recipient confirmation.** Approving content is *not* approving a recipient: an
+  external send requires a separate `--confirm-recipient <addr>` that must match the
+  proposal's recipient and pass the allowlist.
+- **Kill-switch.** `MNESIS_EGRESS_KILL=1` denies **all** egress immediately,
+  re-evaluated at the last moment before transmit — so it halts even an
+  already-approved send.
+- **Endpoint allowlist + TLS + secret-store creds.** The SMTP `host:port` must be on
+  `MNESIS_EGRESS_ENDPOINT_ALLOWLIST`, STARTTLS is required, and the password comes
+  only from `.env`/your secret store — **never** the compose file or the image.
+- **Rate limits + daily quotas**, per-recipient and global (`MNESIS_EGRESS_*`); `0`
+  denies all.
+- **Payload secret-scan.** The rendered message + plaintext payload are scanned; any
+  key/token/credential/PII hit **blocks** the send (defense in depth beyond Mnesis's
+  ingest-time redaction).
+- **At-most-once + immutable audit.** Each approved proposal sends at most once
+  (an ambiguous transport failure becomes `needs_human`, **never** an auto-retry);
+  every attempt writes exactly one record to a tamper-evident, **hash-chained**
+  send-audit log (ids, recipient, endpoint, content hash, decision, status — **never
+  the body or a secret**).
+
+**Staged rollout** — each stage is one reviewed `.env` change, then recreate the
+runtime (`docker compose up -d --force-recreate mnesis-agents-runtime`):
+
+1. **Dry-run only.** `MNESIS_EMAIL_ENABLED=1`, leave `MNESIS_EGRESS_ENABLED` unset
+   and `MNESIS_EMAIL_DRYRUN=1`. Propose an email, `agents actions show <id>` to read
+   the dry-run preview, approve with `--confirm-recipient` — it renders and **sends
+   nothing**. Confirm the message and recipient are exactly what you expect.
+2. **Self-send.** Enable egress and allowlist **only your own verified address**:
+   `MNESIS_EGRESS_ENABLED=1`, `MNESIS_EGRESS_RECIPIENT_ALLOWLIST=you@example.com`,
+   `MNESIS_EGRESS_ENDPOINT_ALLOWLIST=smtp.example.com:587`, SMTP creds in `.env`,
+   then `MNESIS_EMAIL_DRYRUN=0`. Send one real email **to yourself**, verify it
+   arrives, and check the send-audit recorded it. (This is the
+   [documented self-send drill](docs/OPS.md#external-send-email--staged-rollout).)
+3. **Add recipients, one at a time.** Append each further verified address to
+   `MNESIS_EGRESS_RECIPIENT_ALLOWLIST` individually, reviewing each addition.
+
+If anything looks wrong at any stage, set `MNESIS_EGRESS_KILL=1` and recreate — all
+egress stops at once.
+
 ---
 
 ## Running with Docker

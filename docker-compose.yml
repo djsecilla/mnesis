@@ -102,12 +102,13 @@ services:
   #   2. the **notes-inbox WritingAgent** — watches the mounted /data/notes_inbox
   #      and ingests new/changed .md/.txt notes via mnesis_ingest (dedup +
   #      retry/backoff + dead-letter for poison items); and
-  #   3. the **ActionAgent** — DRAFT-ONLY and approval-GATED: it composes a
+  #   3. the **ActionAgent** — approval-GATED, DRAFT-ONLY by default: it composes a
   #      grounded, cited brief from Mnesis READ tools (read-only) and PROPOSES a
-  #      delivery to the inert draft outbox. NOTHING is sent to a third party (no
-  #      external-send channel exists → no external egress); a human approves at
-  #      the gate to write the draft. Mostly on-demand (`agents action …` /
-  #      `agents actions`); the periodic hook is opt-in.
+  #      delivery to the inert draft outbox. By default NOTHING is sent to a third
+  #      party; a human approves at the gate to write the draft. Email delivery is
+  #      OPT-IN (MNESIS_EMAIL_ENABLED) and, even enabled, dry-run + egress-gated +
+  #      recipient-confirmed — DEFAULT-OFF, no egress out of the box. Mostly
+  #      on-demand (`agents action …` / `agents actions`); the periodic hook is opt-in.
   # Everything is governed; Mnesis's own redaction + routing + review gate every
   # write server-side. Durable agent state (checkpoints), the run audit, the
   # proposals queue, reports, the connector ledger, the dead-letter, and the action
@@ -153,18 +154,57 @@ services:
       MNESIS_NOTES_INBOX: /data/notes_inbox
       MNESIS_NOTES_MODE: ${MNESIS_NOTES_MODE:-poll}
       MNESIS_NOTES_POLL_INTERVAL: ${MNESIS_NOTES_POLL_INTERVAL:-5}
-      # Action agent: DRAFT-ONLY and approval-GATED. It composes a grounded, cited
-      # brief from Mnesis READ tools (read-only) and PROPOSES a delivery to the
-      # inert draft outbox — NOTHING is sent to a third party (no external-send
-      # channel exists, so this introduces NO external network egress). A human
+      # Action agent: approval-GATED, DRAFT-ONLY by default. It composes a grounded,
+      # cited brief from Mnesis READ tools (read-only) and PROPOSES a delivery to the
+      # inert draft outbox — by default NOTHING is sent to a third party. A human
       # approves at the gate (`agents actions approve <id>`) to write the draft.
-      # Mostly on-demand (`agents action …`); set the schedule flag to enable the
-      # periodic hook over a provided contexts file. local-llm keeps composition
-      # on-prem (the agent makes no model calls; Mnesis composes via the local model).
+      # Email delivery is OPT-IN + DEFAULT-OFF (see the egress block below); even
+      # enabled it is dry-run + egress-gated + recipient-confirmed. Mostly on-demand
+      # (`agents action …`); set the schedule flag to enable the periodic hook over a
+      # provided contexts file. local-llm keeps composition on-prem (the agent makes
+      # no model calls; Mnesis composes via the local model).
       MNESIS_ACTION_OUTBOX: /data/action_outbox
       MNESIS_AGENTS_ACTION_CHANNEL: ${MNESIS_AGENTS_ACTION_CHANNEL:-draft-outbox}
       MNESIS_AGENTS_ACTIONS_SCHEDULE_ENABLED: ${MNESIS_AGENTS_ACTIONS_SCHEDULE_ENABLED:-}
       MNESIS_ACTIONS_CONTEXTS_FILE: ${MNESIS_ACTIONS_CONTEXTS_FILE:-}
+      # --- External send (email) + egress control plane — DEFAULT-OFF ----------
+      # With these defaults the stack runs with NO egress: the email channel is not
+      # even registered (MNESIS_EMAIL_ENABLED unset), the egress plane is disabled
+      # (MNESIS_EGRESS_ENABLED unset → default-deny), and email is dry-run
+      # (MNESIS_EMAIL_DRYRUN default 1). Enabling a real send is an EXPLICIT, STAGED
+      # change in .env (see README "External send (email) — staged rollout"):
+      #   stage 1 dry-run; stage 2 enable + allowlist ONLY your own verified address
+      #   (self-send); stage 3 add further allowlisted recipients one at a time.
+      MNESIS_EMAIL_ENABLED: ${MNESIS_EMAIL_ENABLED:-}
+      MNESIS_EMAIL_DRYRUN: ${MNESIS_EMAIL_DRYRUN:-1}
+      MNESIS_EGRESS_ENABLED: ${MNESIS_EGRESS_ENABLED:-}
+      MNESIS_EGRESS_KILL: ${MNESIS_EGRESS_KILL:-}
+      # Allowlists (comma-separated). EMPTY ⇒ nothing is permitted. A recipient is
+      # accepted only when policy/user-sourced AND on this list (content/model/
+      # artifact-sourced recipients are always rejected). The endpoint (host:port)
+      # must match the SMTP endpoint below.
+      MNESIS_EGRESS_RECIPIENT_ALLOWLIST: ${MNESIS_EGRESS_RECIPIENT_ALLOWLIST:-}
+      MNESIS_EGRESS_ENDPOINT_ALLOWLIST: ${MNESIS_EGRESS_ENDPOINT_ALLOWLIST:-}
+      # Rate limits + daily quotas (per-recipient and global). 0 ⇒ deny all.
+      MNESIS_EGRESS_RATE_LIMIT: ${MNESIS_EGRESS_RATE_LIMIT:-10}
+      MNESIS_EGRESS_DAILY_QUOTA: ${MNESIS_EGRESS_DAILY_QUOTA:-50}
+      MNESIS_EGRESS_GLOBAL_RATE_LIMIT: ${MNESIS_EGRESS_GLOBAL_RATE_LIMIT:-30}
+      MNESIS_EGRESS_GLOBAL_DAILY_QUOTA: ${MNESIS_EGRESS_GLOBAL_DAILY_QUOTA:-200}
+      # SMTP transport (non-secret bits). TLS (STARTTLS) is REQUIRED for a live send.
+      # The host:port must be on MNESIS_EGRESS_ENDPOINT_ALLOWLIST.
+      MNESIS_EMAIL_FROM: ${MNESIS_EMAIL_FROM:-}
+      MNESIS_SMTP_HOST: ${MNESIS_SMTP_HOST:-}
+      MNESIS_SMTP_PORT: ${MNESIS_SMTP_PORT:-587}
+      MNESIS_SMTP_USERNAME: ${MNESIS_SMTP_USERNAME:-}
+      MNESIS_EMAIL_STARTTLS: ${MNESIS_EMAIL_STARTTLS:-1}
+      # SECRET: MNESIS_SMTP_PASSWORD is deliberately NOT set here. Put it in .env
+      # (gitignored) or inject it from your secret store — it is loaded via the
+      # `env_file: .env` above and must NEVER be written into this compose file or
+      # baked into the image.
+      # The immutable, hash-chained send-audit + the egress quota ledger persist on
+      # the durable agents-runs volume (one record per send attempt; never the body).
+      MNESIS_EGRESS_STATE_DIR: /data/agents_runs/connectors
+      MNESIS_SEND_AUDIT_FILE: /data/agents_runs/connectors/send_audit.jsonl
       # Durable state + audit + proposals/reports + connector ledger + dead-letter
       # + action proposals on the mounted volumes.
       MNESIS_AGENTS_CHECKPOINT_DB: /data/agents_state/checkpoints.db
