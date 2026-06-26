@@ -195,7 +195,9 @@ A contradicted page is **never silently deleted** — it is superseded (→ `sta
 
 ### Search index vs state store (refined invariant)
 
-Phase 2 introduces a second store under `wiki/.index/`. The two have different durability, and the distinction is load-bearing:
+**Per-tenant (§16).** The search index, the graph cache, and the state store are **all per-tenant** — three separate DB files under that tenant's own `.cache/` (`wiki.db`, `graph.db`, `state.db`), opened from its `TenantContext`. Nothing is shared across tenants: search/graph/traverse/impact/decay and the review queue for tenant A can never surface B's pages, entities, edges, reviews, or access counts, and `mnesis rebuild` reconstructs **only the bound tenant's** caches from **its** Markdown — never crossing roots. (Paths written below as `wiki/.index/…` denote each tenant's `.cache/…`.)
+
+Phase 2 introduces a second store under each tenant's `.cache/`. The three have different durability, and the distinction is load-bearing:
 
 - **Markdown pages** (`wiki/pages/`) — the single source of truth. Everything else is reconstructable from them.
 - **Search index** (`wiki/.index/wiki.db`) — a **rebuildable cache**. A pure projection of the Markdown; `rebuild()` drops and regenerates it and must reproduce identical results. Stores nothing not derivable from a page.
