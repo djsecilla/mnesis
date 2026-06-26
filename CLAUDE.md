@@ -43,6 +43,7 @@ src/mnesis/               # the core (canonical store + tools)
   config.py               # the data root + env config (model, threshold, stub flag)
   tenancy.py              # the isolation primitive: Tenant, registry, TenantContext (§16)
   auth.py                 # credentials -> (TenantContext, Principal); fail-closed resolver (§16)
+  authz.py                # role authorization + within-tenant private/shared visibility (§16)
   store.py                # canonical Markdown + frontmatter + git (Store, tenant-scoped)
   filters.py              # secret / PII redaction (pure functions)
   llm.py                  # Anthropic client wrapper, with offline stub
@@ -73,6 +74,7 @@ scripts/demo_end_to_end.py
 | `MNESIS_DEFAULT_TENANT` | `default` | The tenant a single-tenant deployment runs as transparently. |
 | `MNESIS_AUTH_ENABLED` | unset | When set, the HTTP boundary resolves a per-tenant, per-principal **credential** from the bearer token (tenant taken only from the credential; unresolved → denied, no default fallback). Off = legacy single-token + default tenant. (§16) |
 | `MNESIS_AUTH_PEPPER` | unset | Optional server-side secret mixed into the token hash at rest; never logged. (§16) |
+| `MNESIS_DEFAULT_VISIBILITY` | `shared` | Global fallback for a new page's visibility (`shared`\|`private`) when a tenant has not set its own default. (§16) |
 | `MNESIS_LLM_MODEL` | `claude-sonnet-4-6` | Model used by the ingestion/extraction LLM. |
 | `MNESIS_FILEBACK_THRESHOLD` | `0.7` | Quality gate for filing answers back. |
 | `MNESIS_LLM_STUB` | unset | When `1` (or no API key), the LLM client returns deterministic canned output so tests and the demo run offline. |
@@ -97,6 +99,8 @@ Every page is a Markdown file at `wiki/pages/<id>.md` with YAML frontmatter foll
 | `tags` | list[string] | yes | `[]` | `type:value` tags (see §6) plus free tags. |
 | `kind` | enum | yes | `fact` | `fact` \| `digest` \| `note` (see §5). |
 | `status` | enum | yes | `active` | `active` \| `stale`. Stale pages are deprioritised, not deleted. |
+| `owner_principal` | string \| null | no | `null` | The principal that created the page (T4); `null` = unowned/legacy (treated as shared). Set at ingest from the bound principal; not editable by content. |
+| `visibility` | enum | yes | `shared` | `shared` (every principal in the tenant) \| `private` (owner-only). Set at ingest from the tenant default or an explicit override. Filtered in the data/query layer (§16). |
 | `supersedes` | string \| null | no | `null` | Id of the page this one replaces. |
 | `superseded_by` | string \| null | no | `null` | Id of the page that replaced this one. |
 | `contradicts` | list[string] | yes | `[]` | Ids of pages this page directly conflicts with. *(Phase 2; flag-don't-resolve — see §11.)* |
@@ -370,7 +374,15 @@ The single global MCP token is replaced by **tenant- and principal-scoped creden
 - **The resolver.** `auth.resolve_principal(credential) -> (TenantContext, Principal)` validates the token (constant-time `hmac.compare_digest`; expired/revoked → invalid) and returns the tenant **taken only from the credential**. **Fail closed:** an absent/invalid/expired/revoked credential raises `InvalidCredential` — there is **no default-tenant fallback**, and the function never reads a tenant id from anywhere else, so a client-supplied tenant id (header/body/path/content) is **ignored by construction**. `auth.authenticated(credential)` binds both the tenant (`tenancy.use`) and the principal (`auth.current_principal()`) for a block.
 - **Boundary wiring.** When **`MNESIS_AUTH_ENABLED`** is set, the HTTP app's `_PrincipalBindingMiddleware` resolves the bearer credential per request and binds `(tenant, principal)`, returning `401` on any failure (`/health` stays open and tenant-agnostic). When unset (the default), the **legacy** single-token (`MNESIS_MCP_TOKEN`) + default-tenant path is used, so existing single-tenant deployments keep working until credentials are provisioned (T7).
 
-**Out of scope for T3 (later prompts):** role-based authorization (what each role may do), web-UI sessions/JWT, per-tenant quotas, tenant lifecycle (suspend/delete), and tenant-scoping the agent layer. The agent layer reaches mnesis only over MCP, so it inherits whatever tenant the server binds for its credential.
+### Authorization & within-tenant visibility (`authz.py`, T4)
+
+Inside a resolved tenant (cross-tenant is already impossible), a finer layer governs **what a principal may do** and **may see**. Enforcement is in the **data/query layer** (search, graph, get, ingest), never only in a surface, so no surface can leak a private resource. **When no principal is bound** (legacy single-tenant path, CLI, internal maintenance) nothing is narrowed — every check passes and every page is visible.
+
+- **Authorization.** A single `authz.authorize(principal, action, resource=None)` / `authz.require(...)` gates `read`/`write`/`maintain`/`admin` by role: `admin` = all; `member` = read/write/maintain; `agent` = read/write/maintain (a scoped non-human principal — never `admin`); `readonly` = read only. A per-page `read` additionally requires visibility; a per-page `write` on an *existing* page additionally requires ownership (or `admin`) — you may not mutate or re-scope another principal's page.
+- **Visibility model.** Pages carry `owner_principal` + `visibility` ∈ {`shared`, `private`} (§4). `shared` = visible to every principal in the tenant; `private` = owner-only (plus `admin`, for governance); an unowned/legacy page is treated as shared. The **default for new pages** is the tenant's own setting (`Tenant.default_visibility`, registry; `TenantRegistry.set_default_visibility`) else the global `MNESIS_DEFAULT_VISIBILITY` (else `shared`).
+- **Enforcement points.** `ingest`/`file_back` stamp `owner_principal` (the bound principal) + `visibility` (tenant default or explicit override) and require `write` (readonly denied). `search.search` drops pages the principal can't see. `mnesis_get` reports a private page as **absent** (no existence leak). The graph filters everywhere — `entity`/`neighbors`/`impact` keep only edges asserted by a visible page (an entity backed solely by invisible pages is "not present"); `traverse` drops any result whose path crosses an invisible node; `graph_query` never folds in an invisible page. (`graph_stats` stays tenant-aggregate.) The cache/index is per-tenant and shared across that tenant's principals; visibility is applied **per query** against the bound principal, not baked into the cache.
+
+**Out of scope for T4 (later prompts):** a re-scope/visibility-change surface (the `write`-ownership rule exists in `authz` but no tool calls it yet), web-UI sessions/JWT, per-tenant quotas, tenant lifecycle (suspend/delete), and tenant-scoping the agent layer. The agent layer reaches mnesis only over MCP, so it inherits whatever tenant+principal the server binds for its credential.
 
 ---
 
@@ -389,6 +401,8 @@ last_confirmed: 2026-06-09T10:15:00Z
 tags: [project:atlas, library:redis, concept:caching, person:sarah]
 kind: fact
 status: active
+owner_principal: sarah
+visibility: shared
 supersedes: null
 superseded_by: null
 contradicts: []
@@ -419,6 +433,8 @@ last_confirmed: 2026-06-09T11:02:00Z
 tags: [project:atlas, library:redis, concept:caching, kind:digest]
 kind: digest
 status: active
+owner_principal: sarah
+visibility: shared
 supersedes: null
 superseded_by: null
 contradicts: []

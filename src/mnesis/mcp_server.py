@@ -25,6 +25,7 @@ from starlette.responses import JSONResponse
 
 from . import (
     auth,
+    authz,
     config,
     confidence,
     graph,
@@ -193,6 +194,10 @@ def mnesis_get(page_id: str) -> str:
     if not path.exists():
         return f"no such page: {page_id}"
     page = store.read_page(page_id)
+    # Visibility (T4): a private page is invisible to a non-owner — report it as
+    # absent (don't leak its existence) rather than 403.
+    if not authz.page_visible_to_active(page):
+        return f"no such page: {page_id}"
     header = f"[{page_id}] status: {page.status} | confidence: {_page_confidence(page):.2f}"
     if page_id in _open_contradiction_ids():
         header += " | ⚠ contradiction under review (see `mnesis_review`)"
@@ -214,6 +219,13 @@ def mnesis_file_back(question: str, answer: str, quality_score: float | None = N
     reason. Digest pages are tagged ``kind:digest`` so they never masquerade as
     primary sourced facts (CLAUDE.md §5, §9).
     """
+    # Authorization (T4): filing back is a write (readonly denied).
+    principal = auth.current_principal_or_none()
+    try:
+        authz.require(principal, authz.WRITE)
+    except authz.AuthorizationError as exc:
+        return f"not filed: {exc}"
+
     score = quality_score if quality_score is not None else _heuristic_quality(answer)
     threshold = config.MNESIS_FILEBACK_THRESHOLD
     if score < threshold:
@@ -230,6 +242,8 @@ def mnesis_file_back(question: str, answer: str, quality_score: float | None = N
         tags=["kind:digest"],
         kind="digest",
         question=question,
+        owner_principal=(principal.principal_id if principal else None),
+        visibility=authz.default_visibility(),
     )
     store.write_page(page)
     search.upsert(page)

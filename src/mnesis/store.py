@@ -44,6 +44,8 @@ _META_KEYS = (
     "tags",
     "kind",
     "status",
+    "owner_principal",
+    "visibility",
     "supersedes",
     "superseded_by",
     "contradicts",
@@ -78,6 +80,8 @@ class Page:
     tags: list[str] = field(default_factory=list)
     kind: str = "fact"  # fact | digest | note
     status: str = "active"  # active | stale
+    owner_principal: str | None = None  # T4: the principal that created the page (None = unowned/legacy)
+    visibility: str = "shared"  # T4: shared (all principals in the tenant) | private (owner-only)
     supersedes: str | None = None
     superseded_by: str | None = None
     contradicts: list[str] = field(default_factory=list)  # Phase 2: conflicting page ids

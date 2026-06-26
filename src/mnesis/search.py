@@ -20,7 +20,7 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import confidence, tenancy
+from . import authz, confidence, tenancy
 from .state import StateStore
 from .store import Page, Store, now_iso
 from .tenancy import TenantContext
@@ -207,6 +207,11 @@ class SearchIndex:
                     status=row[4],
                 )
             )
+        # Visibility (T4): when a principal is bound, drop pages it may not see —
+        # a private page never reaches search results for a non-owner.
+        visible = authz.active_visible_page_ids()
+        if visible is not None:
+            hits = [h for h in hits if h.id in visible]
         hits.sort(key=lambda h: (-h.final_score, h.bm25_score, h.id))
         return hits[:limit]
 

@@ -30,7 +30,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from pathlib import Path
 
-from . import config, confidence, search, state, store, tenancy, vocab
+from . import authz, config, confidence, search, state, store, tenancy, vocab
 from .search import SearchHit
 
 # Page-level structural predicates projected from frontmatter (between page nodes).
@@ -603,8 +603,11 @@ def graph_query(
     if not entities:
         return base  # plain keyword query — exactly as before
 
+    visible = authz.active_visible_page_ids()  # T4: never fold in a page the principal can't see
     by_id = {h.id: h for h in base}
     for pid, grounding in _graph_reached_pages(backend, entities, depth).items():
+        if visible is not None and pid not in visible:
+            continue
         proximity = config.GRAPH_PROXIMITY_BASE * (
             config.GRAPH_PROXIMITY_DECAY ** (grounding["hop"] - 1)
         )
@@ -640,19 +643,50 @@ def graph_query(
 # point.
 
 
+def _edge_visible(source_pages: list[str], visible: set[str] | None) -> bool:
+    """An edge/entity is visible when at least one asserting page is visible (T4)."""
+    return visible is None or any(sp in visible for sp in source_pages)
+
+
 def entity(ref: str) -> dict | None:
-    """``{type, pages, edges}`` for ``ref`` (or None)."""
-    return get_graph_backend().get_entity(ref)
+    """``{type, pages, edges}`` for ``ref`` (or None).
+
+    Visibility (T4): a bound principal sees only edges asserted by a page it may see;
+    an entity backed solely by pages it cannot see is reported as **not present**."""
+    ent = get_graph_backend().get_entity(ref)
+    if ent is None:
+        return None
+    visible = authz.active_visible_page_ids()
+    if visible is None:
+        return ent
+    edges = [e for e in ent["edges"] if _edge_visible(e["source_pages"], visible)]
+    vrefs = authz.active_visible_entity_refs() or set()
+    if not edges and ref not in vrefs:
+        return None  # only invisible pages back this node → hide it entirely
+    pages = sorted({pid for e in edges for pid in e["source_pages"]})
+    return {"type": ent["type"], "pages": pages, "edges": edges}
 
 
 def neighbors(ref: str, predicate: str | None = None, direction: str = "out") -> list[dict]:
-    """Adjacent entities via non-demoted edges (see :meth:`GraphBackend.neighbors`)."""
-    return get_graph_backend().neighbors(ref, predicate=predicate, direction=direction)
+    """Adjacent entities via non-demoted edges (see :meth:`GraphBackend.neighbors`).
+
+    Visibility (T4): only edges asserted by a page the bound principal may see."""
+    out = get_graph_backend().neighbors(ref, predicate=predicate, direction=direction)
+    visible = authz.active_visible_page_ids()
+    return [n for n in out if _edge_visible(n["source_pages"], visible)]
 
 
 def traverse(ref: str, predicate: str | None = None, depth: int = 2) -> list[dict]:
-    """Entities reachable within ``depth`` hops, with paths (non-demoted edges)."""
-    return get_graph_backend().traverse(ref, predicate=predicate, depth=depth)
+    """Entities reachable within ``depth`` hops, with paths (non-demoted edges).
+
+    Visibility (T4): a result is dropped if any node on its path is backed only by
+    pages the bound principal cannot see (so no invisible node leaks, even in a path)."""
+    out = get_graph_backend().traverse(ref, predicate=predicate, depth=depth)
+    vrefs = authz.active_visible_entity_refs()
+    if vrefs is None:
+        return out
+    allowed = vrefs | {ref}  # the start node is implied by the query
+    return [t for t in out if all(node in allowed for node in t["path"])]
 
 
 def graph_stats() -> dict:
@@ -677,6 +711,7 @@ def impact(entity: str, depth: int = 3) -> list[dict]:
     default (``neighbors`` filters them); depth-bounded and cycle-safe.
     """
     backend = get_graph_backend()
+    visible = authz.active_visible_page_ids()  # T4: don't traverse edges from invisible pages
     affected: list[dict] = []
     visited = {entity}
     frontier = [(entity, [entity])]
@@ -685,6 +720,8 @@ def impact(entity: str, depth: int = 3) -> list[dict]:
         for ref, chain in frontier:
             for n in backend.neighbors(ref, direction="in"):
                 if n["predicate"] not in _IMPACT_PREDICATES or n["ref"] in visited:
+                    continue
+                if not _edge_visible(n["source_pages"], visible):
                     continue
                 visited.add(n["ref"])
                 new_chain = chain + [n["ref"]]

@@ -248,6 +248,11 @@ MNESIS_AUTH_ENABLED: bool = os.environ.get("MNESIS_AUTH_ENABLED", "").strip().lo
 #: Read by auth.py; never logged. Empty is acceptable (tokens are high-entropy).
 MNESIS_AUTH_PEPPER: str = os.environ.get("MNESIS_AUTH_PEPPER", "")
 
+#: Global fallback for a new page's visibility (T4) when a tenant has not set its
+#: own default. ``shared`` (visible to all principals in the tenant) or ``private``
+#: (owner-only). Per-tenant override lives on the Tenant record (registry).
+MNESIS_DEFAULT_VISIBILITY: str = os.environ.get("MNESIS_DEFAULT_VISIBILITY", "shared").strip().lower()
+
 #: Host-header allowlist for the HTTP MCP endpoint's DNS-rebinding protection
 #: (comma-separated; each entry an exact ``host:port`` or a ``host:*`` wildcard).
 #: Empty keeps FastMCP's secure default (localhost only) — correct for host-side

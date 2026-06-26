@@ -39,7 +39,7 @@ import re
 from collections import Counter
 from dataclasses import dataclass
 
-from . import config, confidence, llm, search, state, store, vocab
+from . import auth, authz, config, confidence, llm, search, state, store, vocab
 from .filters import scrub
 from .store import Page
 
@@ -253,8 +253,14 @@ def _extract_draft(redacted: str, source_ref: str) -> tuple[dict, list[str]]:
             "tags": tags, "relations": relations, "kind": "fact"}, warnings
 
 
-def _draft_to_page(draft: dict, source_ref: str) -> Page:
-    """Build the candidate ``Page`` (not yet written) from a draft dict + ref."""
+def _draft_to_page(draft: dict, source_ref: str, *, visibility: str | None = None) -> Page:
+    """Build the candidate ``Page`` (not yet written) from a draft dict + ref.
+
+    Ownership/visibility (T4): the page is owned by the bound principal (or None in
+    the legacy/CLI path), and its visibility is the explicit override else the
+    tenant's default (``shared`` unless configured otherwise)."""
+    principal = auth.current_principal_or_none()
+    vis = authz.normalize_visibility(visibility) if visibility else authz.default_visibility()
     return Page(
         id=store.make_id(draft["title"]),
         title=draft["title"],
@@ -263,6 +269,8 @@ def _draft_to_page(draft: dict, source_ref: str) -> Page:
         tags=list(draft.get("tags") or []),
         relations=[dict(r) for r in (draft.get("relations") or [])],
         kind=draft.get("kind", "fact"),
+        owner_principal=(principal.principal_id if principal else None),
+        visibility=vis,
     )
 
 
@@ -524,11 +532,14 @@ def apply_ingest(plan: dict, overrides: dict | None = None) -> dict:
     must exist. Returns an ``IngestResult`` dict.
     """
     overrides = overrides or {}
+    # Authorization (T4): writing requires the WRITE capability (readonly denied).
+    # No bound principal (legacy/CLI) → permitted, unchanged behaviour.
+    authz.require(auth.current_principal_or_none(), authz.WRITE)
     source_ref = plan["source_ref"]
     redacted = plan["redacted_text"]
 
     draft = _apply_overrides(plan["draft_page"], overrides)
-    new_page = _draft_to_page(draft, source_ref)
+    new_page = _draft_to_page(draft, source_ref, visibility=overrides.get("visibility"))
 
     # Effective routing: a forced override wins over the planned decision.
     forced = overrides.get("routing")
@@ -558,11 +569,12 @@ def apply_ingest(plan: dict, overrides: dict | None = None) -> dict:
     }
 
 
-def ingest_source(raw_text: str, source_ref: str) -> Page:
+def ingest_source(raw_text: str, source_ref: str, *, visibility: str | None = None) -> Page:
     """Run the full relation-aware pipeline for one source (plan then apply).
 
+    ``visibility`` (T4) optionally overrides the tenant default for the new page.
     Returns the resulting page (the new page, or the existing page in the
     reinforce case) — unchanged from the prior one-shot behaviour."""
     plan = plan_ingest(raw_text, source_ref)
-    result = apply_ingest(plan)
+    result = apply_ingest(plan, {"visibility": visibility} if visibility else None)
     return store.read_page(result["page_id"])

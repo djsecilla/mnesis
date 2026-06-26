@@ -36,7 +36,7 @@ import shutil
 import subprocess
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -95,6 +95,8 @@ class Tenant:
     name: str
     status: str = "active"  # active | suspended
     created: str = ""
+    #: Default visibility applied to new pages ingested in this tenant (T4).
+    default_visibility: str = "shared"  # shared | private
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -107,6 +109,7 @@ class Tenant:
             name=d.get("name") or tid,
             status=d.get("status", "active"),
             created=d.get("created", ""),
+            default_visibility=d.get("default_visibility", "shared"),
         )
 
 
@@ -140,7 +143,12 @@ class TenantRegistry:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "tenants": {
-                t.tenant_id: {"name": t.name, "status": t.status, "created": t.created}
+                t.tenant_id: {
+                    "name": t.name,
+                    "status": t.status,
+                    "created": t.created,
+                    "default_visibility": t.default_visibility,
+                }
                 for t in tenants.values()
             }
         }
@@ -168,6 +176,18 @@ class TenantRegistry:
         tenants[tenant_id] = tenant
         self._save(tenants)
         return tenant
+
+    def set_default_visibility(self, tenant_id: str, visibility: str) -> Tenant:
+        """Set a tenant's default new-page visibility (``shared``/``private``). (T4;
+        the admin surface for it lands in T7.)"""
+        tid = validate_tenant_id(tenant_id)
+        tenants = self._load()
+        if tid not in tenants:
+            raise TenancyError(f"unknown tenant: {tid}")
+        updated = replace(tenants[tid], default_visibility=visibility)
+        tenants[tid] = updated
+        self._save(tenants)
+        return updated
 
 
 # --- TenantContext (resolved at boundaries) --------------------------------
