@@ -75,6 +75,7 @@ scripts/demo_end_to_end.py
 | `MNESIS_AUTH_ENABLED` | unset | When set, the HTTP boundary resolves a per-tenant, per-principal **credential** from the bearer token (tenant taken only from the credential; unresolved → denied, no default fallback). Off = legacy single-token + default tenant. (§16) |
 | `MNESIS_AUTH_PEPPER` | unset | Optional server-side secret mixed into the token hash at rest; never logged. (§16) |
 | `MNESIS_DEFAULT_VISIBILITY` | `shared` | Global fallback for a new page's visibility (`shared`\|`private`) when a tenant has not set its own default. (§16) |
+| `MNESIS_CREDENTIAL` | unset | A credential token the **CLI** resolves to a (tenant, principal) for tenant-scoped ops. With `MNESIS_AUTH_ENABLED` and no credential, the CLI refuses tenant ops (fail closed); the credential's tenant overrides any `--tenant` flag. (§16) |
 | `MNESIS_LLM_MODEL` | `claude-sonnet-4-6` | Model used by the ingestion/extraction LLM. |
 | `MNESIS_FILEBACK_THRESHOLD` | `0.7` | Quality gate for filing answers back. |
 | `MNESIS_LLM_STUB` | unset | When `1` (or no API key), the LLM client returns deterministic canned output so tests and the demo run offline. |
@@ -383,6 +384,16 @@ Inside a resolved tenant (cross-tenant is already impossible), a finer layer gov
 - **Enforcement points.** `ingest`/`file_back` stamp `owner_principal` (the bound principal) + `visibility` (tenant default or explicit override) and require `write` (readonly denied). `search.search` drops pages the principal can't see. `mnesis_get` reports a private page as **absent** (no existence leak). The graph filters everywhere — `entity`/`neighbors`/`impact` keep only edges asserted by a visible page (an entity backed solely by invisible pages is "not present"); `traverse` drops any result whose path crosses an invisible node; `graph_query` never folds in an invisible page. (`graph_stats` stays tenant-aggregate.) The cache/index is per-tenant and shared across that tenant's principals; visibility is applied **per query** against the bound principal, not baked into the cache.
 
 **Out of scope for T4 (later prompts):** a re-scope/visibility-change surface (the `write`-ownership rule exists in `authz` but no tool calls it yet), web-UI sessions/JWT, per-tenant quotas, tenant lifecycle (suspend/delete), and tenant-scoping the agent layer. The agent layer reaches mnesis only over MCP, so it inherits whatever tenant+principal the server binds for its credential.
+
+### Surface enforcement (T5)
+
+Every human/agent surface is tenant-scoped **end to end** by a **single choke point** that resolves the authenticated `(TenantContext, Principal)` — never from a client-supplied tenant id — and binds it for the whole request/invocation, fail-closed:
+
+- **MCP server / Web UI gateway (one HTTP app).** When `MNESIS_AUTH_ENABLED`, `mcp_server._PrincipalBindingMiddleware` resolves the **bearer credential** per request via `auth.resolve_principal`, binds `(tenant, principal)`, and returns `401` on any failure (`/health` stays open, tenant-agnostic). Both `/mcp` (every `mnesis_*` tool) and `/api/*` (REST + the SSE chat stream) run inside that binding, so each operates on the credential's tenant with that principal's visibility. A forged/extra tenant id in a header/query/body is **ignored** — the middleware reads only the credential. The contextvar binding propagates to sync tools (worker threads) and to the SSE generator task. Every `/api` read that touches pages is visibility-filtered (`webapi._visible_pages`, `_get_page`/`_entity`/`_graph`/`sources`/`reviews`), matching the MCP tools (T4). *(When `MNESIS_AUTH_ENABLED` is off, the legacy `MNESIS_MCP_TOKEN` + default-tenant path is used — single-tenant, no principal, nothing narrowed.)*
+- **CLI.** Tenant-scoped data ops resolve the tenant from a **verified credential** (`MNESIS_CREDENTIAL`), not the bare `--tenant` flag (`cli._resolve_data_context`): a credential's tenant is authoritative and overrides `--tenant`; with `MNESIS_AUTH_ENABLED` and no credential the op is **refused** (fail closed); with auth off, the legacy local `--tenant` (default `default`, no principal) is the single-tenant convenience path. Admin ops (`migrate-tenants`, `auth …`) operate on the data root / credential store directly and are not tenant-data ops.
+- **Agent layer.** Reaches mnesis only over MCP, so it is scoped by whatever credential it presents — the same choke point, no special path.
+
+**Invariant:** no handler/tool/stream runs without a resolved tenant+principal (when auth is on); no surface accepts a client-supplied tenant id; SSE and streaming are per-tenant.
 
 ---
 

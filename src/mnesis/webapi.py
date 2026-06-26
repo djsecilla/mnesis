@@ -28,7 +28,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 from sse_starlette.sse import EventSourceResponse
 
-from . import config, confidence, graph, ingest, llm, search, state, store, tenancy, vocab
+from . import auth, authz, config, confidence, graph, ingest, llm, search, state, store, tenancy, vocab
 
 log = logging.getLogger(__name__)
 
@@ -72,6 +72,16 @@ _CITE_RE = re.compile(r"\[\[([^\]]+)\]\]")
 
 def _conf(page: store.Page) -> float:
     return confidence.compute_confidence(page, access=state.get_access(page.id))[0]
+
+
+# --- visibility (T4/T5): every gateway read is scoped to the bound principal ---
+# When no principal is bound (legacy single-tenant) nothing is narrowed.
+
+
+def _visible_pages(status: str | None = None, kind: str | None = None) -> list[store.Page]:
+    principal = auth.current_principal_or_none()
+    pages = store.list_pages(status=status, kind=kind)
+    return pages if principal is None else [p for p in pages if authz.can_see(principal, p)]
 
 
 def _open_contradiction_ids() -> set[str]:
@@ -126,7 +136,7 @@ def _edge_dict(e: dict) -> dict:
 
 async def _list_pages(request: Request) -> JSONResponse:
     qp = request.query_params
-    pages = store.list_pages(status=qp.get("status") or None, kind=qp.get("kind") or None)
+    pages = _visible_pages(status=qp.get("status") or None, kind=qp.get("kind") or None)
     q = (qp.get("q") or "").strip().lower()
     if q:
         pages = [
@@ -142,6 +152,9 @@ async def _get_page(request: Request) -> JSONResponse:
     try:
         page = store.read_page(pid)
     except (FileNotFoundError, ValueError):
+        return JSONResponse({"error": f"no such page: {pid}"}, status_code=404)
+    # Visibility (T5): a private page is reported absent to a non-owner (no leak).
+    if not authz.page_visible_to_active(page):
         return JSONResponse({"error": f"no such page: {pid}"}, status_code=404)
     score, breakdown = confidence.compute_confidence(page, access=state.get_access(pid))
     raw = (tenancy.current().pages_dir / f"{pid}.md").read_text(encoding="utf-8")
@@ -179,7 +192,7 @@ def _entity_mentions() -> dict[str, int]:
     unlike edge degree. Drives node size in the UI.
     """
     counts: dict[str, int] = {}
-    for page in store.list_pages():
+    for page in _visible_pages():
         refs: set[str] = set()
         for tag in page.tags:
             try:
@@ -199,7 +212,18 @@ def _build_subgraph(root: str | None, depth: int, include_demoted: bool) -> dict
     edges = backend.all_edges()
     if not include_demoted:
         edges = [e for e in edges if not e["demoted"]]
-    types = {e["ref"]: e["type"] for e in backend.all_entities()}
+    # Visibility (T5): drop edges asserted only by pages the principal cannot see,
+    # and nodes not backed by any visible page — the graph view never shows a
+    # private-only entity/edge.
+    visible_ids = authz.active_visible_page_ids()
+    visible_refs = authz.active_visible_entity_refs()
+    if visible_ids is not None:
+        edges = [e for e in edges if any(sp in visible_ids for sp in e["source_pages"])]
+    types = {
+        e["ref"]: e["type"]
+        for e in backend.all_entities()
+        if visible_refs is None or e["ref"] in visible_refs
+    }
     mentions = _entity_mentions()
 
     if root:
@@ -293,7 +317,7 @@ async def _entity(request: Request) -> JSONResponse:
 
     # Declaring/mentioning pages: any page tagging this entity (a superset of the
     # edge source-pages, since ingest tags every edge endpoint). Ranked by confidence.
-    declaring = [p for p in store.list_pages() if ref in p.tags]
+    declaring = [p for p in _visible_pages() if ref in p.tags]
     declaring.sort(key=_conf, reverse=True)
 
     active = [p for p in declaring if p.status == "active"]
@@ -618,8 +642,10 @@ async def _ingest_commit(request: Request) -> JSONResponse:
 
 
 def _pages_by_source() -> dict[str, list[store.Page]]:
+    # Visibility (T5): only pages the principal may see — a source whose only pages
+    # are private to someone else is absent from listings/detail entirely.
     mapping: dict[str, list[store.Page]] = {}
-    for p in store.list_pages():
+    for p in _visible_pages():
         for ref in p.sources:
             mapping.setdefault(ref, []).append(p)
     return mapping
@@ -650,10 +676,14 @@ async def _list_sources(request: Request) -> JSONResponse:
     items = []
     for path in sorted(sources_dir.glob("*.md")):
         ref = path.stem
+        visible_pages = by_source.get(ref, [])
+        # A source backed only by pages the principal can't see is not listed.
+        if auth.current_principal_or_none() is not None and not visible_pages:
+            continue
         items.append({
             "id": ref,
             "ingested_at": _source_ingested_at(path),
-            "pages": [{"id": p.id, "title": p.title} for p in by_source.get(ref, [])],
+            "pages": [{"id": p.id, "title": p.title} for p in visible_pages],
         })
     return JSONResponse({"sources": items, "total": len(items)})
 
@@ -666,6 +696,9 @@ async def _get_source(request: Request) -> JSONResponse:
     if not path.exists():
         return _err("not_found", f"no such source: {ref}", 404)
     by_source = _pages_by_source()
+    # Visibility (T5): hide a source whose only pages are private to someone else.
+    if auth.current_principal_or_none() is not None and not by_source.get(ref):
+        return _err("not_found", f"no such source: {ref}", 404)
     # The stored text was redacted at ingest time, so it carries no raw values.
     return JSONResponse({
         "id": ref,
@@ -686,6 +719,21 @@ def _review_page(pid: str) -> dict:
         return {"id": pid, "title": None, "confidence": None}
 
 
+def _review_visible(r: dict) -> bool:
+    """A review is shown only if the principal can see BOTH referenced pages
+    (so a private page never surfaces via the review queue)."""
+    principal = auth.current_principal_or_none()
+    if principal is None:
+        return True
+    for pid in (r["page_a"], r["page_b"]):
+        try:
+            if not authz.can_see(principal, store.read_page(pid)):
+                return False
+        except (FileNotFoundError, ValueError):
+            continue
+    return True
+
+
 async def _list_reviews(request: Request) -> JSONResponse:
     reviews = [
         {
@@ -695,6 +743,7 @@ async def _list_reviews(request: Request) -> JSONResponse:
             "detail": r["detail"],
         }
         for r in state.list_open_reviews()
+        if _review_visible(r)
     ]
     return JSONResponse({"reviews": reviews, "total": len(reviews)})
 

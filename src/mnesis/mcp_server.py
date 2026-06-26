@@ -252,8 +252,11 @@ def mnesis_file_back(question: str, answer: str, quality_score: float | None = N
 
 @mcp.tool()
 def mnesis_list() -> str:
-    """List every page: id, kind/status, and title."""
+    """List every page the principal may see: id, kind/status, and title."""
+    principal = auth.current_principal_or_none()
     pages = store.list_pages()
+    if principal is not None:
+        pages = [p for p in pages if authz.can_see(principal, p)]
     if not pages:
         return "(no pages)"
     return "\n".join(f"{p.id} [{p.kind}/{p.status}] — {p.title}" for p in pages)

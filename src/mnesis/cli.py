@@ -11,6 +11,7 @@ Subcommands: ingest, query, get, file-back, list, rebuild.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -216,12 +217,50 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "auth":
         return _cmd_auth(args)
 
-    # Every other command resolves + binds a TenantContext at this boundary; the
-    # store is unreachable until it is bound.
-    ctx = tenancy.open_tenant(args.tenant)
+    # Every other command resolves + binds an authenticated (tenant, principal) at
+    # this boundary; the store is unreachable until it is bound.
+    try:
+        ctx, principal = _resolve_data_context(args)
+    except _CliDenied as exc:
+        print(f"error: {exc}")
+        return 2
     with tenancy.use(ctx):
-        _dispatch(args)
+        token = auth.bind_principal(principal) if principal is not None else None
+        try:
+            _dispatch(args)
+        finally:
+            if token is not None:
+                auth.unbind_principal(token)
     return 0
+
+
+class _CliDenied(Exception):
+    """A tenant-scoped CLI op was refused (no resolved authenticated context)."""
+
+
+def _resolve_data_context(args: argparse.Namespace):
+    """Resolve the (TenantContext, Principal|None) a tenant-scoped CLI op runs under.
+
+    Tenant identity comes from a verified credential, not the bare ``--tenant`` flag:
+      - ``MNESIS_CREDENTIAL`` (an opaque token) → resolve it (tenant + principal);
+        the credential's tenant is authoritative and any ``--tenant`` is ignored.
+      - else when ``MNESIS_AUTH_ENABLED`` → **refuse** (fail closed): there is no
+        unauthenticated way to reach a tenant's data.
+      - else (legacy single-tenant, auth off) → the local ``--tenant`` (default
+        ``default``) with no principal — the pre-multitenant convenience path.
+    """
+    token = os.environ.get("MNESIS_CREDENTIAL")
+    if token:
+        try:
+            return auth.resolve_principal(token)
+        except auth.AuthError as exc:
+            raise _CliDenied(f"credential rejected ({exc}); set a valid MNESIS_CREDENTIAL") from exc
+    if config.MNESIS_AUTH_ENABLED:
+        raise _CliDenied(
+            "authentication is enabled but no credential was provided; set "
+            "MNESIS_CREDENTIAL to an issued token (the --tenant flag is not trusted)"
+        )
+    return tenancy.open_tenant(args.tenant), None
 
 
 if __name__ == "__main__":
