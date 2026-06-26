@@ -58,16 +58,17 @@ def _runner_dream_schedule():
     return Schedule(interval_seconds=secs)
 
 
-def register_maintenance_agent(registry, *, tools=None, schedule=None):
+def register_maintenance_agent(registry, *, tools=None, agent=None, schedule=None):
     """Register the scheduled dream-cycle MaintenanceAgent on ``registry``.
 
-    Reaches Mnesis only over MCP (the injected/loaded tools). The single owner of
-    periodic maintenance now that the D5 sidecar is retired."""
+    Reaches Mnesis only over MCP (the injected/loaded tools, or a tenant-scoped
+    ``agent``). The single owner of periodic maintenance."""
     from .maintenance_agent import DreamMaintenanceAgent, register_dream_cycle
 
-    if tools is None:
-        tools = _load_mcp_tools()
-    agent = DreamMaintenanceAgent(tools=tools)
+    if agent is None:
+        if tools is None:
+            tools = _load_mcp_tools()
+        agent = DreamMaintenanceAgent(tools=tools)
     return register_dream_cycle(registry, agent, schedule=schedule or _runner_dream_schedule())
 
 
@@ -159,13 +160,124 @@ def register_action_agent(registry, *, tools=None, agent=None, contexts_provider
     return agent, sub
 
 
-def _build_runner():
-    """Assemble the runner. Registers the scheduled dream-cycle maintenance agent,
-    the notes-inbox writing agent, and (optionally) the action-agent schedule hook —
-    each unless disabled; resilient — if Mnesis is unreachable at startup the runner
-    still comes up rather than crashing."""
+# ── Per-tenant agent builders (T6) ──────────────────────────────────────────
+# Each agent is built from a TenantScope: its tools carry the tenant's MCP
+# credential (so it reaches only that tenant's Mnesis, T3/T5) and every store is the
+# tenant's own. Tests inject `tools` (fakes) per scope.
+
+
+def _scope_tools(scope):
+    from .knowledge import ToolRegistry
+
+    return asyncio.run(ToolRegistry([scope.knowledge_source()]).get_tools())
+
+
+def build_tenant_dream_agent(scope, *, tools=None, plan=None, crystallize=None):
+    from .maintenance_agent import DreamMaintenanceAgent
+
+    return DreamMaintenanceAgent(
+        tools=tools if tools is not None else _scope_tools(scope),
+        plan=plan, crystallize=crystallize,
+        proposal_store=scope.proposal_store(), report_store=scope.report_store(),
+    )
+
+
+def build_tenant_writing_agent(scope, *, tools=None, processed_store=None):
+    from .writing_agent import SourceWritingAgent
+
+    return SourceWritingAgent(
+        tools=tools if tools is not None else _scope_tools(scope),
+        processed_store=processed_store or scope.processed_store(), audit=scope.audit_log(),
+    )
+
+
+def build_tenant_action_agent(scope, *, tools=None):
+    from .action_agent import GroundedActionAgent, _DedupStore
+
+    return GroundedActionAgent(
+        tools=tools if tools is not None else _scope_tools(scope),
+        gate=scope.action_gate(), audit=scope.audit_log(),
+        dedup_store=_DedupStore(scope.connector_state_dir / "action_dedup.json"),
+    )
+
+
+def register_tenant_agents(registry, scope, *, event_triggers, tools=None,
+                           dream=None, notes=None, action=None):
+    """Register a tenant's enabled agents on ``registry``, each confined to ``scope``
+    (its credential + its own governance state). Resilient per agent."""
+    from .connectors.notes import NotesInboxConnector
+
+    log = logging.getLogger("mnesis_agents.runner")
+    scope.ensure_dirs()
+    dream = config.MNESIS_AGENTS_DREAM_ENABLED if dream is None else dream
+    notes = config.MNESIS_NOTES_ENABLED if notes is None else notes
+    action = config.MNESIS_AGENTS_ACTIONS_SCHEDULE_ENABLED if action is None else action
+
+    if dream:
+        try:
+            agent = build_tenant_dream_agent(scope, tools=tools)
+            register_maintenance_agent(registry, agent=agent)
+            log.info("[%s] registered dream-cycle", scope.tenant_id)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[%s] dream-cycle not registered (%s)", scope.tenant_id, exc)
+    if notes:
+        try:
+            processed = scope.processed_store()
+            connector = NotesInboxConnector(inbox=scope.notes_inbox, processed_store=processed)
+            agent = build_tenant_writing_agent(scope, tools=tools, processed_store=processed)
+            conn, _sub, _pipe = register_notes_writer(
+                registry, connector=connector, agent=agent, dead_letter=scope.dead_letter_store(),
+            )
+            event_triggers.append(conn)
+            log.info("[%s] registered notes writer watching %s", scope.tenant_id, connector.inbox)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[%s] notes writer not registered (%s)", scope.tenant_id, exc)
+    if action:
+        try:
+            agent = build_tenant_action_agent(scope, tools=tools)
+            register_action_agent(registry, agent=agent)
+            log.info("[%s] registered action-agent schedule", scope.tenant_id)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[%s] action agent not registered (%s)", scope.tenant_id, exc)
+
+
+def _build_runner_multitenant():
+    """The multitenant runner: one set of agents per resolved TenantScope, each
+    confined to its tenant. Fail-closed — a tenant without a credential does not
+    start; resilient — one bad tenant never stops the others."""
+    from . import tenancy
     from .registry import AgentRegistry
     from .runner import Runner
+
+    log = logging.getLogger("mnesis_agents.runner")
+    registry = AgentRegistry()
+    event_triggers: list = []
+    try:
+        scopes = tenancy.load_scopes()
+    except tenancy.UnresolvedTenant as exc:
+        log.warning("tenant config rejected (%s); no agents start (fail closed)", exc)
+        scopes = []
+    if not scopes:
+        log.info("no resolvable tenant scopes; runner idle")
+    for scope in scopes:
+        try:
+            register_tenant_agents(registry, scope, event_triggers=event_triggers)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("tenant %r failed to register (%s); continuing", scope.tenant_id, exc)
+    return Runner(registry, event_triggers=event_triggers)
+
+
+def _build_runner():
+    """Assemble the runner. With a tenants file configured, runs **per-tenant** (T6);
+    otherwise the legacy single-tenant path. Resilient — if Mnesis is unreachable at
+    startup the runner still comes up rather than crashing."""
+    import os
+
+    from .registry import AgentRegistry
+    from .runner import Runner
+
+    if os.environ.get("MNESIS_AGENTS_TENANTS_FILE"):
+        return _build_runner_multitenant()
 
     log = logging.getLogger("mnesis_agents.runner")
     registry = AgentRegistry()

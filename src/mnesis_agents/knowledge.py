@@ -51,15 +51,18 @@ class MnesisConnectionError(RuntimeError):
 # ── Connection config ─────────────────────────────────────────────────────
 
 
-def mnesis_connection() -> dict[str, Any]:
-    """A langchain-mcp-adapters streamable-HTTP connection for Mnesis, from config.
+def mnesis_connection(*, url: str | None = None, token: str | None = None) -> dict[str, Any]:
+    """A langchain-mcp-adapters streamable-HTTP connection for Mnesis.
 
-    Sends the bearer token as an ``Authorization`` header (when set) — the same
-    auth the server's ``MNESIS_MCP_TOKEN`` expects.
+    Sends the bearer token as an ``Authorization`` header (when set). ``url``/``token``
+    default to config, but a **tenant-scoped** credential (T6) is passed explicitly so
+    the connection resolves server-side to that tenant + agent principal (T3/T5).
     """
-    conn: dict[str, Any] = {"transport": "streamable_http", "url": config.MNESIS_MCP_URL}
-    if config.MNESIS_MCP_TOKEN:
-        conn["headers"] = {"Authorization": f"Bearer {config.MNESIS_MCP_TOKEN}"}
+    url = url or config.MNESIS_MCP_URL
+    token = token if token is not None else config.MNESIS_MCP_TOKEN
+    conn: dict[str, Any] = {"transport": "streamable_http", "url": url}
+    if token:
+        conn["headers"] = {"Authorization": f"Bearer {token}"}
     return conn
 
 
@@ -109,9 +112,10 @@ class MCPToolSource(ToolSource):
             ) from exc
 
 
-def mnesis_mcp_source() -> MCPToolSource:
-    """The default Mnesis MCP tool source, built from config."""
-    return MCPToolSource({"mnesis": mnesis_connection()}, namespace="mnesis")
+def mnesis_mcp_source(*, url: str | None = None, token: str | None = None) -> MCPToolSource:
+    """The Mnesis MCP tool source. ``url``/``token`` default to config; pass a
+    tenant-scoped credential (T6) to confine the source to that tenant's Mnesis."""
+    return MCPToolSource({"mnesis": mnesis_connection(url=url, token=token)}, namespace="mnesis")
 
 
 # ── Offline fake source ───────────────────────────────────────────────────
