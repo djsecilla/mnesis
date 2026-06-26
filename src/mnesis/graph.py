@@ -30,7 +30,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from pathlib import Path
 
-from . import config, confidence, search, state, store, vocab
+from . import config, confidence, search, state, store, tenancy, vocab
 from .search import SearchHit
 
 # Page-level structural predicates projected from frontmatter (between page nodes).
@@ -435,16 +435,18 @@ class SqliteGraphBackend(GraphBackend):
 # --- Factory ---------------------------------------------------------------
 
 
-def get_graph_backend() -> GraphBackend:
-    """Return the configured GraphBackend (``config.GRAPH_BACKEND``).
+def get_graph_backend(ctx: "tenancy.TenantContext | None" = None) -> GraphBackend:
+    """Return the configured GraphBackend (``config.GRAPH_BACKEND``) for a tenant.
 
-    This is the one place engines are chosen. Adding a Tier-B backend means
-    implementing :class:`GraphBackend` and registering it here — nothing in
-    ingest/search/mcp_server/cli changes.
+    The graph is a rebuildable cache living in the tenant's own ``.cache/graph.db``;
+    ``ctx`` defaults to the active tenant (fail-closed). This is the one place
+    engines are chosen — adding a Tier-B backend means implementing
+    :class:`GraphBackend` and registering it here, with nothing else changing.
     """
+    ctx = ctx if ctx is not None else tenancy.current()
     backend = config.GRAPH_BACKEND
     if backend == "sqlite":
-        return SqliteGraphBackend(config.INDEX_DIR / "graph.db")
+        return SqliteGraphBackend(ctx.cache_path("graph.db"))
     raise ValueError(f"unknown graph backend {backend!r} (set MNESIS_GRAPH_BACKEND)")
 
 

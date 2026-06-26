@@ -23,8 +23,9 @@ These hold across every module and every change. Treat a violation as a defect.
 1. **Markdown is canonical; the search index is a rebuildable cache.** The Markdown pages under `wiki/pages/` are the single source of truth. The SQLite search index is a projection of them and must be fully reconstructable from Markdown alone. Never persist anything *in the search index* that is not derivable from a page. (The **durable state store** — access events + review queue — is the deliberate exception: it holds state that is *not* derivable from Markdown and is never cleared by rebuild. See §8, "Search index vs state store".)
 2. **Filter sensitive data before any write.** Secrets and PII are redacted at the ingestion boundary, *before* a source is persisted or sent to the LLM. A raw secret value must never reach disk, logs, an LLM prompt, or a findings report.
 3. **Confidence is derived, never hand-set.** It is computed (Phase 2, `confidence.py`) from Markdown inputs (`source_count`, `last_confirmed`, `contradicts`, decay class) plus an optional access boost from the durable state store — never written into frontmatter. `status` is changed only through the store (so every transition is committed): by `supersede()` and by the decay/lifecycle job (`lifecycle.recompute_all` / `mnesis decay`).
-4. **The git history is the audit trail.** Every page mutation is a commit. Do not batch unrelated writes into one commit, and do not rewrite history.
-5. **Keep this file in sync** (see Prime rule above).
+4. **The git history is the audit trail.** Every page mutation is a commit. Do not batch unrelated writes into one commit, and do not rewrite history. Each **tenant** has its own git repo under `tenants/<id>/` (§16).
+5. **The store is tenant-scoped by construction.** There is no global/ambient store: every store object (`Store`, `SearchIndex`, `StateStore`, the graph backend) is built from a `TenantContext`, every path is resolved against and guarded within that tenant's root, and the active tenant is resolved at a boundary (`tenancy.current()` fails closed if none is bound). Cross-tenant access is structurally impossible, not merely checked. See §16.
+6. **Keep this file in sync** (see Prime rule above).
 
 ---
 
@@ -39,20 +40,24 @@ pyproject.toml            # deps + the `mnesis` and `mnesis-agents` console scri
 .gitignore
 .mcp.json                 # MCP registration for Claude Code
 src/mnesis/               # the core (canonical store + tools)
-  config.py               # paths + env config (model, threshold, stub flag)
-  store.py                # canonical Markdown + frontmatter + git
+  config.py               # the data root + env config (model, threshold, stub flag)
+  tenancy.py              # the isolation primitive: Tenant, registry, TenantContext (§16)
+  store.py                # canonical Markdown + frontmatter + git (Store, tenant-scoped)
   filters.py              # secret / PII redaction (pure functions)
   llm.py                  # Anthropic client wrapper, with offline stub
   ingest.py               # pipeline: filter -> persist source -> extract -> write
-  search.py               # SQLite FTS5 index: rebuild / upsert / search
+  search.py               # SQLite FTS5 index: rebuild / upsert / search (SearchIndex, tenant-scoped)
+  state.py                # durable access events + review queue (StateStore, tenant-scoped)
   mcp_server.py           # FastMCP server exposing the wiki tools
   cli.py                  # `mnesis` command
 src/mnesis_agents/        # the LangGraph agent layer — a separate MCP CLIENT (never imports mnesis.*); see §14
 src/mnesis_llm/           # shared provider-agnostic chat-model factory (core + agents)
-wiki/
-  pages/                  # canonical Markdown pages (tracked)
-  sources/                # redacted raw sources, for provenance (tracked)
-  .index/                 # SQLite index — GITIGNORED (rebuildable cache)
+wiki/                     # the DATA ROOT (MNESIS_ROOT) — holds the tenants + registry, never a store itself
+  registry.json           # the tenant registry (metadata) — GITIGNORED, OUTSIDE any tenant root
+  tenants/<tenant_id>/    # one tenant's canonical store + its OWN git repo (§16)
+    pages/                #   canonical Markdown pages (tracked)
+    sources/              #   redacted raw sources, for provenance (tracked)
+    .cache/               #   SQLite caches: wiki.db, graph.db, state.db — GITIGNORED (rebuildable)
 agent_runs/               # agent run audit (JSONL) — GITIGNORED
 tests/
 scripts/demo_end_to_end.py
@@ -62,12 +67,13 @@ scripts/demo_end_to_end.py
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `MNESIS_ROOT` | `./wiki` | Root of pages, sources, and index. |
+| `MNESIS_ROOT` | `./wiki` | The **multitenant data root** (`config.DATA_ROOT`): holds `tenants/<id>/` and `registry.json`. It is **not** itself a store — there are no global pages/sources/index paths (§16). |
+| `MNESIS_DEFAULT_TENANT` | `default` | The tenant a single-tenant deployment runs as transparently. |
 | `MNESIS_LLM_MODEL` | `claude-sonnet-4-6` | Model used by the ingestion/extraction LLM. |
 | `MNESIS_FILEBACK_THRESHOLD` | `0.7` | Quality gate for filing answers back. |
 | `MNESIS_LLM_STUB` | unset | When `1` (or no API key), the LLM client returns deterministic canned output so tests and the demo run offline. |
 
-`wiki/.index/` is never tracked by git — it is a cache that `mnesis rebuild` regenerates from the pages.
+Each tenant's `.cache/` is never tracked by git — it is regenerated by `mnesis rebuild` from that tenant's pages (+ its durable `state.db`). **Path references elsewhere in this file written as `wiki/pages/…`, `wiki/sources/…`, or `wiki/.index/…` now resolve per-tenant under `tenants/<tenant_id>/{pages,sources,.cache}` — they are reached only through a `TenantContext` (§16), never a global path.**
 
 ---
 
@@ -323,6 +329,34 @@ This document is co-evolved with the system. Expect the first version to be roug
 - Any code change that touches a field, directory, env var, tool, or behaviour described here updates this file in the same commit.
 - Add new conventions under the section they belong to; don't scatter them.
 - Keep it scannable — it is read at the start of every agent session.
+
+---
+
+## 16. Tenancy & isolation (the data-layer primitive)
+
+mnesis is **multitenant from the data layer up**. The store is tenant-scoped *by construction* so cross-tenant access is structurally impossible, not merely access-checked. This is the foundation auth/session work (later prompts) builds on; T1 delivers the isolation primitive only (the active tenant is the single `default` tenant until a boundary resolves it from credentials).
+
+**On-disk layout.** `config.DATA_ROOT` (env `MNESIS_ROOT`, default `./wiki`) is the *data root*, not a store. Under it:
+
+```
+DATA_ROOT/
+  registry.json                # the tenant registry (metadata) — OUTSIDE any tenant root
+  tenants/<tenant_id>/         # one tenant's canonical store + its OWN git repo
+    pages/                     #   canonical Markdown (tracked)
+    sources/                   #   redacted sources (tracked)
+    .cache/                    #   rebuildable caches: wiki.db, graph.db, state.db (gitignored)
+```
+
+**The model (`tenancy.py`).**
+- **`Tenant`** — `tenant_id` (a safe slug: lowercase `[a-z0-9_-]`, leading alphanumeric), `name`, `status` (`active`|`suspended`), `created`.
+- **`TenantRegistry`** — a small JSON metadata store at `DATA_ROOT/registry.json` recording *which* tenants exist; it holds no tenant content. `ensure()` is idempotent.
+- **`TenantContext{tenant_id, root_path}`** — the isolation handle every store is built from. It exposes `pages_dir`/`sources_dir`/`cache_dir`/`git_root` and a **path-resolution guard**: `resolve(*parts)` joins under the root, resolves, and refuses anything that escapes it (traversal `..` or absolute escape) — fail-closed (`PathEscapeError`). `page_path`/`source_path` validate the id segment too.
+
+**No global store / resolved at boundaries.** There is no module-level store and no function that takes a raw cross-tenant path. Each store class (`store.Store`, `search.SearchIndex`, `state.StateStore`, and `graph.get_graph_backend(ctx)`) is **constructed from a `TenantContext`** — passing anything else is a `TypeError`. The module-level convenience functions (`store.write_page`, `search.search`, …) delegate to a store over the **active** context, which is bound explicitly at a boundary via `tenancy.use(ctx)`; `tenancy.current()` raises `NoTenantContextError` when none is bound. Boundaries that bind it: the **CLI** (`--tenant`, default `default`, per invocation), the **MCP server** (stdio binds once; HTTP binds per request via `_TenantBindingMiddleware`), and the **web API** (per request). Each tenant root is its own git repo, so every page mutation is one commit *in that tenant's history*.
+
+**Migration (transparent single-tenant).** `tenancy.migrate_legacy_to_default()` (CLI `mnesis migrate-tenants`) moves an existing single-store layout (`DATA_ROOT/{pages,sources}`) into `tenants/default/` and gives it its own git repo. It is **non-destructive** (content is moved, never dropped; the legacy `.git`/`.index` are left in place) and **idempotent** (a re-run, once `tenants/default/` exists, is a no-op). `tenancy.open_tenant("default")` runs it on first use, so a single-tenant deployment reaches its data as `default` with no manual step.
+
+**Out of scope for T1 (later prompts):** resolving the tenant from credentials/sessions, per-tenant auth/quotas, tenant lifecycle (suspend/delete), and tenant-scoping the agent layer. The agent layer reaches mnesis only over MCP, so it inherits whatever tenant the server binds.
 
 ---
 

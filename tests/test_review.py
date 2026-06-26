@@ -13,23 +13,8 @@ TITLE = "Project Atlas uses Redis for caching"
 
 
 @pytest.fixture()
-def wiki(tmp_path, monkeypatch):
-    root = tmp_path / "wiki"
-    (root / "pages").mkdir(parents=True)
-    (root / "sources").mkdir(parents=True)
-    monkeypatch.setattr(config, "MNESIS_ROOT", root)
-    monkeypatch.setattr(config, "PAGES_DIR", root / "pages")
-    monkeypatch.setattr(config, "SOURCES_DIR", root / "sources")
-    monkeypatch.setattr(config, "INDEX_DIR", root / ".index")
-    monkeypatch.setattr(config, "MNESIS_LLM_STUB", True)
-
-    subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True)
-    subprocess.run(["git", "-C", str(tmp_path), "config", "user.name", "Test"], check=True)
-    subprocess.run(
-        ["git", "-C", str(tmp_path), "config", "user.email", "test@localhost"], check=True
-    )
-    return tmp_path
-
+def wiki(tenant):
+    return tenant.root_path
 
 def _conf(page_id: str) -> float:
     page = store.read_page(page_id)

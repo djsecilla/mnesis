@@ -12,7 +12,7 @@ import subprocess
 
 import pytest
 
-from mnesis import config, mcp_server, search, store
+from mnesis import config, mcp_server, search, store, tenancy
 
 FAKE_SECRET = "sk-test1234567890ABCDEFGHijklmnop"
 
@@ -27,24 +27,9 @@ SOURCE_B = (
 
 
 @pytest.fixture()
-def wiki(tmp_path, monkeypatch):
-    root = tmp_path / "wiki"
-    (root / "pages").mkdir(parents=True)
-    (root / "sources").mkdir(parents=True)
-    monkeypatch.setattr(config, "MNESIS_ROOT", root)
-    monkeypatch.setattr(config, "PAGES_DIR", root / "pages")
-    monkeypatch.setattr(config, "SOURCES_DIR", root / "sources")
-    monkeypatch.setattr(config, "INDEX_DIR", root / ".index")
-    monkeypatch.setattr(config, "MNESIS_LLM_STUB", True)
+def wiki(tenant, monkeypatch):
     monkeypatch.setattr(config, "MNESIS_FILEBACK_THRESHOLD", 0.7)
-
-    subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True)
-    subprocess.run(["git", "-C", str(tmp_path), "config", "user.name", "Test"], check=True)
-    subprocess.run(
-        ["git", "-C", str(tmp_path), "config", "user.email", "test@localhost"], check=True
-    )
-    return tmp_path
-
+    return tenant.root_path
 
 def _git_log(repo) -> list[str]:
     out = subprocess.run(
@@ -63,8 +48,8 @@ def test_full_compounding_loop(wiki):
 
     # --- secret is redacted EVERYWHERE: page bodies and the saved source ---
     for p in facts:
-        assert FAKE_SECRET not in (config.PAGES_DIR / f"{p.id}.md").read_text()
-    saved_b = (config.SOURCES_DIR / "billing-notes.md").read_text()
+        assert FAKE_SECRET not in (tenancy.current().pages_dir / f"{p.id}.md").read_text()
+    saved_b = (tenancy.current().sources_dir / "billing-notes.md").read_text()
     assert FAKE_SECRET not in saved_b
     assert "[REDACTED:SECRET]" in saved_b  # caught, not merely absent
 
@@ -97,7 +82,7 @@ def test_full_compounding_loop(wiki):
 
     # --- a fresh rebuild reproduces the search results ---
     before = [(h.id, h.bm25_score, h.snippet) for h in search.search("caching")]
-    (config.INDEX_DIR / "wiki.db").unlink()
+    (tenancy.current().cache_dir / "wiki.db").unlink()
     search.rebuild()
     after = [(h.id, h.bm25_score, h.snippet) for h in search.search("caching")]
     assert before == after

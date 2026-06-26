@@ -17,7 +17,7 @@ import pytest
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
-from mnesis import config, mcp_server, search, state, store, webapi
+from mnesis import config, mcp_server, search, state, store, webapi, tenancy
 from mnesis.store import Page
 
 TOKEN = "ingest-token"
@@ -29,31 +29,27 @@ SECRET_TEXT = f"Project Atlas uses Redis for caching. Deploy key {SECRET}."
 @pytest.fixture()
 def client(monkeypatch):
     tmp = Path(tempfile.mkdtemp(prefix="mnesis-ingest-"))
-    root = tmp / "wiki"
-    (root / "pages").mkdir(parents=True)
-    (root / "sources").mkdir(parents=True)
-    monkeypatch.setattr(config, "MNESIS_ROOT", root)
-    monkeypatch.setattr(config, "PAGES_DIR", root / "pages")
-    monkeypatch.setattr(config, "SOURCES_DIR", root / "sources")
-    monkeypatch.setattr(config, "INDEX_DIR", root / ".index")
+    monkeypatch.setattr(config, "DATA_ROOT", tmp / "data")
     monkeypatch.setattr(config, "MNESIS_LLM_STUB", True)
     monkeypatch.setattr(config, "MNESIS_MCP_TOKEN", TOKEN)
 
-    subprocess.run(["git", "-C", str(tmp), "init", "-q"], check=True)
-    subprocess.run(["git", "-C", str(tmp), "config", "user.name", "Test"], check=True)
-    subprocess.run(["git", "-C", str(tmp), "config", "user.email", "t@localhost"], check=True)
+    ctx = tenancy.open_tenant(config.DEFAULT_TENANT_ID)
+    token = tenancy.bind(ctx)
     search.rebuild()
 
     app = Starlette()
     webapi.mount_api(app)
     app.add_middleware(mcp_server._BearerAuthMiddleware, token=TOKEN)
+    app.add_middleware(mcp_server._TenantBindingMiddleware)  # bind a tenant per request
     with TestClient(app) as c:
         yield c
+    tenancy.unbind(token)
     shutil.rmtree(tmp, ignore_errors=True)
 
 
 def _commits(root: Path) -> int:
-    out = subprocess.run(["git", "-C", str(root.parent), "rev-list", "--count", "--all"],
+    # The tenant root IS its own git repo.
+    out = subprocess.run(["git", "-C", str(root), "rev-list", "--count", "--all"],
                          capture_output=True, text=True)
     return int((out.stdout or "0").strip() or "0")
 
@@ -62,7 +58,7 @@ def _commits(root: Path) -> int:
 
 
 def test_preview_text_returns_plan_and_writes_nothing(client):
-    before = (_commits(config.MNESIS_ROOT), sorted(os.listdir(config.SOURCES_DIR)))
+    before = (_commits(tenancy.current().root_path), sorted(os.listdir(tenancy.current().sources_dir)))
     r = client.post("/api/ingest/preview", json={"text": SECRET_TEXT}, headers=AUTH)
     assert r.status_code == 200
     plan = r.json()
@@ -70,7 +66,7 @@ def test_preview_text_returns_plan_and_writes_nothing(client):
     assert plan["routing"]["action"] == "new"
     assert {"type": "secret", "kind": "api-key", "count": 1} in plan["redactions"]
     assert SECRET not in r.text  # never echo the raw value back
-    assert (_commits(config.MNESIS_ROOT), sorted(os.listdir(config.SOURCES_DIR))) == before
+    assert (_commits(tenancy.current().root_path), sorted(os.listdir(tenancy.current().sources_dir))) == before
 
 
 def test_preview_multipart_markdown(client):
@@ -80,7 +76,7 @@ def test_preview_multipart_markdown(client):
     plan = r.json()
     assert plan["source_ref"] == "note"
     assert plan["draft_page"]["title"]
-    assert os.listdir(config.SOURCES_DIR) == []  # still nothing written
+    assert os.listdir(tenancy.current().sources_dir) == []  # still nothing written
 
 
 # --- commit writes ----------------------------------------------------------

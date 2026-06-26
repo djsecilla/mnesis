@@ -10,13 +10,11 @@ from __future__ import annotations
 
 import pytest
 
-from mnesis import config, graph
+from mnesis import config, graph, tenancy
 
 
 @pytest.fixture()
-def backend(tmp_path, monkeypatch):
-    monkeypatch.setattr(config, "INDEX_DIR", tmp_path / ".index")
-    monkeypatch.setattr(config, "GRAPH_BACKEND", "sqlite")
+def backend(tenant):
     b = graph.get_graph_backend()
     assert isinstance(b, graph.GraphBackend)  # we test the interface, not a class
     return b

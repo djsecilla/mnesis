@@ -12,23 +12,12 @@ import subprocess
 
 import pytest
 
-from mnesis import config, graph, search, store
+from mnesis import config, graph, search, store, tenancy
 from mnesis.store import Page
 
 
 @pytest.fixture()
-def wiki(tmp_path, monkeypatch):
-    root = tmp_path / "wiki"
-    (root / "pages").mkdir(parents=True)
-    monkeypatch.setattr(config, "MNESIS_ROOT", root)
-    monkeypatch.setattr(config, "PAGES_DIR", root / "pages")
-    monkeypatch.setattr(config, "INDEX_DIR", root / ".index")
-    monkeypatch.setattr(config, "GRAPH_BACKEND", "sqlite")
-    subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True)
-    subprocess.run(["git", "-C", str(tmp_path), "config", "user.name", "Test"], check=True)
-    subprocess.run(
-        ["git", "-C", str(tmp_path), "config", "user.email", "test@localhost"], check=True
-    )
+def wiki(tenant):
     # The page that actually mentions Redis (BM25 anchor + declares the entity).
     store.write_page(Page(
         id="redis-cache", title="Redis is the caching layer",
@@ -50,7 +39,7 @@ def wiki(tmp_path, monkeypatch):
     ))
     search.rebuild()
     graph.rebuild_graph()
-    return tmp_path
+    return tenant.root_path
 
 
 def test_query_surfaces_graph_reachable_page_with_grounding(wiki):

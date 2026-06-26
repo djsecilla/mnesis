@@ -19,7 +19,7 @@ _TMP = tempfile.mkdtemp(prefix="mnesis-phase3-")
 os.environ["MNESIS_LLM_STUB"] = "1"
 os.environ["MNESIS_ROOT"] = os.path.join(_TMP, "wiki")
 
-from mnesis import config, graph, ingest, mcp_server  # noqa: E402
+from mnesis import config, graph, ingest, mcp_server, tenancy# noqa: E402
 
 
 def _hr(title: str) -> None:
@@ -27,7 +27,7 @@ def _hr(title: str) -> None:
 
 
 def main() -> None:
-    config.ensure_dirs()
+    tenancy.bind(tenancy.open_tenant(config.DEFAULT_TENANT_ID))  # boundary: bind the default tenant
     subprocess.run(["git", "-C", _TMP, "init", "-q"], check=True)
     subprocess.run(["git", "-C", _TMP, "config", "user.name", "mnesis demo"], check=True)
     subprocess.run(["git", "-C", _TMP, "config", "user.email", "demo@localhost"], check=True)

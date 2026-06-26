@@ -4,14 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from mnesis import config, state
+from mnesis import config, state, tenancy
 
 
 @pytest.fixture()
-def index(tmp_path, monkeypatch):
-    monkeypatch.setattr(config, "INDEX_DIR", tmp_path / ".index")
-    return tmp_path
-
+def index(tenant):
+    return tenant.root_path
 
 def test_record_access_increments_count(index):
     assert state.get_access("page-x") is None  # unseen
@@ -43,15 +41,12 @@ def test_review_queue_enqueue_list_resolve(index):
 def test_state_db_created_on_demand_and_separate_file(index):
     # Touching the state store creates state.db (not the search index).
     state.record_access("p")
-    assert (config.INDEX_DIR / "state.db").exists()
+    assert (tenancy.current().cache_dir / "state.db").exists()
 
 
-def test_state_survives_search_rebuild(index, monkeypatch):
-    # rebuild() must not touch the state store. Point pages at an empty dir.
+def test_state_survives_search_rebuild(index):
+    # rebuild() must not touch the state store. The fresh tenant has empty pages.
     from mnesis import search
-
-    monkeypatch.setattr(config, "PAGES_DIR", index / "pages")
-    (index / "pages").mkdir(parents=True)
 
     state.record_access("durable-page")
     rid = state.enqueue_contradiction("a", "b", "x")

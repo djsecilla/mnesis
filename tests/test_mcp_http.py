@@ -22,7 +22,7 @@ import uvicorn
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
-from mnesis import config, ingest, mcp_server
+from mnesis import config, ingest, mcp_server, tenancy
 
 TOKEN = "s3cret-token"
 
@@ -42,23 +42,17 @@ def http_server():
     saved = {
         k: getattr(config, k)
         for k in (
-            "MNESIS_ROOT", "PAGES_DIR", "SOURCES_DIR", "INDEX_DIR", "MNESIS_LLM_STUB",
-            "MNESIS_MCP_HOST", "MNESIS_MCP_PORT", "MNESIS_MCP_TOKEN",
+            "DATA_ROOT", "MNESIS_LLM_STUB", "MNESIS_MCP_HOST", "MNESIS_MCP_PORT", "MNESIS_MCP_TOKEN",
         )
     }
-    root = tmp / "wiki"
-    (root / "pages").mkdir(parents=True)
-    (root / "sources").mkdir(parents=True)
-    config.MNESIS_ROOT = root
-    config.PAGES_DIR = root / "pages"
-    config.SOURCES_DIR = root / "sources"
-    config.INDEX_DIR = root / ".index"
+    config.DATA_ROOT = tmp / "data"
     config.MNESIS_LLM_STUB = True
     config.MNESIS_MCP_TOKEN = TOKEN
 
-    subprocess.run(["git", "-C", str(tmp), "init", "-q"], check=True)
-    subprocess.run(["git", "-C", str(tmp), "config", "user.name", "Test"], check=True)
-    subprocess.run(["git", "-C", str(tmp), "config", "user.email", "t@localhost"], check=True)
+    # Provision + bind the default tenant for fixture-time seeding; the running
+    # server rebinds it per request via the tenant-binding middleware.
+    _ctx = tenancy.open_tenant(config.DEFAULT_TENANT_ID)
+    _token = tenancy.bind(_ctx)
 
     # Seed a page so /health stats and a tool call have something to report.
     ingest.ingest_source("Project Atlas uses Redis for caching.", "atlas")
@@ -85,6 +79,7 @@ def http_server():
 
     server.should_exit = True
     thread.join(timeout=5)
+    tenancy.unbind(_token)
     for k, v in saved.items():
         setattr(config, k, v)
     shutil.rmtree(tmp, ignore_errors=True)

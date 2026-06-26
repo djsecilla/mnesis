@@ -18,23 +18,9 @@ def _iso(dt: datetime) -> str:
 
 
 @pytest.fixture()
-def wiki(tmp_path, monkeypatch):
-    root = tmp_path / "wiki"
-    (root / "pages").mkdir(parents=True)
-    monkeypatch.setattr(config, "MNESIS_ROOT", root)
-    monkeypatch.setattr(config, "PAGES_DIR", root / "pages")
-    monkeypatch.setattr(config, "INDEX_DIR", root / ".index")
-    # Raise the threshold so a single-source aged page (confidence ~0.43) is
-    # below it — the support floor keeps a 1-source page at ~0.25 otherwise.
+def wiki(tenant, monkeypatch):
     monkeypatch.setattr(config, "STALE_THRESHOLD", 0.5)
-
-    subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True)
-    subprocess.run(["git", "-C", str(tmp_path), "config", "user.name", "Test"], check=True)
-    subprocess.run(
-        ["git", "-C", str(tmp_path), "config", "user.email", "test@localhost"], check=True
-    )
-    return tmp_path
-
+    return tenant.root_path
 
 def _commit_count(repo) -> int:
     out = subprocess.run(

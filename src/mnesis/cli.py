@@ -14,7 +14,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import config, mcp_server
+from . import config, mcp_server, tenancy
 
 
 def _read_source(path: str) -> str:
@@ -28,7 +28,17 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="mnesis", description="mnesis — a compounding knowledge base for AI agents."
     )
+    parser.add_argument(
+        "--tenant",
+        default=config.DEFAULT_TENANT_ID,
+        help=f"tenant to operate on (default: {config.DEFAULT_TENANT_ID})",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
+
+    sub.add_parser(
+        "migrate-tenants",
+        help="move an existing single-store layout into tenants/default/ (idempotent)",
+    )
 
     p_ingest = sub.add_parser("ingest", help="ingest a source file (or - for stdin)")
     p_ingest.add_argument("file", help="path to the source file, or - for stdin")
@@ -99,10 +109,7 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
-    config.ensure_dirs()
-    args = _build_parser().parse_args(argv)
-
+def _dispatch(args: argparse.Namespace) -> None:
     if args.command == "ingest":
         text = _read_source(args.file)
         source_ref = args.source_ref or ("stdin" if args.file == "-" else Path(args.file).stem)
@@ -139,6 +146,27 @@ def main(argv: list[str] | None = None) -> int:
         print(mcp_server.mnesis_review())
     elif args.command == "resolve":
         print(mcp_server.mnesis_resolve(args.review_id, args.keep_id))
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _build_parser().parse_args(argv)
+
+    # `migrate-tenants` runs against the data root directly (no tenant bound yet).
+    if args.command == "migrate-tenants":
+        result = tenancy.migrate_legacy_to_default()
+        moved = ", ".join(result["moved"]) or "nothing to move"
+        print(
+            f"migrate-tenants: tenant '{result['tenant']}' "
+            f"({'migrated' if result['migrated'] else 'already current'}; {moved}; "
+            f"{result['pages']} pages)"
+        )
+        return 0
+
+    # Every other command resolves + binds a TenantContext at this boundary; the
+    # store is unreachable until it is bound.
+    ctx = tenancy.open_tenant(args.tenant)
+    with tenancy.use(ctx):
+        _dispatch(args)
     return 0
 
 

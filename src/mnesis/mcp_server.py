@@ -34,6 +34,7 @@ from . import (
     search,
     state,
     store,
+    tenancy,
 )
 from .filters import scrub
 from .store import Page
@@ -187,7 +188,7 @@ def mnesis_get(page_id: str) -> str:
     """
     if "/" in page_id or "\\" in page_id:
         return f"invalid page id: {page_id}"
-    path = config.PAGES_DIR / f"{page_id}.md"
+    path = tenancy.current().pages_dir / f"{page_id}.md"
     if not path.exists():
         return f"no such page: {page_id}"
     page = store.read_page(page_id)
@@ -484,11 +485,12 @@ def mnesis_resolve(review_id: int, keep_id: str) -> str:
 
 def _health_payload() -> dict:
     """Cheap liveness + quick stats — no LLM call."""
+    ctx = tenancy.current()
     return {
         "status": "ok",
         "pages": len(store.list_pages()),
-        "index_present": (config.INDEX_DIR / "wiki.db").exists(),
-        "graph_present": (config.INDEX_DIR / "graph.db").exists(),
+        "index_present": (ctx.cache_dir / "wiki.db").exists(),
+        "graph_present": (ctx.cache_dir / "graph.db").exists(),
     }
 
 
@@ -496,6 +498,26 @@ def _health_payload() -> dict:
 async def _health(_request):
     """Unauthenticated health probe (safe for load balancers)."""
     return JSONResponse(_health_payload())
+
+
+class _TenantBindingMiddleware:
+    """ASGI middleware that resolves and binds a :class:`TenantContext` for the
+    duration of each HTTP request, so the store is reachable inside handlers.
+
+    For now it binds the ``default`` tenant (single-tenant deployment); a later
+    prompt resolves the tenant from credentials/session here. Binding happens in the
+    request's context, so it propagates to sync tools dispatched to worker threads."""
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope.get("type") not in ("http", "websocket"):
+            await self.app(scope, receive, send)
+            return
+        ctx = tenancy.open_tenant(config.DEFAULT_TENANT_ID)
+        with tenancy.use(ctx):
+            await self.app(scope, receive, send)
 
 
 class _BearerAuthMiddleware:
@@ -529,6 +551,8 @@ def build_http_app():
     webapi.mount_api(app)
     if config.MNESIS_MCP_TOKEN:
         app.add_middleware(_BearerAuthMiddleware, token=config.MNESIS_MCP_TOKEN)
+    # Added last → outermost: a tenant is bound before any handler (incl. /health).
+    app.add_middleware(_TenantBindingMiddleware)
     return app
 
 
@@ -547,7 +571,10 @@ def serve() -> None:
             build_http_app(), host=config.MNESIS_MCP_HOST, port=config.MNESIS_MCP_PORT
         )
     else:
-        mcp.run()  # stdio (default) — unchanged for local Claude Code
+        # stdio (local Claude Code): one tenant for the process lifetime. Bind the
+        # default tenant (resolved/migrated on demand) for every tool call.
+        with tenancy.use(tenancy.open_tenant(config.DEFAULT_TENANT_ID)):
+            mcp.run()
 
 
 if __name__ == "__main__":

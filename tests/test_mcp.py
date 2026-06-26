@@ -6,30 +6,15 @@ import subprocess
 
 import pytest
 
-from mnesis import config, mcp_server, store
+from mnesis import config, mcp_server, store, tenancy
 
 FAKE_SECRET = "sk-test1234567890ABCDEFGHijklmnop"
 
 
 @pytest.fixture()
-def wiki(tmp_path, monkeypatch):
-    root = tmp_path / "wiki"
-    (root / "pages").mkdir(parents=True)
-    (root / "sources").mkdir(parents=True)
-    monkeypatch.setattr(config, "MNESIS_ROOT", root)
-    monkeypatch.setattr(config, "PAGES_DIR", root / "pages")
-    monkeypatch.setattr(config, "SOURCES_DIR", root / "sources")
-    monkeypatch.setattr(config, "INDEX_DIR", root / ".index")
-    monkeypatch.setattr(config, "MNESIS_LLM_STUB", True)
+def wiki(tenant, monkeypatch):
     monkeypatch.setattr(config, "MNESIS_FILEBACK_THRESHOLD", 0.7)
-
-    subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True)
-    subprocess.run(["git", "-C", str(tmp_path), "config", "user.name", "Test"], check=True)
-    subprocess.run(
-        ["git", "-C", str(tmp_path), "config", "user.email", "test@localhost"], check=True
-    )
-    return tmp_path
-
+    return tenant.root_path
 
 def test_mnesis_ingest_reports_summary_and_redacts(wiki):
     out = mcp_server.mnesis_ingest(
@@ -45,7 +30,7 @@ def test_mnesis_ingest_reports_summary_and_redacts(wiki):
     # The secret never reaches the page on disk.
     pages = store.list_pages()
     assert len(pages) == 1
-    page_text = (config.PAGES_DIR / f"{pages[0].id}.md").read_text()
+    page_text = (tenancy.current().pages_dir / f"{pages[0].id}.md").read_text()
     assert FAKE_SECRET not in page_text
 
 

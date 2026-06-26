@@ -24,7 +24,7 @@ os.environ["MNESIS_ROOT"] = os.path.join(_TMP, "wiki")
 # demo (a 1-source page's confidence asymptotes to ~0.25 under the default).
 os.environ["MNESIS_STALE_THRESHOLD"] = "0.5"
 
-from mnesis import config, confidence, ingest, mcp_server, search, state, store  # noqa: E402
+from mnesis import config, confidence, ingest, mcp_server, search, state, store, tenancy# noqa: E402
 from mnesis.store import Page  # noqa: E402
 
 TITLE = "Project Atlas uses Redis for caching"
@@ -40,7 +40,7 @@ def _conf(page_id: str) -> float:
 
 
 def main() -> None:
-    config.ensure_dirs()
+    tenancy.bind(tenancy.open_tenant(config.DEFAULT_TENANT_ID))  # boundary: bind the default tenant
     subprocess.run(["git", "-C", _TMP, "init", "-q"], check=True)
     subprocess.run(["git", "-C", _TMP, "config", "user.name", "mnesis demo"], check=True)
     subprocess.run(["git", "-C", _TMP, "config", "user.email", "demo@localhost"], check=True)

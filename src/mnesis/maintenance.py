@@ -24,7 +24,7 @@ import re
 from collections import defaultdict
 from datetime import datetime
 
-from . import config, confidence, graph, graph_lint, search, state, store
+from . import config, confidence, graph, graph_lint, search, state, store, tenancy
 from .graph import PAGE_NODE_TYPE
 
 # Pairs larger than this in a shared-tag/edge group are skipped as candidate
@@ -102,7 +102,7 @@ def health_report(now: datetime | None = None) -> dict:
     extra_in_index = sorted(indexed - md_ids)
 
     # Graph-index freshness: the page nodes the graph holds vs the markdown pages.
-    graph_present = (config.INDEX_DIR / "graph.db").exists()
+    graph_present = (tenancy.current().cache_dir / "graph.db").exists()
     page_nodes = {
         e["ref"][len("page:"):]
         for e in graph.get_graph_backend().all_entities()

@@ -7,9 +7,15 @@ paths and constants defined here.
 
 Conventions (see CLAUDE.md §3):
   - MNESIS_ROOT defaults to ./wiki, resolved relative to the repository root so the
-    package behaves the same regardless of the current working directory.
-  - Pages and redacted sources are tracked; the SQLite index under .index/ is a
-    rebuildable cache and is gitignored.
+    package behaves the same regardless of the current working directory. It is the
+    **multitenant data root** (`DATA_ROOT`): tenants live under ``tenants/<id>/``
+    and the tenant registry is ``registry.json`` beside them.
+  - There is deliberately **no module-level store path** here (no PAGES_DIR /
+    SOURCES_DIR / INDEX_DIR). The canonical store is tenant-scoped: every path is
+    resolved from a :class:`mnesis.tenancy.TenantContext` against its own root, so a
+    store cannot be reached without first resolving a tenant (CLAUDE.md §3, §16).
+  - Within a tenant, pages and redacted sources are tracked; the SQLite caches under
+    ``.cache/`` are rebuildable and gitignored.
 """
 
 from __future__ import annotations
@@ -30,12 +36,29 @@ def _resolve_root(value: str | None) -> Path:
     return p if p.is_absolute() else (REPO_ROOT / p)
 
 
-# --- Paths -----------------------------------------------------------------
+# --- Multitenant data root -------------------------------------------------
+# DATA_ROOT holds every tenant's own root plus the small tenant registry. It is
+# NOT itself a store — there are no global pages/sources/index paths here; those
+# are resolved per-tenant from a TenantContext (see tenancy.py). MNESIS_ROOT is
+# kept as the env name for backward compatibility (it now names the data root).
 
-MNESIS_ROOT: Path = _resolve_root(os.environ.get("MNESIS_ROOT"))
-PAGES_DIR: Path = MNESIS_ROOT / "pages"
-SOURCES_DIR: Path = MNESIS_ROOT / "sources"
-INDEX_DIR: Path = MNESIS_ROOT / ".index"
+DATA_ROOT: Path = _resolve_root(os.environ.get("MNESIS_ROOT"))
+MNESIS_ROOT: Path = DATA_ROOT  # backward-compatible alias (the data root)
+
+#: Where each tenant's canonical store + caches live: ``tenants/<tenant_id>/``.
+TENANTS_DIRNAME: str = "tenants"
+#: The tenant registry (metadata) — a small JSON file OUTSIDE any tenant root.
+REGISTRY_FILENAME: str = "registry.json"
+#: The default tenant a single-tenant deployment runs as (CLAUDE.md §16).
+DEFAULT_TENANT_ID: str = os.environ.get("MNESIS_DEFAULT_TENANT", "default")
+
+
+def tenants_dir() -> Path:
+    return DATA_ROOT / TENANTS_DIRNAME
+
+
+def registry_path() -> Path:
+    return DATA_ROOT / REGISTRY_FILENAME
 
 # --- Environment-configurable settings (all with fallbacks) ----------------
 
@@ -212,9 +235,3 @@ MNESIS_MCP_ALLOWED_HOSTS: str = os.environ.get("MNESIS_MCP_ALLOWED_HOSTS", "")
 
 #: Max bytes accepted by the ingestion upload endpoints (pasted text or file).
 MNESIS_MAX_UPLOAD_BYTES: int = _env_int("MNESIS_MAX_UPLOAD_BYTES", 2_000_000)
-
-
-def ensure_dirs() -> None:
-    """Create the wiki directory tree on demand. Safe to call repeatedly."""
-    for d in (MNESIS_ROOT, PAGES_DIR, SOURCES_DIR, INDEX_DIR):
-        d.mkdir(parents=True, exist_ok=True)

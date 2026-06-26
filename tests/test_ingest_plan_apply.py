@@ -13,7 +13,7 @@ import subprocess
 
 import pytest
 
-from mnesis import config, ingest, search, state, store
+from mnesis import config, ingest, search, state, store, tenancy
 from mnesis.store import Page
 
 # A fake secret (matches the api-key detector) plus a normal declarative claim.
@@ -22,20 +22,8 @@ SECRET_SOURCE = f"Project Atlas uses Redis for caching. The deploy key is {SECRE
 
 
 @pytest.fixture()
-def wiki(tmp_path, monkeypatch):
-    root = tmp_path / "wiki"
-    (root / "pages").mkdir(parents=True)
-    (root / "sources").mkdir(parents=True)
-    monkeypatch.setattr(config, "MNESIS_ROOT", root)
-    monkeypatch.setattr(config, "PAGES_DIR", root / "pages")
-    monkeypatch.setattr(config, "SOURCES_DIR", root / "sources")
-    monkeypatch.setattr(config, "INDEX_DIR", root / ".index")
-    monkeypatch.setattr(config, "MNESIS_LLM_STUB", True)
-    subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True)
-    subprocess.run(["git", "-C", str(tmp_path), "config", "user.name", "Test"], check=True)
-    subprocess.run(["git", "-C", str(tmp_path), "config", "user.email", "t@localhost"], check=True)
-    return tmp_path
-
+def wiki(tenant):
+    return tenant.root_path
 
 def _commit_count(repo) -> int:
     out = subprocess.run(
@@ -48,8 +36,8 @@ def _commit_count(repo) -> int:
 def _snapshot(repo):
     return (
         _commit_count(repo),
-        sorted(os.listdir(config.SOURCES_DIR)),
-        sorted(os.listdir(config.PAGES_DIR)),
+        sorted(os.listdir(tenancy.current().sources_dir)),
+        sorted(os.listdir(tenancy.current().pages_dir)),
     )
 
 
@@ -110,11 +98,11 @@ def test_apply_writes_one_outcome_and_secret_is_absent(wiki):
     assert len(pages) == 1 and pages[0].id == result["page_id"]
 
     # The secret value must not survive into ANY file under the wiki, nor git.
-    for dirpath, _dirs, files in os.walk(config.MNESIS_ROOT):
+    for dirpath, _dirs, files in os.walk(tenancy.current().root_path):
         if ".git" in dirpath:
             continue
         for name in files:
-            assert SECRET not in (config.MNESIS_ROOT / dirpath / name).read_text(errors="ignore")
+            assert SECRET not in (tenancy.current().root_path / dirpath / name).read_text(errors="ignore")
     log = subprocess.run(
         ["git", "-C", str(wiki), "log", "-p"], capture_output=True, text=True
     ).stdout
@@ -170,6 +158,6 @@ def test_one_shot_equals_plan_then_apply(wiki):
     page = ingest.ingest_source("A wholly standalone fact about widgets.", "widget-src")
     # The re-implemented one-shot wrote exactly one page and persisted its source.
     assert store.page_exists(page.id)
-    assert (config.SOURCES_DIR / "widget-src.md").exists()
+    assert (tenancy.current().sources_dir / "widget-src.md").exists()
     assert page.sources == ["widget-src"]
     state.get_access(page.id)  # state store reachable; no error

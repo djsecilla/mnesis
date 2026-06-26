@@ -14,7 +14,7 @@ import os
 # Seed offline by default (no network); respect an explicit override.
 os.environ.setdefault("MNESIS_LLM_STUB", "1")
 
-from . import config, graph, ingest, search, store  # noqa: E402
+from . import config, graph, ingest, search, store, tenancy  # noqa: E402
 
 # A small connected corpus: Atlas -> auth-migration -> Redis, Sarah owns the
 # migration, and a separate billing/Postgres fact. Markers drive the offline
@@ -67,10 +67,14 @@ SAMPLE_DIGEST: tuple[str, str] = (
 
 
 def main() -> None:
-    config.ensure_dirs()
+    with tenancy.use(tenancy.open_tenant(config.DEFAULT_TENANT_ID)):
+        _seed()
+
+
+def _seed() -> None:
     created, skipped = 0, 0
     for source_ref, text in SAMPLE_SOURCES:
-        if (config.SOURCES_DIR / f"{source_ref}.md").exists():
+        if (tenancy.current().sources_dir / f"{source_ref}.md").exists():
             print(f"  skip {source_ref} (already seeded)")
             skipped += 1
             continue

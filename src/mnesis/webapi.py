@@ -28,7 +28,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 from sse_starlette.sse import EventSourceResponse
 
-from . import config, confidence, graph, ingest, llm, search, state, store, vocab
+from . import config, confidence, graph, ingest, llm, search, state, store, tenancy, vocab
 
 log = logging.getLogger(__name__)
 
@@ -144,7 +144,7 @@ async def _get_page(request: Request) -> JSONResponse:
     except (FileNotFoundError, ValueError):
         return JSONResponse({"error": f"no such page: {pid}"}, status_code=404)
     score, breakdown = confidence.compute_confidence(page, access=state.get_access(pid))
-    raw = (config.PAGES_DIR / f"{pid}.md").read_text(encoding="utf-8")
+    raw = (tenancy.current().pages_dir / f"{pid}.md").read_text(encoding="utf-8")
     return JSONResponse({
         "id": page.id,
         "frontmatter": _frontmatter(page),
@@ -629,7 +629,7 @@ def _source_ingested_at(path: Path) -> str | None:
     """The git add-time of the source file (its ingestion), with an mtime fallback."""
     try:
         out = subprocess.run(
-            ["git", "-C", str(config.SOURCES_DIR), "log", "--diff-filter=A", "-1",
+            ["git", "-C", str(tenancy.current().sources_dir), "log", "--diff-filter=A", "-1",
              "--format=%cI", "--", str(path)],
             capture_output=True, text=True, timeout=5,
         )
@@ -645,9 +645,10 @@ def _source_ingested_at(path: Path) -> str | None:
 
 async def _list_sources(request: Request) -> JSONResponse:
     by_source = _pages_by_source()
-    config.SOURCES_DIR.mkdir(parents=True, exist_ok=True)
+    sources_dir = tenancy.current().sources_dir
+    sources_dir.mkdir(parents=True, exist_ok=True)
     items = []
-    for path in sorted(config.SOURCES_DIR.glob("*.md")):
+    for path in sorted(sources_dir.glob("*.md")):
         ref = path.stem
         items.append({
             "id": ref,
@@ -661,7 +662,7 @@ async def _get_source(request: Request) -> JSONResponse:
     ref = request.path_params["source_id"]
     if "/" in ref or "\\" in ref or ref in {"", ".", ".."}:
         return _err("invalid_source", "invalid source id", 400)
-    path = config.SOURCES_DIR / f"{ref}.md"
+    path = tenancy.current().sources_dir / f"{ref}.md"
     if not path.exists():
         return _err("not_found", f"no such source: {ref}", 404)
     by_source = _pages_by_source()

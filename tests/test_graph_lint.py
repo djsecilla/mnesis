@@ -14,20 +14,8 @@ NOW = datetime(2026, 6, 11, 12, 0, 0, tzinfo=timezone.utc)
 
 
 @pytest.fixture()
-def wiki(tmp_path, monkeypatch):
-    root = tmp_path / "wiki"
-    (root / "pages").mkdir(parents=True)
-    monkeypatch.setattr(config, "MNESIS_ROOT", root)
-    monkeypatch.setattr(config, "PAGES_DIR", root / "pages")
-    monkeypatch.setattr(config, "INDEX_DIR", root / ".index")
-    monkeypatch.setattr(config, "GRAPH_BACKEND", "sqlite")
-    subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True)
-    subprocess.run(["git", "-C", str(tmp_path), "config", "user.name", "Test"], check=True)
-    subprocess.run(
-        ["git", "-C", str(tmp_path), "config", "user.email", "test@localhost"], check=True
-    )
-    return tmp_path
-
+def wiki(tenant):
+    return tenant.root_path
 
 def _seed_corpus():
     # Healthy edge atlas -uses-> redis, declared on both ends.

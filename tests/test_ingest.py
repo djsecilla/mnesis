@@ -10,30 +10,14 @@ import subprocess
 
 import pytest
 
-from mnesis import config, ingest, store
+from mnesis import config, ingest, store, tenancy
 
 FAKE_SECRET = "sk-test1234567890ABCDEFGHijklmnop"
 
 
 @pytest.fixture()
-def wiki(tmp_path, monkeypatch):
-    """Isolated wiki tree + tmp git repo, with the LLM forced into stub mode."""
-    root = tmp_path / "wiki"
-    (root / "pages").mkdir(parents=True)
-    (root / "sources").mkdir(parents=True)
-    monkeypatch.setattr(config, "MNESIS_ROOT", root)
-    monkeypatch.setattr(config, "PAGES_DIR", root / "pages")
-    monkeypatch.setattr(config, "SOURCES_DIR", root / "sources")
-    monkeypatch.setattr(config, "INDEX_DIR", root / ".index")
-    monkeypatch.setattr(config, "MNESIS_LLM_STUB", True)
-
-    subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True)
-    subprocess.run(["git", "-C", str(tmp_path), "config", "user.name", "Test"], check=True)
-    subprocess.run(
-        ["git", "-C", str(tmp_path), "config", "user.email", "test@localhost"], check=True
-    )
-    return tmp_path
-
+def wiki(tenant):
+    return tenant.root_path
 
 def _commit_count(repo) -> int:
     out = subprocess.run(
@@ -59,11 +43,11 @@ def test_ingest_redacts_secret_and_writes_page(wiki):
     assert reread == page
 
     # The secret is absent from the PAGE (frontmatter + body).
-    page_text = (config.PAGES_DIR / f"{page.id}.md").read_text()
+    page_text = (tenancy.current().pages_dir / f"{page.id}.md").read_text()
     assert FAKE_SECRET not in page_text
 
     # The secret is absent from the SAVED SOURCE.
-    source_text = (config.SOURCES_DIR / "atlas-notes.md").read_text()
+    source_text = (tenancy.current().sources_dir / "atlas-notes.md").read_text()
     assert FAKE_SECRET not in source_text
     assert "[REDACTED:SECRET]" in source_text  # it was caught, not just missing
 

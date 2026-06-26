@@ -1,16 +1,16 @@
-"""SQLite FTS5 keyword search, blended with Phase-2 confidence.
+"""SQLite FTS5 keyword search, blended with Phase-2 confidence (tenant-scoped).
 
 Honors the canonical-vs-cache invariant (CLAUDE.md §2.1, §8): the Markdown pages
-are the single source of truth and the search index (``wiki/.index/wiki.db``) is
-a rebuildable projection. Each indexed row caches the page's **confidence** (and
+are the single source of truth and the search index (``<tenant>/.cache/wiki.db``)
+is a rebuildable projection. Each indexed row caches the page's **confidence** (and
 ``computed_at``) in UNINDEXED columns — derived state that lives here, never in
-Markdown. The confidence's Markdown-derived part is reproducible; its access
-boost comes from the durable state store (`state.py`), which ``rebuild()`` never
-clears.
+Markdown. The confidence's Markdown-derived part is reproducible; its access boost
+comes from the durable state store (`state.py`), which ``rebuild()`` never clears.
 
-Ranking blends normalized BM25 with confidence so well-supported, fresh, often-
-read pages rise and stale ones sink. Component scores are returned on every hit
-for explainability. Vectors/RRF remain out of scope (Phase 5).
+Like the rest of the store layer it is **tenant-scoped by construction**: a
+:class:`SearchIndex` is built from a :class:`~mnesis.tenancy.TenantContext`, indexes
+only that tenant's pages into that tenant's own ``wiki.db``, and the module-level
+functions delegate to one over the active tenant (fail-closed).
 """
 
 from __future__ import annotations
@@ -20,7 +20,10 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import config, confidence, state, store
+from . import confidence, tenancy
+from .state import StateStore
+from .store import Page, Store, now_iso
+from .tenancy import TenantContext
 
 # Indexed text columns, then UNINDEXED cached derived state. body is index 3.
 _BODY_COL = 3
@@ -41,6 +44,13 @@ _FTS5_REMEDIATION = (
     "rebuild Python against it). FTS5 is required for keyword search."
 )
 
+_EXPECTED_COLUMNS = ["id", "title", "tags", "body", "status", "confidence", "computed_at"]
+
+_INSERT_SQL = (
+    "INSERT INTO pages (id, title, tags, body, status, confidence, computed_at) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?)"
+)
+
 
 @dataclass
 class SearchHit:
@@ -55,10 +65,6 @@ class SearchHit:
     grounding: dict | None = None  # for graph-reached hits: the connecting edge/page
 
 
-def _db_path() -> Path:
-    return config.INDEX_DIR / "wiki.db"
-
-
 def _assert_fts5(conn: sqlite3.Connection) -> None:
     try:
         conn.execute("CREATE VIRTUAL TABLE temp.__fts5_probe USING fts5(x)")
@@ -67,118 +73,146 @@ def _assert_fts5(conn: sqlite3.Connection) -> None:
         raise RuntimeError(_FTS5_REMEDIATION) from exc
 
 
-_EXPECTED_COLUMNS = ["id", "title", "tags", "body", "status", "confidence", "computed_at"]
+class SearchIndex:
+    """The FTS5 search index for ONE tenant (its own ``.cache/wiki.db``)."""
 
+    def __init__(self, ctx: TenantContext) -> None:
+        if not isinstance(ctx, TenantContext):
+            raise TypeError(f"SearchIndex requires a TenantContext; got {type(ctx).__name__}")
+        self.ctx = ctx
+        self._store = Store(ctx)
+        self._state = StateStore(ctx)
 
-def _connect() -> sqlite3.Connection:
-    """Open the index DB, verifying FTS5 and ensuring the (current) schema exists.
+    def _db_path(self) -> Path:
+        return self.ctx.cache_path("wiki.db")
 
-    If an existing ``pages`` table predates the current schema, it is dropped and
-    recreated — safe, because the index is a rebuildable cache (a later
-    ``rebuild()``/``upsert`` repopulates it).
-    """
-    config.INDEX_DIR.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(_db_path())
-    # WAL lets the running server and an exec'd CLI read concurrently; busy_timeout
-    # makes a concurrent writer wait rather than error (single-writer awareness —
-    # heavy concurrent writes are a Tier-B concern).
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=5000")
-    _assert_fts5(conn)
-    conn.execute(f"CREATE VIRTUAL TABLE IF NOT EXISTS pages USING {_SCHEMA}")
-    cols = [r[1] for r in conn.execute("PRAGMA table_info(pages)").fetchall()]
-    if cols != _EXPECTED_COLUMNS:
-        conn.execute("DROP TABLE IF EXISTS pages")
-        conn.execute(f"CREATE VIRTUAL TABLE pages USING {_SCHEMA}")
-        conn.commit()
-    return conn
+    def _connect(self) -> sqlite3.Connection:
+        """Open the index DB, verifying FTS5 and ensuring the current schema.
 
+        If an existing ``pages`` table predates the current schema, it is dropped
+        and recreated — safe, because the index is a rebuildable cache.
+        """
+        self.ctx.cache_dir.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(self._db_path())
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+        _assert_fts5(conn)
+        conn.execute(f"CREATE VIRTUAL TABLE IF NOT EXISTS pages USING {_SCHEMA}")
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(pages)").fetchall()]
+        if cols != _EXPECTED_COLUMNS:
+            conn.execute("DROP TABLE IF EXISTS pages")
+            conn.execute(f"CREATE VIRTUAL TABLE pages USING {_SCHEMA}")
+            conn.commit()
+        return conn
 
-def _cached_confidence(page: store.Page) -> float:
-    """Confidence for the cached column: Markdown inputs + durable access state."""
-    score, _ = confidence.compute_confidence(page, access=state.get_access(page.id))
-    return score
+    def _cached_confidence(self, page: Page) -> float:
+        score, _ = confidence.compute_confidence(page, access=self._state.get_access(page.id))
+        return score
 
+    def _index_row(self, page: Page) -> tuple:
+        return (
+            page.id,
+            page.title,
+            " ".join(page.tags),
+            page.body,
+            page.status,
+            self._cached_confidence(page),
+            now_iso(),
+        )
 
-def _index_row(page: store.Page) -> tuple:
-    return (
-        page.id,
-        page.title,
-        " ".join(page.tags),
-        page.body,
-        page.status,
-        _cached_confidence(page),
-        store.now_iso(),
-    )
+    def rebuild(self) -> int:
+        """Drop and repopulate the index from every Markdown page. Returns count.
 
+        Reproducible in its Markdown-derived parts (bm25, snippets); the cached
+        confidence additionally reflects the durable state store, which this reads
+        but never clears.
+        """
+        conn = self._connect()
+        try:
+            conn.execute("DROP TABLE IF EXISTS pages")
+            conn.execute(f"CREATE VIRTUAL TABLE pages USING {_SCHEMA}")
+            pages = self._store.list_pages()
+            conn.executemany(_INSERT_SQL, [self._index_row(p) for p in pages])
+            conn.commit()
+            return len(pages)
+        finally:
+            conn.close()
 
-_INSERT_SQL = (
-    "INSERT INTO pages (id, title, tags, body, status, confidence, computed_at) "
-    "VALUES (?, ?, ?, ?, ?, ?, ?)"
-)
+    def upsert(self, page) -> None:
+        """Incrementally (re)index a single page, recomputing its cached confidence."""
+        conn = self._connect()
+        try:
+            conn.execute("DELETE FROM pages WHERE id = ?", (page.id,))
+            conn.execute(_INSERT_SQL, self._index_row(page))
+            conn.commit()
+        finally:
+            conn.close()
 
+    def indexed_ids(self) -> set[str]:
+        """The set of page ids currently present in the search index (freshness probe)."""
+        conn = self._connect()
+        try:
+            rows = conn.execute("SELECT id FROM pages").fetchall()
+        finally:
+            conn.close()
+        return {r[0] for r in rows}
 
-def rebuild() -> int:
-    """Drop and repopulate the index from every Markdown page. Returns the count.
+    def record_and_reindex(self, page_id: str) -> None:
+        """Record one access to ``page_id`` and refresh its cached confidence.
 
-    Reproducible in its Markdown-derived parts (bm25, snippets); the cached
-    confidence additionally reflects the durable state store, which this function
-    reads but never clears.
-    """
-    conn = _connect()
-    try:
-        conn.execute("DROP TABLE IF EXISTS pages")
-        conn.execute(f"CREATE VIRTUAL TABLE pages USING {_SCHEMA}")
-        pages = store.list_pages()
-        conn.executemany(_INSERT_SQL, [_index_row(p) for p in pages])
-        conn.commit()
-        return len(pages)
-    finally:
-        conn.close()
+        Reinforcement on read (CLAUDE.md §8). Best-effort: never blocks/fails a query.
+        """
+        try:
+            self._state.record_access(page_id)
+            self.upsert(self._store.read_page(page_id))
+        except Exception:
+            pass
 
+    def search(self, query: str, limit: int = 10, include_stale: bool = False) -> list[SearchHit]:
+        """Confidence-blended keyword search (see module docstring)."""
+        match = _to_match_query(query)
+        if match is None:
+            return []
+        sql = (
+            f"SELECT id, title, snippet(pages, {_BODY_COL}, '[', ']', '…', 12) AS snip, "
+            "bm25(pages) AS bm25, status, confidence "
+            "FROM pages WHERE pages MATCH ?"
+        )
+        if not include_stale:
+            sql += " AND status != 'stale'"
+        conn = self._connect()
+        try:
+            rows = conn.execute(sql, (match,)).fetchall()
+        finally:
+            conn.close()
+        if not rows:
+            return []
 
-def upsert(page: store.Page) -> None:
-    """Incrementally (re)index a single page, recomputing its cached confidence."""
-    conn = _connect()
-    try:
-        conn.execute("DELETE FROM pages WHERE id = ?", (page.id,))
-        conn.execute(_INSERT_SQL, _index_row(page))
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def indexed_ids() -> set[str]:
-    """The set of page ids currently present in the search index.
-
-    A read-only freshness probe (used by the health report): comparing this to
-    the Markdown page ids detects an index that has drifted from the canonical
-    store (pages added or removed without a rebuild/upsert).
-    """
-    conn = _connect()
-    try:
-        rows = conn.execute("SELECT id FROM pages").fetchall()
-    finally:
-        conn.close()
-    return {r[0] for r in rows}
-
-
-def record_and_reindex(page_id: str) -> None:
-    """Record one access to ``page_id`` and refresh its cached confidence.
-
-    Reinforcement on read (CLAUDE.md §8). Best-effort: access tracking must be
-    cheap and must never block or fail a query, so all errors are swallowed.
-    """
-    try:
-        state.record_access(page_id)
-        upsert(store.read_page(page_id))
-    except Exception:
-        pass
+        # Normalize BM25 to [0,1] relevance (FTS5 bm25 is <= 0; more negative = better).
+        relevances = [-row[3] for row in rows]
+        max_rel = max(relevances)
+        hits: list[SearchHit] = []
+        for row, rel in zip(rows, relevances):
+            conf = float(row[5]) if row[5] is not None else 0.0
+            bm25_norm = (rel / max_rel) if max_rel > 0 else 1.0
+            final = bm25_norm * (0.5 + 0.5 * conf)
+            hits.append(
+                SearchHit(
+                    id=row[0],
+                    title=row[1],
+                    snippet=row[2],
+                    bm25_score=row[3],
+                    confidence=conf,
+                    final_score=final,
+                    status=row[4],
+                )
+            )
+        hits.sort(key=lambda h: (-h.final_score, h.bm25_score, h.id))
+        return hits[:limit]
 
 
 # A minimal English stopword set so natural-language questions ("what does X
-# use?") don't force every page to contain function words. BM25's IDF already
-# down-weights common terms; dropping these sharpens recall and ranking.
+# use?") don't force every page to contain function words.
 _STOPWORDS = frozenset(
     """
     a an the of to in on at by for from into with as is are was were be been being
@@ -193,11 +227,8 @@ def _to_match_query(query: str) -> str | None:
     """Build a safe FTS5 MATCH expression for keyword/NL retrieval.
 
     Tokens are **OR-ed and prefix-matched**, so a natural-language question
-    retrieves the relevant pages instead of requiring *every* word to appear, and
-    morphological variants match (``postgres`` -> ``postgresql``, ``auth`` ->
-    ``authentication``). Each token is quoted to neutralize FTS5 operators (``or``,
-    ``near``, …); BM25 then ranks pages matching more — and rarer — terms highest,
-    so precision lives in the ranking rather than in an all-or-nothing filter.
+    retrieves relevant pages instead of requiring every word to appear, and
+    morphological variants match. Each token is quoted to neutralize FTS5 operators.
     """
     tokens = re.findall(r"\w+", query.lower())
     if not tokens:
@@ -208,52 +239,28 @@ def _to_match_query(query: str) -> str | None:
     return " OR ".join(f'"{t}"*' for t in content)
 
 
+# --- Module-level delegators (over the ACTIVE tenant; fail-closed) ----------
+
+
+def active_index() -> SearchIndex:
+    return SearchIndex(tenancy.current())
+
+
+def rebuild() -> int:
+    return active_index().rebuild()
+
+
+def upsert(page) -> None:
+    active_index().upsert(page)
+
+
+def indexed_ids() -> set[str]:
+    return active_index().indexed_ids()
+
+
+def record_and_reindex(page_id: str) -> None:
+    active_index().record_and_reindex(page_id)
+
+
 def search(query: str, limit: int = 10, include_stale: bool = False) -> list[SearchHit]:
-    """Confidence-blended keyword search.
-
-    Returns up to ``limit`` hits ordered by ``final_score`` (higher = better),
-    which blends normalized BM25 relevance with cached confidence:
-    ``final = bm25_norm * (0.5 + 0.5 * confidence)``. Stale pages are excluded
-    unless ``include_stale=True``, and (being capped at ``STALE_CAP``) never
-    outrank an active page of comparable match.
-    """
-    match = _to_match_query(query)
-    if match is None:
-        return []
-    sql = (
-        f"SELECT id, title, snippet(pages, {_BODY_COL}, '[', ']', '…', 12) AS snip, "
-        "bm25(pages) AS bm25, status, confidence "
-        "FROM pages WHERE pages MATCH ?"
-    )
-    if not include_stale:
-        sql += " AND status != 'stale'"
-    conn = _connect()
-    try:
-        rows = conn.execute(sql, (match,)).fetchall()
-    finally:
-        conn.close()
-    if not rows:
-        return []
-
-    # Normalize BM25 to [0,1] relevance (FTS5 bm25 is <= 0; more negative = better).
-    relevances = [-row[3] for row in rows]
-    max_rel = max(relevances)
-    hits: list[SearchHit] = []
-    for row, rel in zip(rows, relevances):
-        conf = float(row[5]) if row[5] is not None else 0.0
-        bm25_norm = (rel / max_rel) if max_rel > 0 else 1.0
-        final = bm25_norm * (0.5 + 0.5 * conf)
-        hits.append(
-            SearchHit(
-                id=row[0],
-                title=row[1],
-                snippet=row[2],
-                bm25_score=row[3],
-                confidence=conf,
-                final_score=final,
-                status=row[4],
-            )
-        )
-    # Best first; deterministic tie-breaks on relevance then id.
-    hits.sort(key=lambda h: (-h.final_score, h.bm25_score, h.id))
-    return hits[:limit]
+    return active_index().search(query, limit, include_stale)

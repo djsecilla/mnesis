@@ -14,7 +14,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 from starlette.testclient import TestClient
 
-from mnesis import config, graph, mcp_server, search, store, webapi
+from mnesis import config, graph, mcp_server, search, store, tenancy, webapi
 from mnesis.store import Page
 
 TOKEN = "web-token"
@@ -24,22 +24,15 @@ AUTH = {"Authorization": f"Bearer {TOKEN}"}
 @pytest.fixture(scope="module")
 def client():
     tmp = Path(tempfile.mkdtemp(prefix="mnesis-web-"))
-    saved = {k: getattr(config, k) for k in (
-        "MNESIS_ROOT", "PAGES_DIR", "SOURCES_DIR", "INDEX_DIR", "MNESIS_LLM_STUB", "MNESIS_MCP_TOKEN",
-    )}
-    root = tmp / "wiki"
-    (root / "pages").mkdir(parents=True)
-    (root / "sources").mkdir(parents=True)
-    config.MNESIS_ROOT = root
-    config.PAGES_DIR = root / "pages"
-    config.SOURCES_DIR = root / "sources"
-    config.INDEX_DIR = root / ".index"
+    saved = {k: getattr(config, k) for k in ("DATA_ROOT", "MNESIS_LLM_STUB", "MNESIS_MCP_TOKEN")}
+    config.DATA_ROOT = tmp / "data"
     config.MNESIS_LLM_STUB = True
     config.MNESIS_MCP_TOKEN = TOKEN
 
-    subprocess.run(["git", "-C", str(tmp), "init", "-q"], check=True)
-    subprocess.run(["git", "-C", str(tmp), "config", "user.name", "Test"], check=True)
-    subprocess.run(["git", "-C", str(tmp), "config", "user.email", "t@localhost"], check=True)
+    # Provision + bind the default tenant for fixture-time seeding; each request
+    # rebinds it via the tenant-binding middleware below.
+    _ctx = tenancy.open_tenant(config.DEFAULT_TENANT_ID)
+    _token = tenancy.bind(_ctx)
 
     store.write_page(Page(
         id="atlas", title="Atlas uses Redis for caching", body="Project Atlas uses Redis.",
@@ -69,10 +62,12 @@ def client():
     app = Starlette(routes=[Route("/health", _health, methods=["GET"])])
     webapi.mount_api(app)
     app.add_middleware(mcp_server._BearerAuthMiddleware, token=TOKEN)
+    app.add_middleware(mcp_server._TenantBindingMiddleware)  # bind a tenant per request
 
     with TestClient(app) as c:
         yield c
 
+    tenancy.unbind(_token)
     for k, v in saved.items():
         setattr(config, k, v)
     shutil.rmtree(tmp, ignore_errors=True)

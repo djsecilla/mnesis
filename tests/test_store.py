@@ -15,21 +15,8 @@ from mnesis.store import Page
 
 
 @pytest.fixture()
-def wiki(tmp_path, monkeypatch):
-    """Point the store at a fresh tmp git repo and yield path helpers."""
-    root = tmp_path / "wiki"
-    pages = root / "pages"
-    pages.mkdir(parents=True)
-    monkeypatch.setattr(config, "MNESIS_ROOT", root)
-    monkeypatch.setattr(config, "PAGES_DIR", pages)
-
-    subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True)
-    subprocess.run(["git", "-C", str(tmp_path), "config", "user.name", "Test"], check=True)
-    subprocess.run(
-        ["git", "-C", str(tmp_path), "config", "user.email", "test@localhost"], check=True
-    )
-    return tmp_path
-
+def wiki(tenant):
+    return tenant.root_path
 
 def _commit_count(repo: object) -> int:
     out = subprocess.run(

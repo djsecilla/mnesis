@@ -1,4 +1,8 @@
 wiki/.index/
+# Multitenant runtime data (per-tenant stores + the tenant registry) created by a
+# local run under the default data root; never committed to the project repo.
+wiki/tenants/
+wiki/registry.json
 .venv
 __pycache__/
 *.pyc

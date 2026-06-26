@@ -23,7 +23,7 @@ _TMP = tempfile.mkdtemp(prefix="mnesis-demo-")
 os.environ["MNESIS_LLM_STUB"] = "1"
 os.environ["MNESIS_ROOT"] = os.path.join(_TMP, "wiki")
 
-from mnesis import config, mcp_server  # noqa: E402  (import after env setup)
+from mnesis import config, mcp_server, tenancy# noqa: E402  (import after env setup)
 
 # --- Small, self-contained sample sources ---------------------------------
 
@@ -47,7 +47,7 @@ def _hr(title: str) -> None:
 
 
 def main() -> None:
-    config.ensure_dirs()
+    tenancy.bind(tenancy.open_tenant(config.DEFAULT_TENANT_ID))  # boundary: bind the default tenant
     subprocess.run(["git", "-C", _TMP, "init", "-q"], check=True)
     subprocess.run(["git", "-C", _TMP, "config", "user.name", "mnesis demo"], check=True)
     subprocess.run(["git", "-C", _TMP, "config", "user.email", "demo@localhost"], check=True)
@@ -59,7 +59,7 @@ def main() -> None:
 
     _hr("STEP 2 — Ingest source B (billing / PostgreSQL, contains a fake secret)")
     print(mcp_server.mnesis_ingest(SOURCE_B, "billing-notes"))
-    saved = (config.SOURCES_DIR / "billing-notes.md").read_text()
+    saved = (tenancy.current().sources_dir / "billing-notes.md").read_text()
     print("\nSaved source on disk (note the secret is gone):")
     print("  " + saved.strip().replace("\n", "\n  "))
 

@@ -7,27 +7,15 @@ from datetime import datetime, timezone
 
 import pytest
 
-from mnesis import config, graph, store
+from mnesis import config, graph, store, tenancy
 from mnesis.store import Page
 
 NOW = datetime(2026, 6, 11, 12, 0, 0, tzinfo=timezone.utc)
 
 
 @pytest.fixture()
-def wiki(tmp_path, monkeypatch):
-    root = tmp_path / "wiki"
-    (root / "pages").mkdir(parents=True)
-    monkeypatch.setattr(config, "MNESIS_ROOT", root)
-    monkeypatch.setattr(config, "PAGES_DIR", root / "pages")
-    monkeypatch.setattr(config, "INDEX_DIR", root / ".index")
-    monkeypatch.setattr(config, "GRAPH_BACKEND", "sqlite")
-    subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True)
-    subprocess.run(["git", "-C", str(tmp_path), "config", "user.name", "Test"], check=True)
-    subprocess.run(
-        ["git", "-C", str(tmp_path), "config", "user.email", "test@localhost"], check=True
-    )
-    return tmp_path
-
+def wiki(tenant):
+    return tenant.root_path
 
 def _seed_three_pages():
     # atlas -uses-> redis is asserted by TWO pages (p1, p2).
@@ -152,7 +140,7 @@ def test_rebuild_reproduces_graph_identically(wiki):
     # Delete the whole index dir; rebuild from Markdown reproduces the graph.
     import shutil
 
-    shutil.rmtree(config.INDEX_DIR)
+    shutil.rmtree(tenancy.current().cache_dir)
     graph.rebuild_graph(now=NOW)
     after = _dump(graph.get_graph_backend())
     assert before == after

@@ -6,7 +6,7 @@ import subprocess
 
 import pytest
 
-from mnesis import config, store, vocab
+from mnesis import config, store, tenancy, vocab
 from mnesis.store import Page
 
 
@@ -131,19 +131,8 @@ def test_entity_type_matching_is_normalized(monkeypatch):
 
 
 @pytest.fixture()
-def wiki(tmp_path, monkeypatch):
-    root = tmp_path / "wiki"
-    (root / "pages").mkdir(parents=True)
-    monkeypatch.setattr(config, "MNESIS_ROOT", root)
-    monkeypatch.setattr(config, "PAGES_DIR", root / "pages")
-    monkeypatch.setattr(config, "INDEX_DIR", root / ".index")
-    subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True)
-    subprocess.run(["git", "-C", str(tmp_path), "config", "user.name", "Test"], check=True)
-    subprocess.run(
-        ["git", "-C", str(tmp_path), "config", "user.email", "test@localhost"], check=True
-    )
-    return tmp_path
-
+def wiki(tenant):
+    return tenant.root_path
 
 def test_page_roundtrips_with_relations(wiki):
     relations = [
@@ -166,7 +155,8 @@ def test_page_roundtrips_with_relations(wiki):
 
 def test_phase1_page_reads_with_empty_relations(wiki):
     # A page written without a relations field still parses (backward compatible).
-    path = wiki / "wiki" / "pages" / "legacy.md"
+    path = tenancy.current().pages_dir / "legacy.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         "---\n"
         "id: legacy\n"

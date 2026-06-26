@@ -6,25 +6,13 @@ import subprocess
 
 import pytest
 
-from mnesis import config, search, store
+from mnesis import config, search, store, tenancy
 from mnesis.store import Page
 
 
 @pytest.fixture()
-def wiki(tmp_path, monkeypatch):
-    root = tmp_path / "wiki"
-    (root / "pages").mkdir(parents=True)
-    monkeypatch.setattr(config, "MNESIS_ROOT", root)
-    monkeypatch.setattr(config, "PAGES_DIR", root / "pages")
-    monkeypatch.setattr(config, "INDEX_DIR", root / ".index")
-
-    subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True)
-    subprocess.run(["git", "-C", str(tmp_path), "config", "user.name", "Test"], check=True)
-    subprocess.run(
-        ["git", "-C", str(tmp_path), "config", "user.email", "test@localhost"], check=True
-    )
-    return tmp_path
-
+def wiki(tenant):
+    return tenant.root_path
 
 def _seed_three_pages():
     store.write_page(
@@ -86,7 +74,7 @@ def test_index_is_rebuildable_identically(wiki):
     before = [(h.id, h.bm25_score, h.snippet) for h in search.search("redis caching")]
 
     # Blow away the cache entirely, then rebuild from Markdown alone.
-    (config.INDEX_DIR / "wiki.db").unlink()
+    (tenancy.current().cache_dir / "wiki.db").unlink()
     count = search.rebuild()
     assert count == 3
     after = [(h.id, h.bm25_score, h.snippet) for h in search.search("redis caching")]

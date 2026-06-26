@@ -8,29 +8,14 @@ from datetime import datetime, timezone
 
 import pytest
 
-from mnesis import config, graph, ingest, search, state, store
+from mnesis import config, graph, ingest, search, state, store, tenancy
 
 NOW = datetime(2026, 6, 11, 12, 0, 0, tzinfo=timezone.utc)
 
 
 @pytest.fixture()
-def wiki(tmp_path, monkeypatch):
-    root = tmp_path / "wiki"
-    (root / "pages").mkdir(parents=True)
-    (root / "sources").mkdir(parents=True)
-    monkeypatch.setattr(config, "MNESIS_ROOT", root)
-    monkeypatch.setattr(config, "PAGES_DIR", root / "pages")
-    monkeypatch.setattr(config, "SOURCES_DIR", root / "sources")
-    monkeypatch.setattr(config, "INDEX_DIR", root / ".index")
-    monkeypatch.setattr(config, "MNESIS_LLM_STUB", True)
-    monkeypatch.setattr(config, "GRAPH_BACKEND", "sqlite")
-    subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True)
-    subprocess.run(["git", "-C", str(tmp_path), "config", "user.name", "Test"], check=True)
-    subprocess.run(
-        ["git", "-C", str(tmp_path), "config", "user.email", "test@localhost"], check=True
-    )
-    return tmp_path
-
+def wiki(tenant):
+    return tenant.root_path
 
 def _seed_chain():
     """Atlas -> auth-migration -> Redis, plus Sarah owns the migration."""
@@ -129,9 +114,9 @@ def test_caches_rebuild_reproduces_graph_and_preserves_state(wiki):
     reviews_before = state.list_open_reviews()
 
     # Delete ONLY the rebuildable caches (search index + graph); keep state.db.
-    (config.INDEX_DIR / "wiki.db").unlink()
-    (config.INDEX_DIR / "graph.db").unlink()
-    assert (config.INDEX_DIR / "state.db").exists()
+    (tenancy.current().cache_dir / "wiki.db").unlink()
+    (tenancy.current().cache_dir / "graph.db").unlink()
+    assert (tenancy.current().cache_dir / "state.db").exists()
     _rebuild()
 
     # The graph is reproduced exactly (deterministic clock).
