@@ -60,6 +60,15 @@ def tenants_dir() -> Path:
 def registry_path() -> Path:
     return DATA_ROOT / REGISTRY_FILENAME
 
+
+#: The credential store (auth.py) — credentials -> {tenant_id, principal_id, role}.
+#: Lives beside the registry, OUTSIDE any tenant root, and holds only HASHED tokens.
+CREDENTIALS_FILENAME: str = "credentials.json"
+
+
+def credentials_path() -> Path:
+    return DATA_ROOT / CREDENTIALS_FILENAME
+
 # --- Environment-configurable settings (all with fallbacks) ----------------
 
 #: Inference provider: "anthropic" (default) or "local" (an Ollama / OpenAI-
@@ -223,7 +232,21 @@ MNESIS_MCP_PORT: int = _env_int("MNESIS_MCP_PORT", 8080)
 
 #: Optional bearer token for HTTP mode. If set, every tool call must present
 #: ``Authorization: Bearer <token>``. Empty = no auth (privileged endpoint).
+#: LEGACY single-tenant path: used only when ``MNESIS_AUTH_ENABLED`` is off.
 MNESIS_MCP_TOKEN: str = os.environ.get("MNESIS_MCP_TOKEN", "")
+
+#: When set, the HTTP boundary resolves a per-tenant, per-principal **credential**
+#: (auth.py) from the bearer token instead of the legacy single token: the tenant
+#: is taken ONLY from the validated credential and an unresolved credential is
+#: denied (fail closed, no default-tenant fallback). Off by default so existing
+#: single-tenant deployments keep working until credentials are provisioned (T7).
+MNESIS_AUTH_ENABLED: bool = os.environ.get("MNESIS_AUTH_ENABLED", "").strip().lower() in {
+    "1", "true", "yes", "on",
+}
+
+#: Optional server-side pepper mixed into the token hash at rest (defense in depth).
+#: Read by auth.py; never logged. Empty is acceptable (tokens are high-entropy).
+MNESIS_AUTH_PEPPER: str = os.environ.get("MNESIS_AUTH_PEPPER", "")
 
 #: Host-header allowlist for the HTTP MCP endpoint's DNS-rebinding protection
 #: (comma-separated; each entry an exact ``host:port`` or a ``host:*`` wildcard).

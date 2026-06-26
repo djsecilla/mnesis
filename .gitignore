@@ -3,6 +3,7 @@ wiki/.index/
 # local run under the default data root; never committed to the project repo.
 wiki/tenants/
 wiki/registry.json
+wiki/credentials.json
 .venv
 __pycache__/
 *.pyc

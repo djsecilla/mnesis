@@ -42,6 +42,7 @@ pyproject.toml            # deps + the `mnesis` and `mnesis-agents` console scri
 src/mnesis/               # the core (canonical store + tools)
   config.py               # the data root + env config (model, threshold, stub flag)
   tenancy.py              # the isolation primitive: Tenant, registry, TenantContext (§16)
+  auth.py                 # credentials -> (TenantContext, Principal); fail-closed resolver (§16)
   store.py                # canonical Markdown + frontmatter + git (Store, tenant-scoped)
   filters.py              # secret / PII redaction (pure functions)
   llm.py                  # Anthropic client wrapper, with offline stub
@@ -54,6 +55,7 @@ src/mnesis_agents/        # the LangGraph agent layer — a separate MCP CLIENT 
 src/mnesis_llm/           # shared provider-agnostic chat-model factory (core + agents)
 wiki/                     # the DATA ROOT (MNESIS_ROOT) — holds the tenants + registry, never a store itself
   registry.json           # the tenant registry (metadata) — GITIGNORED, OUTSIDE any tenant root
+  credentials.json        # the credential store (HASHED tokens) — GITIGNORED, OUTSIDE any tenant root (§16)
   tenants/<tenant_id>/    # one tenant's canonical store + its OWN git repo (§16)
     pages/                #   canonical Markdown pages (tracked)
     sources/              #   redacted raw sources, for provenance (tracked)
@@ -69,6 +71,8 @@ scripts/demo_end_to_end.py
 |---|---|---|
 | `MNESIS_ROOT` | `./wiki` | The **multitenant data root** (`config.DATA_ROOT`): holds `tenants/<id>/` and `registry.json`. It is **not** itself a store — there are no global pages/sources/index paths (§16). |
 | `MNESIS_DEFAULT_TENANT` | `default` | The tenant a single-tenant deployment runs as transparently. |
+| `MNESIS_AUTH_ENABLED` | unset | When set, the HTTP boundary resolves a per-tenant, per-principal **credential** from the bearer token (tenant taken only from the credential; unresolved → denied, no default fallback). Off = legacy single-token + default tenant. (§16) |
+| `MNESIS_AUTH_PEPPER` | unset | Optional server-side secret mixed into the token hash at rest; never logged. (§16) |
 | `MNESIS_LLM_MODEL` | `claude-sonnet-4-6` | Model used by the ingestion/extraction LLM. |
 | `MNESIS_FILEBACK_THRESHOLD` | `0.7` | Quality gate for filing answers back. |
 | `MNESIS_LLM_STUB` | unset | When `1` (or no API key), the LLM client returns deterministic canned output so tests and the demo run offline. |
@@ -358,7 +362,15 @@ DATA_ROOT/
 
 **Migration (transparent single-tenant).** `tenancy.migrate_legacy_to_default()` (CLI `mnesis migrate-tenants`) moves an existing single-store layout (`DATA_ROOT/{pages,sources}`) into `tenants/default/` and gives it its own git repo. It is **non-destructive** (content is moved, never dropped; the legacy `.git`/`.index` are left in place) and **idempotent** (a re-run, once `tenants/default/` exists, is a no-op). `tenancy.open_tenant("default")` runs it on first use, so a single-tenant deployment reaches its data as `default` with no manual step.
 
-**Out of scope for T1 (later prompts):** resolving the tenant from credentials/sessions, per-tenant auth/quotas, tenant lifecycle (suspend/delete), and tenant-scoping the agent layer. The agent layer reaches mnesis only over MCP, so it inherits whatever tenant the server binds.
+### Authentication: credentials → (tenant, principal) (`auth.py`)
+
+The single global MCP token is replaced by **tenant- and principal-scoped credentials**. A credential resolves to a **`Principal{principal_id, tenant_id, role}`** where `role ∈ {admin, member, readonly, agent}` (authorization — what each role may *do* — is a later prompt; T3 only records the role).
+
+- **The credential store** (`auth.CredentialStore`) lives **outside any tenant root**, at `DATA_ROOT/credentials.json` (beside the registry), so it is not reachable through a tenant. `issue(tenant_id, principal_id, role, expires_at?, name?)` mints an opaque high-entropy token, returns it **once**, and persists only `sha256(pepper‖token)` — **the raw token is never stored or logged**. `revoke(id)`, `get(id)`, `list_for_tenant(id)` round it out. (CLI: `mnesis --tenant <t> auth issue|revoke|list`; the admin API T7 builds on.)
+- **The resolver.** `auth.resolve_principal(credential) -> (TenantContext, Principal)` validates the token (constant-time `hmac.compare_digest`; expired/revoked → invalid) and returns the tenant **taken only from the credential**. **Fail closed:** an absent/invalid/expired/revoked credential raises `InvalidCredential` — there is **no default-tenant fallback**, and the function never reads a tenant id from anywhere else, so a client-supplied tenant id (header/body/path/content) is **ignored by construction**. `auth.authenticated(credential)` binds both the tenant (`tenancy.use`) and the principal (`auth.current_principal()`) for a block.
+- **Boundary wiring.** When **`MNESIS_AUTH_ENABLED`** is set, the HTTP app's `_PrincipalBindingMiddleware` resolves the bearer credential per request and binds `(tenant, principal)`, returning `401` on any failure (`/health` stays open and tenant-agnostic). When unset (the default), the **legacy** single-token (`MNESIS_MCP_TOKEN`) + default-tenant path is used, so existing single-tenant deployments keep working until credentials are provisioned (T7).
+
+**Out of scope for T3 (later prompts):** role-based authorization (what each role may do), web-UI sessions/JWT, per-tenant quotas, tenant lifecycle (suspend/delete), and tenant-scoping the agent layer. The agent layer reaches mnesis only over MCP, so it inherits whatever tenant the server binds for its credential.
 
 ---
 

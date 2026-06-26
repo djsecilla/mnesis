@@ -24,6 +24,7 @@ from mcp.server.fastmcp import FastMCP
 from starlette.responses import JSONResponse
 
 from . import (
+    auth,
     config,
     confidence,
     graph,
@@ -485,7 +486,12 @@ def mnesis_resolve(review_id: int, keep_id: str) -> str:
 
 def _health_payload() -> dict:
     """Cheap liveness + quick stats — no LLM call."""
-    ctx = tenancy.current()
+    # /health is open and tenant-agnostic. When a tenant is bound (legacy single-
+    # tenant mode) it reports that tenant's quick stats; under credential auth no
+    # tenant is bound on the open probe, so it returns liveness only.
+    ctx = tenancy.current_or_none()
+    if ctx is None:
+        return {"status": "ok"}
     return {
         "status": "ok",
         "pages": len(store.list_pages()),
@@ -520,6 +526,41 @@ class _TenantBindingMiddleware:
             await self.app(scope, receive, send)
 
 
+class _PrincipalBindingMiddleware:
+    """Credential auth (T3): resolve the bearer token to ``(TenantContext, Principal)``
+    and bind BOTH for the request. **Fail closed** — a missing/invalid/expired/revoked
+    credential is ``401`` (``/health`` stays open and tenant-agnostic). The tenant is
+    taken **only** from the validated credential; any client-supplied tenant id
+    (header/body/path) is ignored by construction. Installed when
+    ``MNESIS_AUTH_ENABLED`` is set, replacing the legacy single-token + default-tenant path."""
+
+    def __init__(self, app, store=None) -> None:
+        self.app = app
+        self.store = store
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope.get("type") not in ("http", "websocket"):
+            await self.app(scope, receive, send)
+            return
+        if scope.get("path") == "/health":
+            await self.app(scope, receive, send)
+            return
+        headers = dict(scope.get("headers") or [])
+        presented = headers.get(b"authorization", b"").decode()
+        token = presented[7:] if presented.startswith("Bearer ") else ""
+        try:
+            ctx, principal = auth.resolve_principal(token, store=self.store)
+        except auth.AuthError:
+            await JSONResponse({"error": "unauthorized"}, status_code=401)(scope, receive, send)
+            return
+        with tenancy.use(ctx):
+            ptok = auth.bind_principal(principal)
+            try:
+                await self.app(scope, receive, send)
+            finally:
+                auth.unbind_principal(ptok)
+
+
 class _BearerAuthMiddleware:
     """ASGI middleware requiring ``Authorization: Bearer <token>`` on every HTTP
     request except ``/health``. Installed only when a token is configured."""
@@ -549,10 +590,16 @@ def build_http_app():
 
     app = mcp.streamable_http_app()
     webapi.mount_api(app)
-    if config.MNESIS_MCP_TOKEN:
-        app.add_middleware(_BearerAuthMiddleware, token=config.MNESIS_MCP_TOKEN)
-    # Added last → outermost: a tenant is bound before any handler (incl. /health).
-    app.add_middleware(_TenantBindingMiddleware)
+    if config.MNESIS_AUTH_ENABLED:
+        # Credential auth (T3): the bearer token resolves to (tenant, principal);
+        # the tenant comes ONLY from the credential and an unresolved one is denied
+        # (fail closed, no default tenant). Replaces the legacy single-token path.
+        app.add_middleware(_PrincipalBindingMiddleware)
+    else:
+        if config.MNESIS_MCP_TOKEN:
+            app.add_middleware(_BearerAuthMiddleware, token=config.MNESIS_MCP_TOKEN)
+        # Added last → outermost: bind the default tenant before any handler.
+        app.add_middleware(_TenantBindingMiddleware)
     return app
 
 

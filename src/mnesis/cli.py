@@ -14,7 +14,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import config, mcp_server, tenancy
+from . import auth, config, mcp_server, tenancy
 
 
 def _read_source(path: str) -> str:
@@ -39,6 +39,19 @@ def _build_parser() -> argparse.ArgumentParser:
         "migrate-tenants",
         help="move an existing single-store layout into tenants/default/ (idempotent)",
     )
+
+    # Credential admin (T3): operates on the credential store, scoped to --tenant.
+    p_auth = sub.add_parser("auth", help="issue/revoke/list tenant+principal credentials")
+    asub = p_auth.add_subparsers(dest="auth_cmd", required=True)
+    a_issue = asub.add_parser("issue", help="mint a credential (prints the token ONCE)")
+    a_issue.add_argument("--principal", required=True, help="principal id (the actor)")
+    a_issue.add_argument("--role", default="member", help="admin|member|readonly|agent")
+    a_issue.add_argument("--name", default=None, help="optional human label")
+    a_issue.add_argument("--expires-seconds", type=int, default=None, dest="expires_seconds",
+                         help="optional lifetime in seconds (default: no expiry)")
+    a_revoke = asub.add_parser("revoke", help="revoke a credential by id")
+    a_revoke.add_argument("credential_id", help="the credential id (not the token)")
+    asub.add_parser("list", help="list a tenant's credentials (no secrets)")
 
     p_ingest = sub.add_parser("ingest", help="ingest a source file (or - for stdin)")
     p_ingest.add_argument("file", help="path to the source file, or - for stdin")
@@ -148,6 +161,42 @@ def _dispatch(args: argparse.Namespace) -> None:
         print(mcp_server.mnesis_resolve(args.review_id, args.keep_id))
 
 
+def _cmd_auth(args: argparse.Namespace) -> int:
+    """Issue / revoke / list credentials for the ``--tenant`` (default ``default``)."""
+    import time
+
+    store = auth.CredentialStore()
+    if args.auth_cmd == "issue":
+        tenancy.create_tenant(args.tenant)  # ensure the tenant exists
+        try:
+            expires = (time.time() + args.expires_seconds) if args.expires_seconds else None
+            raw, cred = store.issue(
+                args.tenant, args.principal, args.role, expires_at=expires, name=args.name
+            )
+        except auth.AuthError as exc:
+            print(f"error: {exc}")
+            return 2
+        print(f"issued credential {cred.id} for {args.tenant}/{args.principal} (role {cred.role})")
+        print(f"  token (shown ONCE — store it securely): {raw}")
+        return 0
+    if args.auth_cmd == "revoke":
+        ok = store.revoke(args.credential_id)
+        print(f"revoked {args.credential_id}" if ok else f"not revoked (unknown or already revoked): {args.credential_id}")
+        return 0 if ok else 1
+    if args.auth_cmd == "list":
+        creds = store.list_for_tenant(args.tenant)
+        if not creds:
+            print(f"no credentials for tenant '{args.tenant}'")
+            return 0
+        print(f"credentials for tenant '{args.tenant}':")
+        for c in creds:
+            state_str = "revoked" if c.revoked else ("active" if c.is_active() else "expired")
+            print(f"  {c.id}  {c.principal_id:16} {c.role:9} {state_str}"
+                  + (f"  ({c.name})" if c.name else ""))
+        return 0
+    return 2
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
 
@@ -161,6 +210,11 @@ def main(argv: list[str] | None = None) -> int:
             f"{result['pages']} pages)"
         )
         return 0
+
+    # Credential admin operates on the credential store (outside any tenant root),
+    # scoped to --tenant; no tenant binding is needed.
+    if args.command == "auth":
+        return _cmd_auth(args)
 
     # Every other command resolves + binds a TenantContext at this boundary; the
     # store is unreachable until it is bound.
