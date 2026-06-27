@@ -253,6 +253,27 @@ MNESIS_AUTH_PEPPER: str = os.environ.get("MNESIS_AUTH_PEPPER", "")
 #: (owner-only). Per-tenant override lives on the Tenant record (registry).
 MNESIS_DEFAULT_VISIBILITY: str = os.environ.get("MNESIS_DEFAULT_VISIBILITY", "shared").strip().lower()
 
+# --- Multitenant lifecycle, admin & quotas (T7) ----------------------------
+
+#: Per-tenant resource quotas (fairness + blast-radius). ``0`` = unlimited. A
+#: per-tenant override lives on the Tenant record (registry); these are the
+#: defaults. Enforced fail-closed at the ingest write boundary (quotas.py).
+MNESIS_TENANT_MAX_PAGES: int = _env_int("MNESIS_TENANT_MAX_PAGES", 0)
+MNESIS_TENANT_MAX_BYTES: int = _env_int("MNESIS_TENANT_MAX_BYTES", 0)
+
+#: The credential the **admin CLI** resolves to a SYSTEM-ADMIN principal for tenant
+#: lifecycle ops (provision/list/suspend/delete). Distinct from any tenant
+#: credential; tenant principals can never manage tenants. (admin.py / auth.py)
+MNESIS_ADMIN_CREDENTIAL: str | None = os.environ.get("MNESIS_ADMIN_CREDENTIAL") or None
+
+#: The system (NOT tenant) audit log for lifecycle ops — append-only JSONL beside
+#: the registry, OUTSIDE any tenant root. Gitignored.
+SYSTEM_AUDIT_FILENAME: str = "system_audit.jsonl"
+
+
+def system_audit_path() -> Path:
+    return DATA_ROOT / SYSTEM_AUDIT_FILENAME
+
 #: Host-header allowlist for the HTTP MCP endpoint's DNS-rebinding protection
 #: (comma-separated; each entry an exact ``host:port`` or a ``host:*`` wildcard).
 #: Empty keeps FastMCP's secure default (localhost only) — correct for host-side

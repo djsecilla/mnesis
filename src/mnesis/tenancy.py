@@ -97,6 +97,9 @@ class Tenant:
     created: str = ""
     #: Default visibility applied to new pages ingested in this tenant (T4).
     default_visibility: str = "shared"  # shared | private
+    #: Per-tenant resource quotas (T7); 0 = use the config default / unlimited.
+    max_pages: int = 0
+    max_bytes: int = 0
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -110,6 +113,8 @@ class Tenant:
             status=d.get("status", "active"),
             created=d.get("created", ""),
             default_visibility=d.get("default_visibility", "shared"),
+            max_pages=int(d.get("max_pages", 0) or 0),
+            max_bytes=int(d.get("max_bytes", 0) or 0),
         )
 
 
@@ -148,6 +153,8 @@ class TenantRegistry:
                     "status": t.status,
                     "created": t.created,
                     "default_visibility": t.default_visibility,
+                    "max_pages": t.max_pages,
+                    "max_bytes": t.max_bytes,
                 }
                 for t in tenants.values()
             }
@@ -188,6 +195,43 @@ class TenantRegistry:
         tenants[tid] = updated
         self._save(tenants)
         return updated
+
+    def set_status(self, tenant_id: str, status: str) -> Tenant:
+        """Set a tenant's lifecycle status (``active``/``suspended``) — T7."""
+        tid = validate_tenant_id(tenant_id)
+        tenants = self._load()
+        if tid not in tenants:
+            raise TenancyError(f"unknown tenant: {tid}")
+        updated = replace(tenants[tid], status=status)
+        tenants[tid] = updated
+        self._save(tenants)
+        return updated
+
+    def set_quota(self, tenant_id: str, *, max_pages: int | None = None, max_bytes: int | None = None) -> Tenant:
+        """Set a tenant's per-tenant resource quotas (0 = unlimited) — T7."""
+        tid = validate_tenant_id(tenant_id)
+        tenants = self._load()
+        if tid not in tenants:
+            raise TenancyError(f"unknown tenant: {tid}")
+        t = tenants[tid]
+        updated = replace(
+            t,
+            max_pages=int(max_pages) if max_pages is not None else t.max_pages,
+            max_bytes=int(max_bytes) if max_bytes is not None else t.max_bytes,
+        )
+        tenants[tid] = updated
+        self._save(tenants)
+        return updated
+
+    def remove(self, tenant_id: str) -> bool:
+        """Drop a tenant's registry record (used by lifecycle delete) — T7."""
+        tid = validate_tenant_id(tenant_id)
+        tenants = self._load()
+        if tid not in tenants:
+            return False
+        del tenants[tid]
+        self._save(tenants)
+        return True
 
 
 # --- TenantContext (resolved at boundaries) --------------------------------

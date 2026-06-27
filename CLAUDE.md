@@ -42,8 +42,10 @@ pyproject.toml            # deps + the `mnesis` and `mnesis-agents` console scri
 src/mnesis/               # the core (canonical store + tools)
   config.py               # the data root + env config (model, threshold, stub flag)
   tenancy.py              # the isolation primitive: Tenant, registry, TenantContext (§16)
-  auth.py                 # credentials -> (TenantContext, Principal); fail-closed resolver (§16)
+  auth.py                 # credentials -> (TenantContext, Principal); fail-closed resolver + system-admin (§16)
   authz.py                # role authorization + within-tenant private/shared visibility (§16)
+  admin.py                # tenant lifecycle (provision/suspend/delete) + system-admin boundary + system audit (§16)
+  quotas.py               # per-tenant resource quotas, fail-closed at the write boundary (§16)
   store.py                # canonical Markdown + frontmatter + git (Store, tenant-scoped)
   filters.py              # secret / PII redaction (pure functions)
   llm.py                  # Anthropic client wrapper, with offline stub
@@ -76,6 +78,8 @@ scripts/demo_end_to_end.py
 | `MNESIS_AUTH_PEPPER` | unset | Optional server-side secret mixed into the token hash at rest; never logged. (§16) |
 | `MNESIS_DEFAULT_VISIBILITY` | `shared` | Global fallback for a new page's visibility (`shared`\|`private`) when a tenant has not set its own default. (§16) |
 | `MNESIS_CREDENTIAL` | unset | A credential token the **CLI** resolves to a (tenant, principal) for tenant-scoped ops. With `MNESIS_AUTH_ENABLED` and no credential, the CLI refuses tenant ops (fail closed); the credential's tenant overrides any `--tenant` flag. (§16) |
+| `MNESIS_ADMIN_CREDENTIAL` | unset | A **system-admin** token the CLI resolves for tenant **lifecycle** (`mnesis admin provision/list/suspend/delete`); a tenant credential is refused. Bootstrap one with `mnesis admin bootstrap`. (§16) |
+| `MNESIS_TENANT_MAX_PAGES` / `…_MAX_BYTES` | `0` | Default per-tenant resource quotas (0 = unlimited); per-tenant override on the Tenant record. Fail-closed at the ingest write boundary. (§16) |
 | `MNESIS_LLM_MODEL` | `claude-sonnet-4-6` | Model used by the ingestion/extraction LLM. |
 | `MNESIS_FILEBACK_THRESHOLD` | `0.7` | Quality gate for filing answers back. |
 | `MNESIS_LLM_STUB` | unset | When `1` (or no API key), the LLM client returns deterministic canned output so tests and the demo run offline. |
@@ -394,6 +398,16 @@ Every human/agent surface is tenant-scoped **end to end** by a **single choke po
 - **Agent layer.** Reaches mnesis only over MCP, so it is scoped by whatever credential it presents — the same choke point, no special path. It is itself **multitenant** (T6, below).
 
 **Invariant:** no handler/tool/stream runs without a resolved tenant+principal (when auth is on); no surface accepts a client-supplied tenant id; SSE and streaming are per-tenant.
+
+### Tenant lifecycle, the admin boundary & quotas (`admin.py`, `quotas.py`, T7)
+
+**The admin boundary.** Tenant lifecycle is managed only by a **system admin** — a principal resolved from a *system-admin* credential (`auth.resolve_admin`), which carries a reserved non-tenant id (`auth.SYSTEM_TENANT = "__system__"`, which can never collide with a real tenant id) and a reserved role (`system_admin`). A system admin is **never** a tenant member, and a **tenant principal can never manage tenants or see another tenant**: `resolve_principal` refuses a system credential, and `resolve_admin` refuses a tenant credential — both fail closed. `admin.require_admin` gates every lifecycle op. The root of trust is bootstrapped locally (`admin.bootstrap_admin` / `mnesis admin bootstrap`); thereafter `MNESIS_ADMIN_CREDENTIAL` authenticates the admin CLI.
+
+**Lifecycle** (`admin.py`, all admin-only and **audited** in the system audit log — `DATA_ROOT/system_audit.jsonl`, append-only, OUTSIDE every tenant root): **provision** (create the tenant root + its own git repo + cache dirs, then issue its initial tenant-admin credential, returned once), **list**, **suspend / resume** (deny / restore access while **retaining** all data — a suspended tenant's credential is denied by `resolve_principal`, so suspend propagates to every surface and to its agents), and **delete** (behind a guarded confirm = the tenant id; removes the tenant's root + caches + git, its credentials, its registry record, and best-effort its agent state; the audit record survives). CLI: `mnesis admin provision|list|suspend|resume|set-quota|delete`.
+
+**Quotas** (`quotas.py`). Per-tenant resource limits (`max_pages`, `max_bytes`) — the tenant's registry override else the `MNESIS_TENANT_MAX_*` config default; `0` = unlimited. Enforced **fail-closed at the ingest write boundary** (`quotas.require_capacity` before a create/supersede): an over-quota write raises `QuotaExceeded`, surfaced clearly (`mnesis_ingest` returns `not ingested: …`, never crashing). Quotas only bound a tenant *within* its own root, so one tenant can never exhaust another's capacity.
+
+**Deployment.** The tenant registry, credential store, and system audit log live under the data volume (`MNESIS_ROOT`), outside every tenant root. Default deployment is **single-tenant** (the `default` tenant; `MNESIS_MCP_TOKEN` bearer; unchanged) and opts into **multi-tenant** with `MNESIS_AUTH_ENABLED=1` (+ per-tenant credentials via `mnesis admin provision`, and `MNESIS_AGENTS_TENANTS_FILE` for per-tenant agents). Credentials are stored hashed; **per-tenant encryption-at-rest** (per-tenant keys for `tenants/<id>/`) is a documented optional hardening on top of an encrypted data volume.
 
 ### Multitenant agent layer (`mnesis_agents.tenancy`, T6)
 

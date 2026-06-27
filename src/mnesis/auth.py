@@ -37,9 +37,17 @@ from pathlib import Path
 from . import config, tenancy
 from .tenancy import TenantContext, validate_tenant_id
 
-#: The roles a principal may hold. Authorization (what each role may do) is a later
-#: prompt; T3 only records the role on the credential/principal.
+#: The roles a *tenant* principal may hold. Authorization (what each role may do)
+#: is layered in `authz.py`.
 ROLES: frozenset[str] = frozenset({"admin", "member", "readonly", "agent"})
+
+#: The SYSTEM-ADMIN boundary (T7): a system admin is **not** a tenant principal. Its
+#: credential carries a reserved, non-tenant id (which can never collide with a real
+#: tenant id — `validate_tenant_id` rejects a leading ``_``) and a reserved role. It
+#: manages tenant lifecycle and can never act as a tenant member; a tenant principal
+#: can never manage tenants.
+SYSTEM_TENANT: str = "__system__"
+SYSTEM_ROLE: str = "system_admin"
 
 
 class AuthError(Exception):
@@ -199,6 +207,42 @@ class CredentialStore:
         self._save(creds)
         return raw, cred
 
+    def issue_system_admin(
+        self, principal_id: str, *, expires_at: float | None = None, name: str | None = None
+    ) -> tuple[str, Credential]:
+        """Mint a **system-admin** credential (T7) — not tied to any tenant. Returns
+        ``(raw_token, credential)``; the raw token is returned once and never stored.
+        This is the lifecycle root-of-trust (bootstrapped locally by the operator)."""
+        if not principal_id or "/" in principal_id or "\\" in principal_id:
+            raise AuthError(f"invalid principal id: {principal_id!r}")
+        raw = secrets.token_urlsafe(32)
+        cred = Credential(
+            id=secrets.token_hex(8),
+            token_hash=hash_token(raw),
+            tenant_id=SYSTEM_TENANT,
+            principal_id=principal_id,
+            role=SYSTEM_ROLE,
+            created=_now_iso(),
+            expires_at=expires_at,
+            revoked=False,
+            name=name,
+        )
+        creds = self._load()
+        creds[cred.id] = asdict(cred)
+        self._save(creds)
+        return raw, cred
+
+    def remove_tenant(self, tenant_id: str) -> int:
+        """Delete every credential belonging to ``tenant_id`` (lifecycle delete, T7).
+        Returns the number removed."""
+        creds = self._load()
+        doomed = [cid for cid, r in creds.items() if r.get("tenant_id") == tenant_id]
+        for cid in doomed:
+            del creds[cid]
+        if doomed:
+            self._save(creds)
+        return len(doomed)
+
     def revoke(self, credential_id: str) -> bool:
         """Revoke a credential by id. Returns True if it transitioned to revoked."""
         creds = self._load()
@@ -259,8 +303,44 @@ def resolve_principal(
     cred = (store or CredentialStore()).validate(credential)
     if cred is None:
         raise InvalidCredential("credential is absent, invalid, expired, or revoked")
+    # A system-admin credential is NOT a tenant principal — never resolve it as one.
+    if cred.tenant_id == SYSTEM_TENANT or cred.role == SYSTEM_ROLE:
+        raise InvalidCredential("system-admin credential is not a tenant principal")
+    # A suspended tenant denies access while RETAINING its data (T7). Fail closed.
+    tenant = _registry_for(data_root).get(cred.tenant_id)
+    if tenant is not None and tenant.status != "active":
+        raise InvalidCredential(f"tenant {cred.tenant_id!r} is {tenant.status} — access denied")
     ctx = tenancy.open_tenant(cred.tenant_id, data_root=data_root)
     return ctx, cred.principal()
+
+
+def _registry_for(data_root: Path | str | None) -> "tenancy.TenantRegistry":
+    if data_root is None:
+        return tenancy.TenantRegistry()
+    return tenancy.TenantRegistry(Path(data_root) / config.REGISTRY_FILENAME)
+
+
+def resolve_admin(
+    credential: str | None, *, store: CredentialStore | None = None
+) -> Principal:
+    """Resolve a credential to a **system-admin** :class:`Principal` (T7), or deny.
+
+    Fail closed: a credential that is absent/invalid/expired/revoked — or that is a
+    *tenant* credential rather than a system-admin one — raises
+    :class:`InvalidCredential`. A system admin is the only actor allowed to manage
+    tenant lifecycle, and is never a member of any tenant."""
+    cred = (store or CredentialStore()).validate(credential)
+    if cred is None or cred.tenant_id != SYSTEM_TENANT or cred.role != SYSTEM_ROLE:
+        raise InvalidCredential("not a valid system-admin credential")
+    return cred.principal()
+
+
+def is_system_admin(principal: "Principal | None") -> bool:
+    return (
+        isinstance(principal, Principal)
+        and principal.tenant_id == SYSTEM_TENANT
+        and principal.role == SYSTEM_ROLE
+    )
 
 
 # --- Active principal binding (alongside the active tenant) -----------------

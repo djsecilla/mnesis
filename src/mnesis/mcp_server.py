@@ -33,6 +33,7 @@ from . import (
     ingest,
     lifecycle,
     maintenance,
+    quotas,
     search,
     state,
     store,
@@ -125,7 +126,12 @@ def mnesis_ingest(text: str, source_ref: str) -> str:
     daemon) report the outcome without forcing any resolution.
     """
     plan = ingest.plan_ingest(text, source_ref)
-    result = ingest.apply_ingest(plan)  # the rich IngestResult (routing + ids)
+    try:
+        result = ingest.apply_ingest(plan)  # the rich IngestResult (routing + ids)
+    except quotas.QuotaExceeded as exc:
+        return f"not ingested: {exc}"        # fail closed, surfaced clearly (T7)
+    except authz.AuthorizationError as exc:
+        return f"not ingested: {exc}"        # role/visibility refusal (T4)
     page = store.read_page(result["page_id"])
     search.upsert(page)
     tags = ", ".join(page.tags) if page.tags else "(none)"

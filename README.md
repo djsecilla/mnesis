@@ -26,6 +26,7 @@ is the intended design.
 - [Using the CLI](#using-the-cli)
 - [The three surfaces](#the-three-surfaces) — CLI · MCP · Web UI
 - [The agent layer](#the-langgraph-agent-foundation) — multi-LLM agents: the maintenance **dream cycle**, the notes-inbox **writing agent**, and the approval-gated **action agent**
+- [Multitenancy](#multitenancy) — isolation by construction, the admin boundary, quotas
 - [Running with Docker](#running-with-docker)
 - [Making the most of mnesis](#making-the-most-of-mnesis) — best practices
 - [Configuration reference](#configuration-reference)
@@ -644,6 +645,102 @@ egress stops at once.
 
 ---
 
+## Multitenancy
+
+mnesis is **multitenant from the data layer up**, and isolation is **by
+construction** — not a filter that can be forgotten. A single-tenant deployment runs
+transparently as the one `default` tenant, so nothing below is required until you
+want more than one tenant.
+
+### Isolation by construction
+
+Each tenant's canonical store is a **physically separate directory with its own git
+repo**, and its rebuildable caches (search index, graph, state) are separate DB
+files:
+
+```
+DATA_ROOT/                       # MNESIS_ROOT — the data root, never itself a store
+  registry.json                 # which tenants exist (metadata, outside any tenant)
+  credentials.json              # credential store — only HASHED tokens
+  system_audit.jsonl            # lifecycle audit (provision/suspend/delete)
+  tenants/<tenant_id>/          # ONE tenant's store + its own git repo
+    pages/  sources/  .cache/   #   canonical Markdown + redacted sources + caches
+```
+
+There is **no global store** and no code path that takes a cross-tenant path — every
+path is resolved from a `TenantContext` and guarded to stay inside that tenant's
+root. So search, graph traversal, impact, and rebuild for tenant A simply cannot
+reach B's pages, entities, or edges: cross-tenant access is *structurally
+impossible*, proven end-to-end across the CLI, MCP, Web UI, and the agents.
+
+### Tenant from the credential only
+
+A request's tenant is derived **solely from its verified credential** — never from a
+request body, header, path, or content. Turn on credential auth with
+`MNESIS_AUTH_ENABLED=1`; the bearer token then resolves to a `{tenant, principal,
+role}`, and an absent/invalid/expired/revoked/suspended credential is **denied**
+(fail closed, no default-tenant fallback). A forged or extra tenant id in a request
+is ignored — the credential wins.
+
+### Within-tenant visibility
+
+Inside a tenant, pages carry an owner + a visibility (`shared` = everyone in the
+tenant; `private` = owner-only, plus admins). Filtering is applied in the
+data/query layer (search, graph, get, ingest), so a private page never leaks through
+*any* surface — not the page reader, search, graph, chat, or sources. Writes respect
+role: `admin`/`member`/`agent` may write, `readonly` may not.
+
+### The admin boundary
+
+Tenant **lifecycle** is managed only by a **system admin** — a principal distinct
+from every tenant principal (a tenant `admin` is an admin *within its tenant*, never
+a system admin). All lifecycle ops are audited in the system audit log.
+
+```bash
+# 1. Bootstrap the root of trust (local operator), then keep the token safe:
+export MNESIS_ADMIN_CREDENTIAL=$(mnesis admin bootstrap --principal root | sed -n 's/.*token.*: //p')
+
+# 2. Provision tenants — each gets its own root, git repo, and initial admin credential:
+mnesis admin provision acme --name "Acme Corp"     # prints acme's first credential (once)
+mnesis admin list
+mnesis admin set-quota acme --max-pages 5000       # per-tenant quotas (fairness)
+mnesis admin suspend acme                          # deny access, RETAIN data
+mnesis admin resume  acme
+mnesis admin delete  acme --confirm acme           # remove data + credentials + agent state (guarded)
+```
+
+A tenant principal can never run these — `mnesis admin …` requires a system-admin
+credential, and the lifecycle functions refuse anyone else.
+
+### Quotas
+
+Per-tenant `max_pages` / `max_bytes` (config defaults `MNESIS_TENANT_MAX_*`, or a
+per-tenant override) are enforced **fail-closed at ingest**: an over-quota write is
+refused with a clear `not ingested: page quota exceeded …` rather than silently
+dropped. Quotas bound a tenant only within its own root, so one tenant can never
+exhaust another's capacity.
+
+### Per-tenant agents
+
+The agent layer is multitenant too: with `MNESIS_AGENTS_TENANTS_FILE` set (a JSON
+list of `{tenant_id, credential, …}`), the runner hosts **one set of agents per
+tenant** — each reaches only its tenant's Mnesis (via its credential) and keeps all
+its governance state (run audit, proposals, dead-letter, egress allowlist/quotas/
+send-audit) under its own directory. A tenant without a resolvable credential won't
+start (fail closed).
+
+### Migration & deployment
+
+An existing single-store layout migrates into `tenants/default/` automatically on
+first use (or `mnesis migrate-tenants`) — non-destructive and idempotent, preserving
+prior behaviour. `docker compose up` works **single-tenant** out of the box; set
+`MNESIS_AUTH_ENABLED=1` (+ a pepper, and per-tenant credentials) for **multi-tenant**.
+Credentials are stored hashed; for sensitive corpora, keep the data volume on an
+encrypted filesystem (per-tenant keys are a future hardening). The design contract
+is [`CLAUDE.md` §16](CLAUDE.md).
+
+---
+
 ## Running with Docker
 
 A containerized stack — no Python/uv needed on the host. See
@@ -869,6 +966,18 @@ over MCP via `MNESIS_MCP_URL` (default `http://localhost:8080/mcp`) and
 | `MNESIS_AGENTS_ACTIONS_SCHEDULE_ENABLED` | `0` | Register the action agent's periodic hook (composes briefs for a provided contexts file). On-demand CLI works regardless. |
 | `MNESIS_EMAIL_ENABLED` | `0` | Register the opt-in **email** channel as a delivery option. Off → `email` isn't a known channel (email proposals fail closed). Even on, it's dry-run + egress-gated. |
 | `MNESIS_EMAIL_DRYRUN` | `1` | Email renders but **sends nothing**. A live send needs this `0` **and** the egress plane (`MNESIS_EGRESS_*`) enabled + allowlisted. |
+| `MNESIS_EGRESS_ENABLED` | `0` | Master switch for the default-deny egress plane. Off → no external send is ever permitted (the email channel can only dry-run). |
+| `MNESIS_EGRESS_KILL` | `0` | Kill-switch — `1` denies **all** egress immediately, re-checked at the last moment before transmit (halts even an approved send). |
+| `MNESIS_EGRESS_RECIPIENT_ALLOWLIST` | *(empty)* | Permitted recipients (exact addresses and/or domains). Empty ⇒ nothing allowed; a content/model-sourced recipient is always rejected. |
+| `MNESIS_EGRESS_ENDPOINT_ALLOWLIST` | *(empty)* | Permitted SMTP endpoints (`host:port`). Empty ⇒ nothing allowed. |
+
+SMTP credentials (`MNESIS_SMTP_HOST` / `…_PORT` / `…_USERNAME` / `…_PASSWORD`,
+`MNESIS_EMAIL_FROM`, `MNESIS_EMAIL_STARTTLS`), the rate/quota limits
+(`MNESIS_EGRESS_*_RATE_LIMIT` / `…_DAILY_QUOTA`), and the send-audit path live in
+[`.env.example`](.env.example); the **password comes only from `.env`/your secret
+store, never the compose file or image**. Enable a real send through the
+[staged rollout](#external-send-email--the-control-plane--staged-rollout) /
+[`docs/OPS.md`](docs/OPS.md).
 
 ---
 
@@ -935,9 +1044,9 @@ CLAUDE.md            the authoritative design contract (read this to extend the 
 FTS5 keyword search · confidence scoring & decay lifecycle · relation-aware ingest
 (reinforce/supersede/contradict/create) · contradiction review queue · the typed
 knowledge graph with impact analysis · maintenance/curation MCP tools (health
-report, duplicate finder) · three surfaces (CLI, MCP, web UI) · the runtime agent
-layer with policy, budgets, and audit · the multi-LLM **LangGraph agent
-foundation** with Agent Skills, governance, and triggers/runner · the scheduled
+report, duplicate finder) · three surfaces (CLI, MCP, web UI) · the multi-LLM
+**LangGraph agent foundation** with Agent Skills, governance (policy, budgets,
+audit), and triggers/runner · the scheduled
 **dream-cycle MaintenanceAgent** (auto-applied safe hygiene + reviewable
 proposals + reports + optional crystallization) · the **source-connector
 ingestion pipeline** and the **notes-inbox WritingAgent** (idempotent detection,

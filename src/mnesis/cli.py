@@ -15,7 +15,7 @@ import os
 import sys
 from pathlib import Path
 
-from . import auth, config, mcp_server, tenancy
+from . import admin, auth, config, mcp_server, tenancy
 
 
 def _read_source(path: str) -> str:
@@ -53,6 +53,28 @@ def _build_parser() -> argparse.ArgumentParser:
     a_revoke = asub.add_parser("revoke", help="revoke a credential by id")
     a_revoke.add_argument("credential_id", help="the credential id (not the token)")
     asub.add_parser("list", help="list a tenant's credentials (no secrets)")
+
+    # System-admin tenant lifecycle (T7). All but `bootstrap` require a system-admin
+    # credential in MNESIS_ADMIN_CREDENTIAL; tenant principals can never manage tenants.
+    p_admin = sub.add_parser("admin", help="system-admin tenant lifecycle (provision/list/suspend/delete)")
+    adsub = p_admin.add_subparsers(dest="admin_cmd", required=True)
+    ad_boot = adsub.add_parser("bootstrap", help="mint the first system-admin credential (local root of trust)")
+    ad_boot.add_argument("--principal", default="root", help="the admin principal id")
+    ad_prov = adsub.add_parser("provision", help="create a tenant + its initial admin credential")
+    ad_prov.add_argument("tenant_id")
+    ad_prov.add_argument("--name", default=None)
+    adsub.add_parser("list", help="list all tenants")
+    ad_susp = adsub.add_parser("suspend", help="deny access while retaining data")
+    ad_susp.add_argument("tenant_id")
+    ad_res = adsub.add_parser("resume", help="restore access to a suspended tenant")
+    ad_res.add_argument("tenant_id")
+    ad_q = adsub.add_parser("set-quota", help="set a tenant's resource quotas (0 = unlimited)")
+    ad_q.add_argument("tenant_id")
+    ad_q.add_argument("--max-pages", type=int, default=None, dest="max_pages")
+    ad_q.add_argument("--max-bytes", type=int, default=None, dest="max_bytes")
+    ad_del = adsub.add_parser("delete", help="remove a tenant's data/credentials/agent state")
+    ad_del.add_argument("tenant_id")
+    ad_del.add_argument("--confirm", required=True, help="must equal the tenant id (guard)")
 
     p_ingest = sub.add_parser("ingest", help="ingest a source file (or - for stdin)")
     p_ingest.add_argument("file", help="path to the source file, or - for stdin")
@@ -198,6 +220,64 @@ def _cmd_auth(args: argparse.Namespace) -> int:
     return 2
 
 
+def _cmd_admin(args: argparse.Namespace) -> int:
+    """System-admin tenant lifecycle (T7). ``bootstrap`` mints the root-of-trust
+    locally; every other op requires MNESIS_ADMIN_CREDENTIAL to resolve to a
+    system-admin (fail closed) and is audited in the system audit log."""
+    if args.admin_cmd == "bootstrap":
+        raw, cred = admin.bootstrap_admin(args.principal)
+        print(f"system-admin credential {cred.id} for principal '{args.principal}'")
+        print(f"  token (shown ONCE — set MNESIS_ADMIN_CREDENTIAL to it): {raw}")
+        return 0
+
+    token = os.environ.get("MNESIS_ADMIN_CREDENTIAL")
+    try:
+        adminp = auth.resolve_admin(token)
+    except auth.AuthError as exc:
+        print(f"error: admin access denied ({exc}); set MNESIS_ADMIN_CREDENTIAL to a "
+              "system-admin token (mnesis admin bootstrap)")
+        return 2
+
+    if args.admin_cmd == "provision":
+        info = admin.provision_tenant(args.tenant_id, args.name, admin=adminp)
+        print(f"provisioned tenant '{info['tenant_id']}' at {info['root']}")
+        print(f"  initial admin credential {info['credential_id']}")
+        print(f"  token (shown ONCE): {info['token']}")
+        return 0
+    if args.admin_cmd == "list":
+        tenants = admin.list_tenants(admin=adminp)
+        if not tenants:
+            print("no tenants")
+            return 0
+        print("tenants:")
+        for t in tenants:
+            quota = f"pages<={t.max_pages}" if t.max_pages else "pages<=∞"
+            print(f"  {t.tenant_id:20} {t.status:10} {quota:14} vis={t.default_visibility}")
+        return 0
+    if args.admin_cmd == "suspend":
+        admin.suspend_tenant(args.tenant_id, admin=adminp)
+        print(f"suspended tenant '{args.tenant_id}' (access denied; data retained)")
+        return 0
+    if args.admin_cmd == "resume":
+        admin.resume_tenant(args.tenant_id, admin=adminp)
+        print(f"resumed tenant '{args.tenant_id}'")
+        return 0
+    if args.admin_cmd == "set-quota":
+        t = admin.set_quota(args.tenant_id, admin=adminp, max_pages=args.max_pages, max_bytes=args.max_bytes)
+        print(f"quota for '{t.tenant_id}': max_pages={t.max_pages or '∞'} max_bytes={t.max_bytes or '∞'}")
+        return 0
+    if args.admin_cmd == "delete":
+        try:
+            res = admin.delete_tenant(args.tenant_id, admin=adminp, confirm=args.confirm)
+        except admin.AdminAccessError as exc:
+            print(f"error: {exc}")
+            return 2
+        print(f"deleted tenant '{args.tenant_id}': removed_root={res['removed_root']} "
+              f"credentials_removed={res['credentials_removed']} agent_state_removed={res['agent_state_removed']}")
+        return 0
+    return 2
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
 
@@ -216,6 +296,10 @@ def main(argv: list[str] | None = None) -> int:
     # scoped to --tenant; no tenant binding is needed.
     if args.command == "auth":
         return _cmd_auth(args)
+
+    # System-admin tenant lifecycle (T7) — admin-only, audited; no tenant binding.
+    if args.command == "admin":
+        return _cmd_admin(args)
 
     # Every other command resolves + binds an authenticated (tenant, principal) at
     # this boundary; the store is unreachable until it is bound.

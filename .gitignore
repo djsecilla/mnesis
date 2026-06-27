@@ -4,6 +4,7 @@ wiki/.index/
 wiki/tenants/
 wiki/registry.json
 wiki/credentials.json
+wiki/system_audit.jsonl
 .venv
 __pycache__/
 *.pyc

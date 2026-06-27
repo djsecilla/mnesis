@@ -31,6 +31,29 @@ services:
       # Upload limit enforced by the ingestion endpoints; mnesis-ui mirrors it
       # into nginx's client_max_body_size so the two agree.
       MNESIS_MAX_UPLOAD_BYTES: ${MNESIS_MAX_UPLOAD_BYTES:-2000000}
+      # --- Multitenancy (T7) — DEFAULT single-tenant; opt into multi-tenant -----
+      # The tenant registry + credential store + system-audit log live under the
+      # data volume (MNESIS_ROOT), OUTSIDE every tenant root. Stores are PHYSICALLY
+      # per-tenant (tenants/<id>/), so cross-tenant access is impossible by
+      # construction; a request's tenant derives ONLY from its verified credential.
+      #   - Off (default): the legacy single `default` tenant; MNESIS_MCP_TOKEN is the
+      #     bearer; behaves exactly as before.
+      #   - On: set MNESIS_AUTH_ENABLED=1 — the bearer is a per-tenant, per-principal
+      #     credential (issue via `mnesis admin provision`); an unresolved credential
+      #     is denied (no default-tenant fallback).
+      MNESIS_AUTH_ENABLED: ${MNESIS_AUTH_ENABLED:-}
+      # A server-side pepper mixed into credential hashes at rest (set via secret
+      # store; never baked into the image). Recommended when auth is enabled.
+      MNESIS_AUTH_PEPPER: ${MNESIS_AUTH_PEPPER:-}
+      # Default new-page visibility within a tenant (shared|private); per-tenant
+      # override is set by the admin.
+      MNESIS_DEFAULT_VISIBILITY: ${MNESIS_DEFAULT_VISIBILITY:-shared}
+      # Per-tenant resource quotas (0 = unlimited); fail-closed at ingest.
+      MNESIS_TENANT_MAX_PAGES: ${MNESIS_TENANT_MAX_PAGES:-0}
+      MNESIS_TENANT_MAX_BYTES: ${MNESIS_TENANT_MAX_BYTES:-0}
+      # Optional encryption-at-rest hardening: keep the data volume on an encrypted
+      # filesystem / encrypted block device (per-tenant keys for tenants/<id>/ are a
+      # future hardening). Credentials are stored HASHED regardless.
     # Make the host reachable as host.docker.internal on Linux too (Docker
     # Desktop provides it automatically; harmless to declare explicitly).
     extra_hosts:
@@ -211,6 +234,14 @@ services:
       MNESIS_AGENTS_AUDIT_DIR: /data/agents_runs
       MNESIS_AGENTS_PROPOSALS_DIR: /data/agents_runs
       MNESIS_AGENTS_CONNECTOR_STATE_DIR: /data/agents_runs/connectors
+      # --- Multitenant agents (T7) ---------------------------------------------
+      # Single-tenant (default): the agents use MNESIS_MCP_TOKEN as one `default`
+      # tenant. Multi-tenant: point MNESIS_AGENTS_TENANTS_FILE at a JSON file listing
+      # {tenant_id, credential, ...} per tenant — the runner hosts ONE set of agents
+      # per tenant, each reaching only its tenant's Mnesis (via its credential) and
+      # writing only its own governance state under MNESIS_AGENTS_STATE_BASE/tenants/<id>/.
+      MNESIS_AGENTS_TENANTS_FILE: ${MNESIS_AGENTS_TENANTS_FILE:-}
+      MNESIS_AGENTS_STATE_BASE: ${MNESIS_AGENTS_STATE_BASE:-/data/agents_runs}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:

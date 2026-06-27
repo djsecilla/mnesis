@@ -39,7 +39,7 @@ import re
 from collections import Counter
 from dataclasses import dataclass
 
-from . import auth, authz, config, confidence, llm, search, state, store, vocab
+from . import auth, authz, config, confidence, llm, quotas, search, state, store, tenancy, vocab
 from .filters import scrub
 from .store import Page
 
@@ -553,6 +553,11 @@ def apply_ingest(plan: dict, overrides: dict | None = None) -> dict:
     else:
         action = (plan.get("routing") or {}).get("action", "new")
         target_id = (plan.get("routing") or {}).get("target_page_id")
+
+    # Quota (T7): a create/supersede grows the tenant's page set — fail closed if it
+    # would exceed the tenant's page/storage quota. Reinforce/contradict don't add.
+    if action in ("new", "supersede"):
+        quotas.require_capacity(tenancy.current())
 
     # Persist the redacted source for provenance (committed by the store).
     store.write_source(source_ref, redacted)
