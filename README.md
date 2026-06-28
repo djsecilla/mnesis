@@ -38,18 +38,18 @@ is the intended design.
 
 ## Table of contents
 
-- [What you get](#what-you-get)
-- [How it works](#how-it-works) — the mental model
-- [Quickstart](#quickstart)
-- [Using the CLI](#using-the-cli)
-- [The three surfaces](#the-three-surfaces) — CLI · MCP · Web UI
-- [The agent layer](#the-langgraph-agent-foundation) — multi-LLM agents: the maintenance **dream cycle**, the notes-inbox **writing agent**, and the approval-gated **action agent**
-- [Multitenancy](#multitenancy) — isolation by construction, the admin boundary, quotas
-- [Running with Docker](#running-with-docker)
-- [Making the most of mnesis](#making-the-most-of-mnesis) — best practices
-- [Configuration reference](#configuration-reference)
-- [Verify it works](#verify-it-works) — guided demos
-- [Project layout & scope](#project-layout--scope)
+1. [What you get](#what-you-get)
+2. [How it works](#how-it-works) — the mental model
+3. [Quickstart](#quickstart)
+4. [Using the CLI](#using-the-cli)
+5. [The three surfaces](#the-three-surfaces) — CLI · MCP · Web UI
+6. [The agent layer](#the-langgraph-agent-foundation) — multi-LLM agents: the maintenance **dream cycle**, the notes-inbox **writing agent**, and the approval-gated **action agent**
+7. [Multitenancy](#multitenancy) — isolation by construction, the admin boundary, quotas
+8. [Running with Docker](#running-with-docker)
+9. [Making the most of mnesis](#making-the-most-of-mnesis) — best practices
+10. [Configuration reference](#configuration-reference)
+11. [Verify it works](#verify-it-works) — guided demos
+12. [Project layout & scope](#project-layout--scope)
 
 ---
 
