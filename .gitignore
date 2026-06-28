@@ -18,3 +18,10 @@ action_outbox/*
 !action_outbox/.gitkeep
 mnesis_agents_runs/
 mnesis_agents.checkpoints.db*
+
+# Local demo/design artifacts — kept out of git to keep the repo lean (screen
+# recordings, voiceovers, logo bundle, the architecture doc).
+*.mov
+*.m4a
+*.docx
+logos.zip
