@@ -45,7 +45,8 @@ is the intended design.
 | **Relation-aware lifecycle** | A new source can **reinforce**, **supersede**, **contradict**, or **create** — mnesis routes it, and flags conflicts it can't resolve for review. |
 | **Typed knowledge graph** | Entities and typed relations are extracted into a graph you can traverse and run **impact analysis** over ("what breaks if I change Redis?"). |
 | **Three surfaces, one core** | The same core is reached by a **CLI** (humans/scripts), an **MCP server** (agents), and a **web UI** (browser) — none has private state. |
-| **A multi-LLM agent layer** | A separately-deployable LangGraph agent runtime that uses mnesis as memory — reaching it **only over MCP**, governed, with on-prem inference. |
+| **Multitenant, isolated by construction** | Each tenant's store is a **physically separate directory + git repo**; a request's tenant derives **only from its verified credential**; cross-tenant access is *structurally impossible*. Within a tenant, pages are `private`/`shared`. A system-admin manages tenant lifecycle + quotas. Single-tenant runs transparently as `default`. |
+| **A multi-LLM agent layer** | A separately-deployable LangGraph agent runtime that uses mnesis as memory — reaching it **only over MCP**, governed, per-tenant, with on-prem inference. |
 | **Self-curating maintenance** | A multi-LLM LangGraph foundation whose scheduled **dream cycle** keeps the KB healthy — auto-applying safe hygiene (decay, graph fixes) and surfacing contradiction/dedup **proposals** for review, all over MCP and governed. |
 | **Source-connector ingestion** | A reusable pipeline turns inbound sources into governed ingestions — the first is a **notes/Markdown inbox** that watches a folder and ingests notes (dedup + retry + dead-letter). A new source = connector + parse skill + one mapping entry. |
 | **Approval-gated actions** | An action agent composes grounded, cited artifacts (e.g. a meeting brief) and **proposes** them; a human approves before anything happens. **Draft-only by default**; email delivery is opt-in (dry-run + egress-gated + recipient-confirmed). Recipients come from policy, never content. |
@@ -59,13 +60,14 @@ This section is the mental model. If you read one thing, read this.
 
 ### 1. Markdown is the source of truth; everything else is a cache
 
-The canonical knowledge is a directory of Markdown pages (`wiki/pages/`), each a
-YAML-frontmatter document tracked in git. The SQLite **search index** and the
-**knowledge graph** under `wiki/.index/` are *rebuildable caches* — pure
+The canonical knowledge is a directory of Markdown pages (each tenant's `pages/`),
+each a YAML-frontmatter document tracked in git. The SQLite **search index** and the
+**knowledge graph** under that tenant's `.cache/` are *rebuildable caches* — pure
 projections of the Markdown that `mnesis rebuild` can reconstruct at any time.
-Delete them and rebuild; you lose nothing canonical.
+Delete them and rebuild; you lose nothing canonical. (Every tenant has its own
+`pages/`, git repo, and `.cache/` — see [Multitenancy](#multitenancy).)
 
-The one deliberate exception is the **state store** (`wiki/.index/state.db`):
+The one deliberate exception is the **state store** (`.cache/state.db`):
 access history (how often/recently a page was read) and the contradiction review
 queue. It is *not* derivable from Markdown and is never cleared by a rebuild —
 losing it is survivable but lossy (confidence simply degrades to its
@@ -192,7 +194,7 @@ make demo         # the end-to-end compounding-loop demo, offline
 In a throwaway location, so your clone stays clean:
 
 ```bash
-rm -rf /tmp/mnesis-try && git init -q /tmp/mnesis-try
+rm -rf /tmp/mnesis-try          # the `default` tenant (root + git repo + caches) is created on first use
 export MNESIS_LLM_STUB=1 MNESIS_ROOT=/tmp/mnesis-try/wiki
 
 echo "Project Atlas uses Redis for caching." | uv run mnesis ingest - --ref atlas
@@ -217,6 +219,8 @@ make docker-seed              # ingest the bundled sample sources (offline)
 
 Point an MCP client (e.g. Claude Code) at it — this repo ships [`.mcp.json`](.mcp.json)
 for the local stdio server, or connect over HTTP (see [the MCP surface](#mcp-server-for-agents)).
+This runs as the single `default` tenant; to serve multiple isolated tenants, see
+[Multitenancy](#multitenancy).
 
 ### 4. Add the agents (optional)
 
@@ -285,6 +289,31 @@ mnesis graph-stats                        # node/edge counts by type and predica
 mnesis graph-lint --fix                   # consistency check; --fix applies the safe auto-fixes
 ```
 
+### Tenants, credentials & admin (multitenancy)
+
+By default everything above runs against the single `default` tenant — no setup
+needed. To run multi-tenant, a **system admin** manages the tenant lifecycle and
+issues per-tenant credentials (see [Multitenancy](#multitenancy)):
+
+```bash
+mnesis migrate-tenants                     # move an existing single-store layout into tenants/default/
+
+# System-admin (lifecycle) — bootstrap once, then export MNESIS_ADMIN_CREDENTIAL:
+mnesis admin bootstrap --principal root    # mint the root-of-trust system-admin token (once)
+mnesis admin provision acme --name "Acme"  # create a tenant + its first admin credential (once)
+mnesis admin list                          # all tenants (status, quota, default visibility)
+mnesis admin set-quota acme --max-pages 5000
+mnesis admin suspend acme                  # deny access, RETAIN data   (resume restores)
+mnesis admin delete  acme --confirm acme   # remove data + credentials + agent state (guarded)
+
+# Per-tenant credentials — issue/list/revoke for a tenant principal:
+mnesis --tenant acme auth issue --principal alice --role member   # prints a token (once)
+mnesis --tenant acme auth list
+```
+
+With auth on (`MNESIS_AUTH_ENABLED=1`), tenant-scoped data ops authenticate via
+`MNESIS_CREDENTIAL` (the credential's tenant wins over `--tenant`).
+
 ---
 
 ## The three surfaces
@@ -330,7 +359,10 @@ streamable HTTP at `/mcp` on `MNESIS_MCP_HOST:MNESIS_MCP_PORT` (default
 `0.0.0.0:8080`) plus an open `GET /health`. If `MNESIS_MCP_TOKEN` is set, every
 call must send `Authorization: Bearer <token>` (strongly recommended — the
 endpoint can modify knowledge). When clients reach the server by a name other
-than localhost (e.g. behind Docker), list it in `MNESIS_MCP_ALLOWED_HOSTS`.
+than localhost (e.g. behind Docker), list it in `MNESIS_MCP_ALLOWED_HOSTS`. With
+**`MNESIS_AUTH_ENABLED=1`** the bearer is instead a **per-tenant credential** that
+resolves to a tenant + principal, and every tool runs scoped to it
+([Multitenancy](#multitenancy)).
 
 ```bash
 claude mcp add mnesis --transport http http://<host>:8080/mcp \
@@ -843,12 +875,13 @@ before anything is written, including in reports and in anything an agent ingest
 The MVP filter (regex + entropy) is intentionally simple; for sensitive corpora,
 plan the `detect-secrets` / Presidio upgrade path. Never disable the scrub step.
 
-**Keep the canonical layer backed up; treat caches as disposable.** The durable,
-must-back-up layer is the **git history** (pages + sources) plus
-**`.index/state.db`** (access events + review queue). Everything else under
-`.index/` is regenerated by `mnesis rebuild`. Deleting the search index is
-routine; deleting the state store loses access history and open reviews. (The
-agent runtimes hold **no** canonical state — see [`docs/OPS.md`](docs/OPS.md).)
+**Keep the canonical layer backed up; treat caches as disposable.** Per tenant, the
+durable, must-back-up layer is the **git history** (pages + sources) plus
+**`.cache/state.db`** (access events + review queue); plus, at the data root, the
+**tenant registry + credential store + system audit log**. Everything else under
+`.cache/` is regenerated by `mnesis rebuild`. Deleting the search index is routine;
+deleting the state store loses access history and open reviews. (The agent runtimes
+hold **no** canonical state — see [`docs/OPS.md`](docs/OPS.md).)
 
 ### The agentic layer
 
@@ -909,7 +942,7 @@ All settings are environment variables with sensible defaults; copy
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `MNESIS_ROOT` | `./wiki` | Root of pages, sources, and the index. |
+| `MNESIS_ROOT` | `./wiki` | The **data root**: holds the tenant registry, credential store, and `tenants/<id>/` — not itself a store ([Multitenancy](#multitenancy)). |
 | `MNESIS_LLM_PROVIDER` | `anthropic` | `anthropic` or `local` (Ollama / OpenAI-compatible). |
 | `MNESIS_LLM_MODEL` | `claude-sonnet-4-6` | Extraction model (an Ollama tag when `provider=local`). |
 | `MNESIS_LLM_BASE_URL` | `http://localhost:11434` | Local model endpoint (used when `provider=local`). |
@@ -930,10 +963,24 @@ class, weights, auto-resolve margin, stale thresholds) — all env-overridable; 
 |---|---|---|
 | `MNESIS_MCP_TRANSPORT` | `stdio` | `stdio` (local subprocess) or `http` (networked). |
 | `MNESIS_MCP_HOST` / `MNESIS_MCP_PORT` | `0.0.0.0` / `8080` | HTTP bind address/port. |
-| `MNESIS_MCP_TOKEN` | unset | Bearer token required on every call when set (strongly recommended in HTTP mode). |
+| `MNESIS_MCP_TOKEN` | unset | **Legacy single-tenant** bearer token (used only when `MNESIS_AUTH_ENABLED` is off). Multi-tenant uses per-tenant credentials instead. |
 | `MNESIS_MCP_ALLOWED_HOSTS` | unset (localhost) | Host allowlist for DNS-rebinding protection (`host:port` / `host:*`). List the service name for networked clients. |
 | `MNESIS_MAX_UPLOAD_BYTES` | `2000000` | Max bytes accepted by the ingestion upload endpoints. |
 | `MNESIS_UI_PORT` | `3000` | Host port for the web UI. |
+
+### Multitenancy & auth
+
+Off by default (single-tenant `default`). See [Multitenancy](#multitenancy).
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `MNESIS_AUTH_ENABLED` | unset | `1` resolves the bearer/credential to a per-tenant, per-principal `{tenant, principal, role}` (tenant from the credential only; unresolved → denied, no default fallback). Off = legacy single-tenant. |
+| `MNESIS_AUTH_PEPPER` | unset | Server-side secret mixed into credential hashes at rest (never logged). |
+| `MNESIS_DEFAULT_TENANT` | `default` | The tenant a single-tenant deployment runs as transparently. |
+| `MNESIS_DEFAULT_VISIBILITY` | `shared` | New-page visibility within a tenant (`shared`\|`private`); per-tenant override set by the admin. |
+| `MNESIS_TENANT_MAX_PAGES` / `…_MAX_BYTES` | `0` | Per-tenant resource quotas (0 = unlimited); fail-closed at ingest. Per-tenant override on the Tenant record. |
+| `MNESIS_CREDENTIAL` | unset | The **CLI**'s tenant credential for tenant-scoped data ops (its tenant overrides `--tenant`; refused when auth is on and unset). |
+| `MNESIS_ADMIN_CREDENTIAL` | unset | The **system-admin** token for `mnesis admin …` lifecycle ops (a tenant credential is refused). |
 
 ### Agent layer (`mnesis-agents`)
 
@@ -951,6 +998,8 @@ over MCP via `MNESIS_MCP_URL` (default `http://localhost:8080/mcp`) and
 | `MNESIS_AGENTS_CRYSTALLIZE` | unset | `1` files a concise digest of each dream cycle back into Mnesis (meta-memory). Off by default. |
 | `MNESIS_AGENTS_PROPOSALS_DIR` | = audit dir | Where the proposals queue + persisted reports live (gitignored). |
 | `MNESIS_AGENTS_AUDIT_DIR` | `./mnesis_agents_runs` | Append-only JSONL run audit (names/statuses/ids only). |
+| `MNESIS_AGENTS_TENANTS_FILE` | unset | A JSON list of `{tenant_id, credential, …}` — the runner then hosts **one set of agents per tenant**, each confined to its tenant ([Multitenancy](#multitenancy)). Unset = single-tenant from `MNESIS_MCP_TOKEN`. |
+| `MNESIS_AGENTS_STATE_BASE` | = audit dir | Base for per-tenant agent governance state (`<base>/tenants/<id>/`). |
 | `MNESIS_AGENTS_CHECKPOINT_BACKEND` / `…_DB` | `sqlite` / `./mnesis_agents.checkpoints.db` | LangGraph checkpointer (resumable threads). |
 | `MNESIS_AGENTS_MAX_TOOL_CALLS` / `…_WALLCLOCK_SECONDS` | `50` / `300` | Default per-run governance budgets. |
 | `MNESIS_NOTES_ENABLED` | `1` | Register the notes-inbox connector + writing agent in `mnesis-agents run`. `0` to disable. |
@@ -1000,7 +1049,7 @@ fresh clone.
 identical search results (also asserted by the test suite):
 
 ```bash
-rm -f /tmp/mnesis-try/wiki/.index/wiki.db && uv run env MNESIS_ROOT=/tmp/mnesis-try/wiki mnesis rebuild
+rm -f /tmp/mnesis-try/wiki/tenants/default/.cache/wiki.db && uv run env MNESIS_ROOT=/tmp/mnesis-try/wiki mnesis rebuild
 ```
 
 ### Phase 2 — confidence & lifecycle (`make demo-phase2`)
@@ -1027,14 +1076,17 @@ rebuildable cache — asserted by `tests/test_phase3_e2e.py`.
 
 ```
 src/mnesis/          the core: store · filters · ingest · search · graph · confidence ·
-                     lifecycle · vocab · maintenance · MCP server · REST/SSE gateway · CLI
+                     lifecycle · vocab · maintenance · tenancy · auth · authz · admin · quotas ·
+                     MCP server · REST/SSE gateway · CLI
 src/mnesis_agents/   the LangGraph agent foundation: multi-LLM base · category ABCs · skills ·
                      governance · triggers/runner · the MaintenanceAgent (dream cycle) ·
                      source connectors + the WritingAgent (ingestion pipeline) · outbound
-                     channels + the approval gate + the ActionAgent (compose → propose → deliver)
+                     channels + the approval gate + the ActionAgent (compose → propose → deliver) ·
+                     per-tenant TenantScope (tenancy.py)
 src/mnesis_llm/      the shared, provider-agnostic chat-model factory (used by core + agents)
 ui/                  the React + Vite web UI (served by nginx in Docker)
-wiki/                pages/ (canonical, tracked) · sources/ (redacted, tracked) · .index/ (cache, gitignored)
+wiki/                the data root: registry.json · credentials.json (hashed) · system_audit.jsonl ·
+                     tenants/<id>/{pages, sources (tracked), .cache (gitignored)} + its own git repo
 tests/               the full offline test suite
 docs/OPS.md          backup / restore / operations
 CLAUDE.md            the authoritative design contract (read this to extend the system)
@@ -1053,14 +1105,18 @@ ingestion pipeline** and the **notes-inbox WritingAgent** (idempotent detection,
 governed ingest, retry/dead-letter, on-demand backfill) · the **outbound-channel +
 approval-gate + egress** pattern and the **approval-gated `ActionAgent`**
 (compose → propose → human-approve → deliver; draft-only by default, with an
-opt-in dry-run/egress-gated/recipient-confirmed email channel) · Docker deployment
-with local-first inference.
+opt-in dry-run/egress-gated/recipient-confirmed email channel) · **multitenancy**
+(physically per-tenant stores/caches/git · tenant-from-credential auth · within-tenant
+private/shared visibility · enforced across MCP/Web UI/CLI and the agents · tenant
+lifecycle + system-admin boundary + per-tenant quotas) · Docker deployment with
+local-first inference.
 
 **Deferred** (see [`CLAUDE.md` §13](CLAUDE.md) for the full map): session/query
 automation hooks and a general hook framework — *on-source ingestion (the
 connectors/writing agent) and scheduled maintenance (the dream cycle) already
 exist* (Phase 4); vector stream + reciprocal rank fusion and LLM-as-judge quality
-scoring (Phase 5); multi-agent mesh sync and private/shared scoping (Phase 6).
+scoring (Phase 5); multi-agent mesh sync (Phase 6 — *per-tenant private/shared
+scoping already exists*).
 
 ---
 
