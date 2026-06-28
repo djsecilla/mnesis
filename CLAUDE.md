@@ -293,13 +293,15 @@ A page is acceptable when it: states a clear, declarative claim in the `title`; 
 
 **In scope (agent layer — implemented):** the **LangGraph agent layer** (`mnesis_agents`), a separately-deployable MCP **client** that uses Mnesis as memory — a multi-LLM base over LangGraph, Agent Skills, governance, triggers/runner, and three concrete agents (the dream-cycle **MaintenanceAgent**, the notes-inbox **WritingAgent** with its source-connector ingestion pipeline, and the approval-gated **ActionAgent** with the outbound-channel + gate + egress + opt-in email-send safety stack). Reaches the core only over MCP; never imports `mnesis`. Fully documented in **§14**.
 
+**In scope (multitenancy — implemented, §16):** mnesis is multitenant from the data layer up — physically **per-tenant stores** (each tenant its own `pages/`/`sources/`/`.cache/` + git repo under `tenants/<id>/`), per-tenant caches/graph/state and rebuild (`tenancy.py`, T1–T2); **credential → `(TenantContext, Principal)`** resolution with the tenant taken **only** from the credential (`auth.py`, T3); within-tenant **role authorization + private/shared visibility** enforced in the data/query layer (`authz.py`, T4); tenant **enforcement across MCP, the Web UI gateway, and the CLI** (T5); a **per-tenant agent runtime** (`mnesis_agents.tenancy`, T6); and **tenant lifecycle + a system-admin boundary + per-tenant quotas** (`admin.py`/`quotas.py`, T7). The `default` tenant keeps single-tenant deployments transparent. Fully documented in **§16**.
+
 **Out of scope for now — map of where each deferred capability lands:**
 
 | Capability | Phase |
 |---|---|
 | Session/query automation hooks + a general config-driven hook framework *(on-source ingestion via the connectors/WritingAgent, and scheduled maintenance via the dream cycle, are delivered in §14)* | 4 |
 | Vector stream + reciprocal rank fusion; LLM-as-judge quality scoring | 5 |
-| Multi-agent mesh sync; private/shared scoping | 6 |
+| Multi-agent mesh sync *(per-tenant private/shared scoping is **delivered** — see §16, within-tenant visibility)* | 6 |
 
 When you extend the PoC toward any of these, **update this file first**, then make the code follow it.
 
@@ -349,13 +351,15 @@ This document is co-evolved with the system. Expect the first version to be roug
 
 ## 16. Tenancy & isolation (the data-layer primitive)
 
-mnesis is **multitenant from the data layer up**. The store is tenant-scoped *by construction* so cross-tenant access is structurally impossible, not merely access-checked. This is the foundation auth/session work (later prompts) builds on; T1 delivers the isolation primitive only (the active tenant is the single `default` tenant until a boundary resolves it from credentials).
+mnesis is **multitenant from the data layer up**. The store is tenant-scoped *by construction* so cross-tenant access is structurally impossible, not merely access-checked. This is the isolation primitive (T1) the rest of this section builds on: credentials (T3), authorization + visibility (T4), surface enforcement (T5), the per-tenant agent runtime (T6), and tenant lifecycle/admin/quotas (T7). A single-tenant deployment runs transparently as the one `default` tenant, with no credentials required.
 
 **On-disk layout.** `config.DATA_ROOT` (env `MNESIS_ROOT`, default `./wiki`) is the *data root*, not a store. Under it:
 
 ```
 DATA_ROOT/
   registry.json                # the tenant registry (metadata) — OUTSIDE any tenant root
+  credentials.json             # the credential store (HASHED tokens) — OUTSIDE any tenant root
+  system_audit.jsonl           # the lifecycle audit (provision/suspend/delete) — OUTSIDE any tenant root
   tenants/<tenant_id>/         # one tenant's canonical store + its OWN git repo
     pages/                     #   canonical Markdown (tracked)
     sources/                   #   redacted sources (tracked)
