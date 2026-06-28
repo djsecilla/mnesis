@@ -10,6 +10,24 @@ the compounding loop:
 
 > **filter → ingest → write a canonical page → index → query → file an answer back → query again and see it surface.**
 
+```mermaid
+flowchart LR
+    SRC["source<br/>notes · docs · chat"] --> F["filter<br/>redact secrets/PII"]
+    F --> ING["ingest<br/>extract + route"]
+    ING --> PAGE["canonical page<br/>Markdown + git commit"]
+    PAGE --> IDX["index<br/>FTS5 + knowledge graph"]
+    IDX --> Q["query<br/>BM25 + confidence + graph"]
+    Q --> ANS["synthesized answer"]
+    ANS -->|"quality ≥ threshold"| FB["file-back<br/>durable digest page"]
+    FB -->|"becomes a new canonical page"| PAGE
+    linkStyle 7 stroke:#16a34a,stroke-width:2px
+```
+
+The green edge is the **compounding step**: a synthesized answer that clears the
+quality gate is written back as a durable page, so asking again later *surfaces it
+as knowledge* instead of re-deriving it. RAG fetches and forgets; mnesis accumulates
+— the knowledge base grows more useful each time it is used.
+
 mnesis is built to be the long-term memory for AI agents (reachable over the
 [Model Context Protocol](https://modelcontextprotocol.io)) while remaining fully
 usable by humans through a CLI and a web UI. The authoritative design contract is
@@ -321,6 +339,32 @@ With auth on (`MNESIS_AUTH_ENABLED=1`), tenant-scoped data ops authenticate via
 The same core (`mnesis.*`) is reached three ways; all share the canonical store,
 none has private state.
 
+```mermaid
+flowchart TB
+    H["humans &amp; scripts"] --> CLI["CLI<br/>mnesis ..."]
+    BR["browser"] --> UI["Web UI gateway<br/>REST + SSE · /api"]
+    AGW["AI agents /<br/>the agent layer"] --> MCP["MCP server<br/>tools · /mcp"]
+
+    CLI --> BND
+    UI --> BND
+    MCP --> BND
+    BND["boundary: resolve + bind<br/>(TenantContext, Principal)"] --> CORE
+
+    subgraph CORE["one core — mnesis.* (no surface has private state)"]
+        direction LR
+        ING["ingest"] --- SRCH["search"] --- GR["graph"] --- LC["lifecycle"]
+    end
+
+    CORE --> STORE[("the tenant's store<br/>Markdown + git (canonical)<br/>+ rebuildable caches")]
+    linkStyle 6 stroke:#2563eb,stroke-width:2px
+```
+
+The surfaces don't *stack logic* — they're three thin doorways onto **one** core and
+**one** store, behind a single auth/tenant **boundary** (blue). So a write through the
+CLI is instantly visible to the Web UI and to agents; the only difference between
+surfaces is who calls and how. The agent layer is a **client** of the MCP surface, not
+a fourth surface.
+
 ### CLI
 
 For humans, scripts, and maintenance — the full command set above.
@@ -403,6 +447,46 @@ Mnesis **only over MCP**. The base, the category abstractions, the runtime, and
 event-triggered [notes-inbox `WritingAgent`](#writing-agents--the-notesmarkdown-inbox),
 and the [approval-gated `ActionAgent`](#action-agents-approval-gated)
 — exist today.
+
+```mermaid
+flowchart LR
+    subgraph TRIG["triggers"]
+        EV["event<br/>(notes inbox)"]
+        SCH["schedule<br/>(nightly)"]
+    end
+    EV --> RUN
+    SCH --> RUN
+    RUN["Runner + Registry"]
+
+    RUN --> MA["MaintenanceAgent<br/>dream cycle"]
+    RUN --> WA["WritingAgent<br/>note → ingest"]
+    RUN --> AA["ActionAgent<br/>compose → propose"]
+
+    subgraph SUB["shared substrate"]
+        SK["Agent Skills"]
+        GOV["governance<br/>allowlist · budgets · audit"]
+        FAC["multi-LLM factory"]
+    end
+    MA -.-> SUB
+    WA -.-> SUB
+    AA -.-> SUB
+
+    MA --> MCP
+    WA --> MCP
+    AA --> MCP
+    MCP["MCP client<br/>(per-tenant credential)"] --> MN[("Mnesis<br/>reached ONLY over MCP")]
+
+    AA --> GATE["approval gate<br/>+ egress control"]
+    GATE --> CH["channels<br/>draft outbox · email (opt-in)"]
+    linkStyle 11 stroke:#16a34a,stroke-width:2px
+```
+
+The agent layer **never imports `mnesis`** — it reaches the store only over the MCP
+boundary (green), so Mnesis's governance gates every write server-side and the
+agent is confined to whatever tenant its credential resolves to. The only path to a
+side effect outside Mnesis is an `ActionAgent` proposal a human approves at the
+**gate** (egress is default-deny). Adding an agent reuses the same runner, skills,
+governance, and MCP client.
 
 - **Multi-LLM, shared by Mnesis too.** A single provider switch
   (`MNESIS_LLM_PROVIDER`) selects the model for **both** Mnesis's own
@@ -683,6 +767,36 @@ mnesis is **multitenant from the data layer up**, and isolation is **by
 construction** — not a filter that can be forgotten. A single-tenant deployment runs
 transparently as the one `default` tenant, so nothing below is required until you
 want more than one tenant.
+
+```mermaid
+flowchart TB
+    CA["request + credential A"] --> RES["resolve_principal<br/>tenant from the credential ONLY<br/>(any client-supplied id is ignored)"]
+    CB["request + credential B"] --> RES
+    RES --> CTXA["TenantContext: acme"]
+    RES --> CTXB["TenantContext: globex"]
+    CTXA --> TA
+    CTXB --> TB
+
+    subgraph DR["DATA_ROOT (MNESIS_ROOT)"]
+        META["registry.json · credentials.json (hashed) · system_audit.jsonl<br/>shared metadata — OUTSIDE every tenant root"]
+        subgraph TA["tenants/acme/ — its own git repo"]
+            TA1["pages/ · sources/ · .cache/"]
+        end
+        subgraph TB["tenants/globex/ — its own git repo"]
+            TB1["pages/ · sources/ · .cache/"]
+        end
+    end
+
+    ADMIN["system-admin<br/>(a non-tenant principal)"] -->|"provision · suspend · delete · quotas"| META
+    style TA fill:#eef6ff,stroke:#2563eb
+    style TB fill:#f0fdf4,stroke:#16a34a
+```
+
+Each credential resolves to exactly **one** tenant, and the bound `TenantContext` can
+touch only that tenant's **physically separate** root (its own pages, git repo, and
+caches). There is no shared store to leak through, so A's credential can never reach
+B's data. Only metadata (which tenants exist, hashed credentials, the lifecycle audit)
+sits at the data root, managed by a system-admin who is not a member of any tenant.
 
 ### Isolation by construction
 
