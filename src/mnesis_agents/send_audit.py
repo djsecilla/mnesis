@@ -14,10 +14,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime, timezone
 from pathlib import Path
 
 from . import config
+from .config import now_iso as _now
 from .triggers.connector import path_lock
 
 _GENESIS = "GENESIS"
@@ -27,10 +27,6 @@ _HASHED_FIELDS = (
     "seq", "ts", "proposal_id", "approval_id", "channel", "recipient",
     "endpoint", "content_hash", "decision", "status", "prev_hash",
 )
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def _chain_hash(prev_hash: str, record: dict) -> str:

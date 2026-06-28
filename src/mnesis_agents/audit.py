@@ -15,10 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from . import config
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+from .config import now_iso as _now
 
 
 def new_run_id() -> str:

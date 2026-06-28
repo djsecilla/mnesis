@@ -9,12 +9,12 @@ record into the **F6 audit log** (names / statuses / ids / counts only).
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from . import config
 from .audit import AgentAuditLog, new_run_id
+from .config import now_iso as _now
 
 if TYPE_CHECKING:
     from .maintenance_agent import DreamCycleReport
@@ -71,7 +71,7 @@ class DreamReportStore:
         audit log. Returns the audit ``run_id``."""
         self.directory.mkdir(parents=True, exist_ok=True)
         run_id = new_run_id()
-        record = {"run_id": run_id, "saved_at": datetime.now(timezone.utc).isoformat(),
+        record = {"run_id": run_id, "saved_at": _now(),
                   "report": report.to_dict()}
         with open(self._path, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(record, ensure_ascii=False) + "\n")

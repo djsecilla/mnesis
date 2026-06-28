@@ -22,15 +22,11 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from . import config
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+from .config import now_iso as _now
 
 
 def _stable_id(kind: str, key_fields: dict[str, Any]) -> str:

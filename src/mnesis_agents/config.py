@@ -8,7 +8,19 @@ environment (and the stub path needs nothing but this + langchain-core).
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 from pathlib import Path
+
+
+def now_iso() -> str:
+    """Current UTC time as an ISO 8601 isoformat string (with UTC offset).
+
+    Defined here — the leaf of the import graph — so every agents module that
+    needs a UTC timestamp can import it without creating cycles.  The format
+    (``datetime.isoformat()``) matches the convention already used throughout
+    the agents layer.
+    """
+    return datetime.now(timezone.utc).isoformat()
 
 #: Supported provider keys for MNESIS_LLM_PROVIDER. Each maps to a LangChain
 #: integration in models.py; "openai_compatible" reuses the OpenAI client with a

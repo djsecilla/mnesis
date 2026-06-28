@@ -25,10 +25,10 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from . import config
+from .config import now_iso as _now
 from .audit import AgentAuditLog
 from .channels import RISK_EXTERNAL, ChannelRegistry, DeliveryResult, OutboundArtifact
 from .egress import EgressPolicy, Recipient
@@ -45,10 +45,6 @@ _FORBIDDEN_ARTIFACT_KEYS = frozenset(
 
 #: Sources a recipient confirmation may legitimately come from (a human, not content).
 _CONFIRM_SOURCES = frozenset({"policy", "user"})
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 class DestinationIntegrityError(Exception):

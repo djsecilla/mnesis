@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Any
 
 from . import config
+from .config import now_iso as _now
 
 log = logging.getLogger("mnesis_agents.channels")
 
@@ -42,10 +43,6 @@ log = logging.getLogger("mnesis_agents.channels")
 RISK_INERT = "inert"
 RISK_EXTERNAL = "external"
 RISK_CLASSES = frozenset({RISK_INERT, RISK_EXTERNAL})
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def _stamp() -> str:

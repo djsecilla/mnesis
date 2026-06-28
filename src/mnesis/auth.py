@@ -35,6 +35,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import config, tenancy
+from .config import now_iso as _now_iso  # local alias keeps call sites unchanged
 from .tenancy import TenantContext, validate_tenant_id
 
 #: The roles a *tenant* principal may hold. Authorization (what each role may do)
@@ -60,10 +61,6 @@ class InvalidCredential(AuthError):
 
 class InvalidRole(AuthError, ValueError):
     """A role outside :data:`ROLES`."""
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
 def _now_epoch() -> float:

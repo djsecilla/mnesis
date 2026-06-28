@@ -23,12 +23,12 @@ from __future__ import annotations
 import re
 import subprocess
 from dataclasses import dataclass, field, fields
-from datetime import datetime, timezone
 from pathlib import Path
 
 import frontmatter
 
 from . import tenancy
+from .config import now_iso  # noqa: F401 — re-exported for callers that import from store
 from .tenancy import TenantContext
 
 # Frontmatter keys, in the schema order of CLAUDE.md §4. ``body`` is the post
@@ -53,11 +53,6 @@ _META_KEYS = (
     "relations",
     "question",
 )
-
-
-def now_iso() -> str:
-    """Current UTC time as an ISO 8601 string (microsecond precision, Z suffix)."""
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
 @dataclass

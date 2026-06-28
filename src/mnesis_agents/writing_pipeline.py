@@ -26,19 +26,15 @@ import asyncio
 import hashlib
 import json
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from . import config
+from .config import now_iso as _now
 
 if TYPE_CHECKING:
     from .triggers.events import InboundEvent
     from .writing_agent import SourceWritingAgent, WritingResult
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def _key(source_ref: str | None, content_hash: str | None) -> str:

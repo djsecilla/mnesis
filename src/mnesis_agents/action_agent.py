@@ -39,11 +39,11 @@ import json
 import re
 import tempfile
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 from . import config
+from .config import now_iso as _now
 from .action_gate import ActionGate
 from .audit import AgentAuditLog
 from .categories.action import ActionAgent
@@ -63,10 +63,6 @@ if TYPE_CHECKING:
 READ_TOOLS: frozenset[str] = frozenset(
     {"mnesis_query", "mnesis_get", "mnesis_entity", "mnesis_impact"}
 )
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def _proposal_status_to_action(status: str) -> str:
@@ -106,23 +102,26 @@ class _DedupStore:
         self.path = Path(path)
         self._lock = path_lock(self.path)
 
+    def _load(self) -> dict[str, str]:
+        if not self.path.is_file():
+            return {}
+        return json.loads(self.path.read_text(encoding="utf-8") or "{}")
+
+    def _atomic_write(self, data: dict[str, str]) -> None:
+        tmp = self.path.with_suffix(self.path.suffix + ".tmp")
+        tmp.write_text(json.dumps(data), encoding="utf-8")
+        tmp.replace(self.path)
+
     def get(self, key: str) -> str | None:
         with self._lock:
-            if not self.path.is_file():
-                return None
-            data = json.loads(self.path.read_text(encoding="utf-8") or "{}")
-        return data.get(key)
+            return self._load().get(key)
 
     def put(self, key: str, proposal_id: str) -> None:
         with self._lock:
-            data = {}
-            if self.path.is_file():
-                data = json.loads(self.path.read_text(encoding="utf-8") or "{}")
+            data = self._load()
             data[key] = proposal_id
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self.path.with_suffix(self.path.suffix + ".tmp")
-            tmp.write_text(json.dumps(data), encoding="utf-8")
-            tmp.replace(self.path)
+            self._atomic_write(data)
 
 
 class GroundedActionAgent(ActionAgent):

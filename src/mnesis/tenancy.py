@@ -37,7 +37,6 @@ import subprocess
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import asdict, dataclass, replace
-from datetime import datetime, timezone
 from pathlib import Path
 
 from . import config
@@ -62,10 +61,6 @@ class PathEscapeError(TenancyError, ValueError):
 
 class NoTenantContextError(TenancyError, RuntimeError):
     """The store was reached with no active TenantContext bound at the boundary."""
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
 def validate_tenant_id(tenant_id: str) -> str:
@@ -179,7 +174,7 @@ class TenantRegistry:
         existing = tenants.get(tenant_id)
         if existing is not None:
             return existing
-        tenant = Tenant(tenant_id=tenant_id, name=name or tenant_id, status="active", created=_now_iso())
+        tenant = Tenant(tenant_id=tenant_id, name=name or tenant_id, status="active", created=config.now_iso())
         tenants[tenant_id] = tenant
         self._save(tenants)
         return tenant

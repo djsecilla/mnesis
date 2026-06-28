@@ -84,6 +84,12 @@ class _SentStore:
         except Exception:  # noqa: BLE001
             return {}
 
+    def _atomic_write(self, data: dict[str, str]) -> None:
+        """Write ``data`` to the ledger atomically (tmp + replace)."""
+        tmp = self.path.with_suffix(self.path.suffix + ".tmp")
+        tmp.write_text(json.dumps(data), encoding="utf-8")
+        tmp.replace(self.path)
+
     def state(self, key: str) -> str | None:
         with self._lock:
             return self._load().get(key)
@@ -93,17 +99,13 @@ class _SentStore:
             data = self._load()
             data[key] = state
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self.path.with_suffix(self.path.suffix + ".tmp")
-            tmp.write_text(json.dumps(data), encoding="utf-8")
-            tmp.replace(self.path)
+            self._atomic_write(data)
 
     def delete(self, key: str) -> None:
         with self._lock:
             data = self._load()
             if data.pop(key, None) is not None:
-                tmp = self.path.with_suffix(self.path.suffix + ".tmp")
-                tmp.write_text(json.dumps(data), encoding="utf-8")
-                tmp.replace(self.path)
+                self._atomic_write(data)
 
 
 # ── Default SMTP/TLS transport ──────────────────────────────────────────────

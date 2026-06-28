@@ -35,16 +35,12 @@ import threading
 from abc import abstractmethod
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 
+from ..config import now_iso as _now
 from .events import EventTrigger, InboundEvent
 
 log = logging.getLogger("mnesis_agents.connector")
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 # A per-file lock so concurrent threads (the W4 bounded-concurrency batch runs the

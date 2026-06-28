@@ -21,19 +21,15 @@ from __future__ import annotations
 import json
 import os
 import shutil
-from datetime import datetime, timezone
 from pathlib import Path
 
 from . import auth, config, tenancy
 from .auth import CredentialStore, Principal, is_system_admin
+from .config import now_iso as _now_iso  # local alias keeps call sites unchanged
 
 
 class AdminAccessError(Exception):
     """A non-system-admin attempted a tenant-lifecycle operation (fail closed)."""
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
 def require_admin(principal: Principal | None) -> Principal:

@@ -21,7 +21,20 @@ Conventions (see CLAUDE.md §3):
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 from pathlib import Path
+
+
+def now_iso() -> str:
+    """Current UTC time as an ISO 8601 string (microsecond precision, Z suffix).
+
+    Defined here — the leaf of the import graph — so every module that needs a
+    timestamp (tenancy, auth, admin, store, …) can import it without creating
+    cycles.  ``store.now_iso`` re-exports this for callers that already import
+    from ``store``.
+    """
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
 
 # Repository root: this file is src/mnesis/config.py, so the root is three
 # parents up (config.py -> mnesis -> src -> repo root).

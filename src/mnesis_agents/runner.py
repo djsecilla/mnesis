@@ -13,17 +13,13 @@ import logging
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 
+from .config import now_iso as _now
 from .registry import AgentRegistry
 from .triggers.events import EventTrigger, InboundEvent
 from .triggers.schedule import AsyncIntervalScheduler
 
 log = logging.getLogger("mnesis_agents.runner")
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 @dataclass
