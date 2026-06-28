@@ -38,22 +38,22 @@ is the intended design.
 
 ## Table of contents
 
-1. [What you get](#what-you-get)
-2. [How it works](#how-it-works) — the mental model
-3. [Quickstart](#quickstart)
-4. [Using the CLI](#using-the-cli)
-5. [The three surfaces](#the-three-surfaces) — CLI · MCP · Web UI
-6. [The agent layer](#the-langgraph-agent-foundation) — multi-LLM agents: the maintenance **dream cycle**, the notes-inbox **writing agent**, and the approval-gated **action agent**
-7. [Multitenancy](#multitenancy) — isolation by construction, the admin boundary, quotas
-8. [Running with Docker](#running-with-docker)
-9. [Making the most of mnesis](#making-the-most-of-mnesis) — best practices
-10. [Configuration reference](#configuration-reference)
-11. [Verify it works](#verify-it-works) — guided demos
-12. [Project layout & scope](#project-layout--scope)
+1. [What you get](#1-what-you-get)
+2. [How it works](#2-how-it-works) — the mental model
+3. [Quickstart](#3-quickstart)
+4. [Using the CLI](#4-using-the-cli)
+5. [The three surfaces](#5-the-three-surfaces) — CLI · MCP · Web UI
+6. [The agent layer](#6-the-langgraph-agent-foundation) — multi-LLM agents: the maintenance **dream cycle**, the notes-inbox **writing agent**, and the approval-gated **action agent**
+7. [Multitenancy](#7-multitenancy) — isolation by construction, the admin boundary, quotas
+8. [Running with Docker](#8-running-with-docker)
+9. [Making the most of mnesis](#9-making-the-most-of-mnesis) — best practices
+10. [Configuration reference](#10-configuration-reference)
+11. [Verify it works](#11-verify-it-works) — guided demos
+12. [Project layout & scope](#12-project-layout--scope)
 
 ---
 
-## What you get
+## 1. What you get
 
 | Capability | What it means |
 |---|---|
@@ -72,7 +72,7 @@ is the intended design.
 
 ---
 
-## How it works
+## 2. How it works
 
 This section is the mental model. If you read one thing, read this.
 
@@ -83,7 +83,7 @@ each a YAML-frontmatter document tracked in git. The SQLite **search index** and
 **knowledge graph** under that tenant's `.cache/` are *rebuildable caches* — pure
 projections of the Markdown that `mnesis rebuild` can reconstruct at any time.
 Delete them and rebuild; you lose nothing canonical. (Every tenant has its own
-`pages/`, git repo, and `.cache/` — see [Multitenancy](#multitenancy).)
+`pages/`, git repo, and `.cache/` — see [Multitenancy](#7-multitenancy).)
 
 The one deliberate exception is the **state store** (`.cache/state.db`):
 access history (how often/recently a page was read) and the contradiction review
@@ -191,7 +191,7 @@ as a page now does.
 
 ---
 
-## Quickstart
+## 3. Quickstart
 
 **Prerequisites:** Python 3.11+ with a `sqlite3` compiled with **FTS5** (uv-managed
 and python.org CPython builds have it), **[uv](https://docs.astral.sh/uv/)**, and
@@ -238,11 +238,11 @@ make docker-seed              # ingest the bundled sample sources (offline)
 Point an MCP client (e.g. Claude Code) at it — this repo ships [`.mcp.json`](.mcp.json)
 for the local stdio server, or connect over HTTP (see [the MCP surface](#mcp-server-for-agents)).
 This runs as the single `default` tenant; to serve multiple isolated tenants, see
-[Multitenancy](#multitenancy).
+[Multitenancy](#7-multitenancy).
 
 ### 4. Add the agents (optional)
 
-The [LangGraph agent layer](#the-langgraph-agent-foundation) installs alongside the
+The [LangGraph agent layer](#6-the-langgraph-agent-foundation) installs alongside the
 core and reaches Mnesis **only over MCP**. It needs no keys for the offline stub:
 
 ```bash
@@ -256,13 +256,13 @@ make docker-cli ARGS='query "<phrase>"'  # …and queryable
 ```
 
 What each agent does, and how to drive it (run a dream cycle, feed the inbox,
-propose/approve an action) is in [The LangGraph agent foundation](#the-langgraph-agent-foundation).
+propose/approve an action) is in [The LangGraph agent foundation](#6-the-langgraph-agent-foundation).
 For a fully on-prem run (no external calls), set `MNESIS_LLM_PROVIDER=local`
 ([details](#local-first-inference-nothing-leaves-the-box)).
 
 ---
 
-## Using the CLI
+## 4. Using the CLI
 
 The `mnesis` command (installed by `make setup`; prefix with `uv run` if the venv
 isn't active) is the full-power surface for humans, scripts, and maintenance.
@@ -311,7 +311,7 @@ mnesis graph-lint --fix                   # consistency check; --fix applies the
 
 By default everything above runs against the single `default` tenant — no setup
 needed. To run multi-tenant, a **system admin** manages the tenant lifecycle and
-issues per-tenant credentials (see [Multitenancy](#multitenancy)):
+issues per-tenant credentials (see [Multitenancy](#7-multitenancy)):
 
 ```bash
 mnesis migrate-tenants                     # move an existing single-store layout into tenants/default/
@@ -334,7 +334,7 @@ With auth on (`MNESIS_AUTH_ENABLED=1`), tenant-scoped data ops authenticate via
 
 ---
 
-## The three surfaces
+## 5. The three surfaces
 
 The same core (`mnesis.*`) is reached three ways; all share the canonical store,
 none has private state.
@@ -406,7 +406,7 @@ endpoint can modify knowledge). When clients reach the server by a name other
 than localhost (e.g. behind Docker), list it in `MNESIS_MCP_ALLOWED_HOSTS`. With
 **`MNESIS_AUTH_ENABLED=1`** the bearer is instead a **per-tenant credential** that
 resolves to a tenant + principal, and every tool runs scoped to it
-([Multitenancy](#multitenancy)).
+([Multitenancy](#7-multitenancy)).
 
 ```bash
 claude mcp add mnesis --transport http http://<host>:8080/mcp \
@@ -437,7 +437,7 @@ bearer token (nginx injects it server-side).
 
 ---
 
-## The LangGraph agent foundation
+## 6. The LangGraph agent foundation
 
 The **LangGraph-based** agent foundation (`mnesis_agents`) is the substrate
 concrete agents are built on. It is **multi-LLM from the ground up** and reaches
@@ -761,7 +761,7 @@ egress stops at once.
 
 ---
 
-## Multitenancy
+## 7. Multitenancy
 
 mnesis is **multitenant from the data layer up**, and isolation is **by
 construction** — not a filter that can be forgotten. A single-tenant deployment runs
@@ -887,7 +887,7 @@ is [`CLAUDE.md` §16](CLAUDE.md).
 
 ---
 
-## Running with Docker
+## 8. Running with Docker
 
 A containerized stack — no Python/uv needed on the host. See
 [`docs/OPS.md`](docs/OPS.md) for backup/restore and operations.
@@ -913,7 +913,7 @@ docker compose --profile agents up -d         # the agent runtime: dream cycle +
 ```
 
 The agent runtime (`--profile agents`) is covered in
-[The LangGraph agent foundation](#the-langgraph-agent-foundation) — drop a note in
+[The LangGraph agent foundation](#6-the-langgraph-agent-foundation) — drop a note in
 `./notes_inbox` to ingest it, run a dream cycle, or propose/approve an action.
 
 > The old `--profile maintenance` upkeep sidecar is **retired** — periodic decay /
@@ -943,7 +943,7 @@ docker compose --profile agents up -d
 
 ---
 
-## Making the most of mnesis
+## 9. Making the most of mnesis
 
 mnesis rewards a few habits. These turn it from "a place to dump notes" into a
 memory that genuinely compounds — and a set of agents you can trust to run
@@ -1047,7 +1047,7 @@ append-only audit (`mnesis_agents_runs/`, ids/statuses only — never secrets).
 
 ---
 
-## Configuration reference
+## 10. Configuration reference
 
 All settings are environment variables with sensible defaults; copy
 [`.env.example`](.env.example) to `.env` to customise. The most useful ones:
@@ -1056,7 +1056,7 @@ All settings are environment variables with sensible defaults; copy
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `MNESIS_ROOT` | `./wiki` | The **data root**: holds the tenant registry, credential store, and `tenants/<id>/` — not itself a store ([Multitenancy](#multitenancy)). |
+| `MNESIS_ROOT` | `./wiki` | The **data root**: holds the tenant registry, credential store, and `tenants/<id>/` — not itself a store ([Multitenancy](#7-multitenancy)). |
 | `MNESIS_LLM_PROVIDER` | `anthropic` | `anthropic` or `local` (Ollama / OpenAI-compatible). |
 | `MNESIS_LLM_MODEL` | `claude-sonnet-4-6` | Extraction model (an Ollama tag when `provider=local`). |
 | `MNESIS_LLM_BASE_URL` | `http://localhost:11434` | Local model endpoint (used when `provider=local`). |
@@ -1084,7 +1084,7 @@ class, weights, auto-resolve margin, stale thresholds) — all env-overridable; 
 
 ### Multitenancy & auth
 
-Off by default (single-tenant `default`). See [Multitenancy](#multitenancy).
+Off by default (single-tenant `default`). See [Multitenancy](#7-multitenancy).
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -1112,7 +1112,7 @@ over MCP via `MNESIS_MCP_URL` (default `http://localhost:8080/mcp`) and
 | `MNESIS_AGENTS_CRYSTALLIZE` | unset | `1` files a concise digest of each dream cycle back into Mnesis (meta-memory). Off by default. |
 | `MNESIS_AGENTS_PROPOSALS_DIR` | = audit dir | Where the proposals queue + persisted reports live (gitignored). |
 | `MNESIS_AGENTS_AUDIT_DIR` | `./mnesis_agents_runs` | Append-only JSONL run audit (names/statuses/ids only). |
-| `MNESIS_AGENTS_TENANTS_FILE` | unset | A JSON list of `{tenant_id, credential, …}` — the runner then hosts **one set of agents per tenant**, each confined to its tenant ([Multitenancy](#multitenancy)). Unset = single-tenant from `MNESIS_MCP_TOKEN`. |
+| `MNESIS_AGENTS_TENANTS_FILE` | unset | A JSON list of `{tenant_id, credential, …}` — the runner then hosts **one set of agents per tenant**, each confined to its tenant ([Multitenancy](#7-multitenancy)). Unset = single-tenant from `MNESIS_MCP_TOKEN`. |
 | `MNESIS_AGENTS_STATE_BASE` | = audit dir | Base for per-tenant agent governance state (`<base>/tenants/<id>/`). |
 | `MNESIS_AGENTS_CHECKPOINT_BACKEND` / `…_DB` | `sqlite` / `./mnesis_agents.checkpoints.db` | LangGraph checkpointer (resumable threads). |
 | `MNESIS_AGENTS_MAX_TOOL_CALLS` / `…_WALLCLOCK_SECONDS` | `50` / `300` | Default per-run governance budgets. |
@@ -1144,7 +1144,7 @@ store, never the compose file or image**. Enable a real send through the
 
 ---
 
-## Verify it works
+## 11. Verify it works
 
 Each phase ships a self-contained, offline demo. Run them top to bottom on a
 fresh clone.
@@ -1186,7 +1186,7 @@ rebuildable cache — asserted by `tests/test_phase3_e2e.py`.
 
 ---
 
-## Project layout & scope
+## 12. Project layout & scope
 
 ```
 src/mnesis/          the core: store · filters · ingest · search · graph · confidence ·
