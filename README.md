@@ -76,7 +76,7 @@ is the intended design.
 
 This section is the mental model. If you read one thing, read this.
 
-### 1. Markdown is the source of truth; everything else is a cache
+### 2.1 Markdown is the source of truth; everything else is a cache
 
 The canonical knowledge is a directory of Markdown pages (each tenant's `pages/`),
 each a YAML-frontmatter document tracked in git. The SQLite **search index** and the
@@ -91,7 +91,7 @@ queue. It is *not* derivable from Markdown and is never cleared by a rebuild —
 losing it is survivable but lossy (confidence simply degrades to its
 Markdown-only value).
 
-### 2. The ingest pipeline
+### 2.2 The ingest pipeline
 
 When you ingest a source, mnesis runs a disciplined pipeline:
 
@@ -110,7 +110,7 @@ When you ingest a source, mnesis runs a disciplined pipeline:
 An offline **stub** produces deterministic output when no API key is present (or
 `MNESIS_LLM_STUB=1`), so tests and demos never touch the network.
 
-### 3. Pages: facts, digests, notes
+### 2.3 Pages: facts, digests, notes
 
 Every page is one of three **kinds**:
 
@@ -125,7 +125,7 @@ A page also has a **status**: `active` (participates fully) or `stale`
 (deprioritised — demoted in search, never deleted; reversible). Pages are never
 hard-deleted; mnesis prefers `stale` over destruction.
 
-### 4. Confidence and decay
+### 2.4 Confidence and decay
 
 Confidence is a value in `[0, 1]` that is **computed, never hand-set**. It rises
 with **corroboration** (more independent sources) and **recency**, and falls as a
@@ -139,7 +139,7 @@ aged, unread, low-confidence pages to `stale` (and can revive them on
 reinforcement). You never edit confidence — you feed sources and read pages, and
 the number follows.
 
-### 5. The relation-aware lifecycle
+### 2.5 The relation-aware lifecycle
 
 Ingest doesn't blindly create pages. It classifies new information against
 existing ones and routes it:
@@ -157,7 +157,7 @@ Conflicts are *flagged, not silently resolved*. `mnesis review` lists open
 contradictions; `mnesis resolve` settles one by keeping a page and superseding
 the other — always via the audited supersession path, never an ad-hoc edit.
 
-### 6. The knowledge graph
+### 2.6 The knowledge graph
 
 Ingest also extracts **entities** (`type:value` tags like `project:atlas`,
 `library:redis`, `person:sarah`) and **typed relations** (`{s, p, o}` triples
@@ -172,7 +172,7 @@ by chaining edges across pages. Retrieval is graph-augmented: a query that
 resolves to an entity folds in graph-reachable pages, each shown with the edge
 that connects it.
 
-### 7. Retrieval
+### 2.7 Retrieval
 
 Search is **BM25 keyword matching blended with confidence**
 (`final = bm25_norm × (0.5 + 0.5 × confidence)`), over `(id, title, tags, body)`
@@ -181,7 +181,7 @@ resolves to an entity. Stale pages are excluded unless explicitly requested and
 never outrank a comparable active page. Reading the top hits records access (the
 gentle reinforcement above).
 
-### 8. The compounding step
+### 2.8 The compounding step
 
 `mnesis file-back` is what makes the loop *compound*. When an answer clears a
 quality threshold, it is written as a `digest` page — so the next time anyone (or
@@ -199,7 +199,7 @@ and python.org CPython builds have it), **[uv](https://docs.astral.sh/uv/)**, an
 runs fully offline with the deterministic stub. Docker is optional (for the web UI
 and the agent runtime).
 
-### 1. Install the core and check it
+### 3.1 Install the core and check it
 
 ```bash
 make setup        # uv venv && uv pip install -e .
@@ -207,7 +207,7 @@ make test         # full suite, offline (expect: all passing)
 make demo         # the end-to-end compounding-loop demo, offline
 ```
 
-### 2. Try the compounding loop yourself
+### 3.2 Try the compounding loop yourself
 
 In a throwaway location, so your clone stays clean:
 
@@ -227,7 +227,7 @@ unset MNESIS_ROOT MNESIS_LLM_STUB
 The wiki lives under `./wiki` by default (override with `MNESIS_ROOT`).
 `make help` lists every target.
 
-### 3. Run it as a stack (web UI + MCP for agents)
+### 3.3 Run it as a stack (web UI + MCP for agents)
 
 ```bash
 cp .env.example .env          # set MNESIS_MCP_TOKEN (recommended); keys optional
@@ -236,11 +236,11 @@ make docker-seed              # ingest the bundled sample sources (offline)
 ```
 
 Point an MCP client (e.g. Claude Code) at it — this repo ships [`.mcp.json`](.mcp.json)
-for the local stdio server, or connect over HTTP (see [the MCP surface](#mcp-server-for-agents)).
+for the local stdio server, or connect over HTTP (see [the MCP surface](#52-mcp-server-for-agents)).
 This runs as the single `default` tenant; to serve multiple isolated tenants, see
 [Multitenancy](#7-multitenancy).
 
-### 4. Add the agents (optional)
+### 3.4 Add the agents (optional)
 
 The [LangGraph agent layer](#6-the-langgraph-agent-foundation) installs alongside the
 core and reaches Mnesis **only over MCP**. It needs no keys for the offline stub:
@@ -258,7 +258,7 @@ make docker-cli ARGS='query "<phrase>"'  # …and queryable
 What each agent does, and how to drive it (run a dream cycle, feed the inbox,
 propose/approve an action) is in [The LangGraph agent foundation](#6-the-langgraph-agent-foundation).
 For a fully on-prem run (no external calls), set `MNESIS_LLM_PROVIDER=local`
-([details](#local-first-inference-nothing-leaves-the-box)).
+([details](#82-local-first-inference-nothing-leaves-the-box)).
 
 ---
 
@@ -267,7 +267,7 @@ For a fully on-prem run (no external calls), set `MNESIS_LLM_PROVIDER=local`
 The `mnesis` command (installed by `make setup`; prefix with `uv run` if the venv
 isn't active) is the full-power surface for humans, scripts, and maintenance.
 
-### Core verbs
+### 4.1 Core verbs
 
 ```bash
 # INGEST a source (a file, or - for stdin). --ref sets the provenance id.
@@ -289,7 +289,7 @@ mnesis list                               # all pages with status + confidence
 mnesis rebuild                            # reconstruct the search index + graph from Markdown
 ```
 
-### Lifecycle (confidence, decay, contradictions)
+### 4.2 Lifecycle (confidence, decay, contradictions)
 
 ```bash
 mnesis decay                              # recompute confidence; age unread, low-confidence pages → stale
@@ -297,7 +297,7 @@ mnesis review                             # list open contradiction reviews
 mnesis resolve <review_id> --keep <page_id>   # keep one page, supersede the other
 ```
 
-### Knowledge graph
+### 4.3 Knowledge graph
 
 ```bash
 mnesis entity library:redis               # type, declaring pages, typed edges
@@ -307,7 +307,7 @@ mnesis graph-stats                        # node/edge counts by type and predica
 mnesis graph-lint --fix                   # consistency check; --fix applies the safe auto-fixes
 ```
 
-### Tenants, credentials & admin (multitenancy)
+### 4.4 Tenants, credentials & admin (multitenancy)
 
 By default everything above runs against the single `default` tenant — no setup
 needed. To run multi-tenant, a **system admin** manages the tenant lifecycle and
@@ -365,11 +365,11 @@ CLI is instantly visible to the Web UI and to agents; the only difference betwee
 surfaces is who calls and how. The agent layer is a **client** of the MCP surface, not
 a fourth surface.
 
-### CLI
+### 5.1 CLI
 
 For humans, scripts, and maintenance — the full command set above.
 
-### MCP server (for agents)
+### 5.2 MCP server (for agents)
 
 mnesis exposes **17 tools** over MCP:
 
@@ -384,7 +384,7 @@ mnesis exposes **17 tools** over MCP:
 
 These are the same internals the CLI and Web UI use, behind the same authenticated
 endpoint — and the surface the scheduled [maintenance dream
-cycle](#maintenance-agents-the-dream-cycle) drives.
+cycle](#61-maintenance-agents-the-dream-cycle) drives.
 
 **Local (stdio), zero config.** This repo ships [`.mcp.json`](.mcp.json), so
 running `claude` from the project root auto-discovers the server (approve it, then
@@ -413,7 +413,7 @@ claude mcp add mnesis --transport http http://<host>:8080/mcp \
   --header "Authorization: Bearer $MNESIS_MCP_TOKEN"
 ```
 
-### Web UI (for humans, in the browser)
+### 5.3 Web UI (for humans, in the browser)
 
 A plain `docker compose up` brings up **`mnesis-ui`** — a static nginx app that
 reverse-proxies the REST + SSE gateway (`/api`) to the core. After
@@ -443,9 +443,9 @@ The **LangGraph-based** agent foundation (`mnesis_agents`) is the substrate
 concrete agents are built on. It is **multi-LLM from the ground up** and reaches
 Mnesis **only over MCP**. The base, the category abstractions, the runtime, and
 **three concrete agents** — the scheduled
-[dream-cycle `MaintenanceAgent`](#maintenance-agents-the-dream-cycle), the
-event-triggered [notes-inbox `WritingAgent`](#writing-agents--the-notesmarkdown-inbox),
-and the [approval-gated `ActionAgent`](#action-agents-approval-gated)
+[dream-cycle `MaintenanceAgent`](#61-maintenance-agents-the-dream-cycle), the
+event-triggered [notes-inbox `WritingAgent`](#62-writing-agents--the-notesmarkdown-inbox),
+and the [approval-gated `ActionAgent`](#63-action-agents-approval-gated)
 — exist today.
 
 ```mermaid
@@ -536,7 +536,7 @@ dead-letter on volumes, and — with `MNESIS_LLM_PROVIDER=local` in `.env` — k
 the **whole** stack (Mnesis + agents + model) on the host's Ollama, no external
 inference.
 
-### Maintenance agents (the dream cycle)
+### 6.1 Maintenance agents (the dream cycle)
 
 The **dream-cycle `MaintenanceAgent`** is a scheduled, deterministic curation
 sweep that keeps Mnesis healthy. It reaches Mnesis **only over MCP** and is
@@ -571,7 +571,7 @@ make dream-report     # show the latest dream-cycle report
 scripts/smoke_dream_cycle.sh   # real-stack smoke (shortened cadence)
 ```
 
-### Writing agents — the notes/Markdown inbox
+### 6.2 Writing agents — the notes/Markdown inbox
 
 The second concrete agent is a **writing agent**: it watches a folder and ingests
 notes into Mnesis. It is the cleanest instance of a reusable **source-connector
@@ -604,7 +604,7 @@ make docker-cli ARGS='query "<phrase from the note>"'   # …and queryable
 scripts/smoke_notes_inbox.sh                # real-stack smoke: ingest, redact, dedup, dead-letter
 ```
 
-#### Extension recipe — adding a new source (email, chat, docs)
+#### 6.2.1 Extension recipe — adding a new source (email, chat, docs)
 
 The pipeline is built so a **new source is three small, isolated additions** and
 **nothing else changes** — not the agent, not the runtime, not Mnesis:
@@ -621,7 +621,7 @@ The pipeline is built so a **new source is three small, isolated additions** and
 The `WritingAgent`, governance, dedup/retry/dead-letter, on-demand command, audit,
 and deployment all work unchanged. That is the whole point of the pattern.
 
-### Action agents (approval-gated)
+### 6.3 Action agents (approval-gated)
 
 The third concrete agent **acts on** Mnesis knowledge. By default it composes a
 grounded, cited artifact and **proposes** delivering it to an **inert draft file** —
@@ -687,7 +687,7 @@ agents actions show <id>                                # dry-run preview + the 
 agents actions approve <id> --confirm-recipient ops@example.com   # send (or dry-run) exactly once
 ```
 
-#### Extension recipe — a new action, and (only if needed) a new channel
+#### 6.3.1 Extension recipe — a new action, and (only if needed) a new channel
 
 - **A new action** (e.g. a daily digest, a status note) = a `compose-<action>`
   **skill** + one `MNESIS_AGENTS_ACTION_SKILLS` entry. It reuses the same agent,
@@ -699,7 +699,7 @@ agents actions approve <id> --confirm-recipient ops@example.com   # send (or dry
   and gate need **no change**. This is the *only* way an external effect can ever be
   introduced — explicitly, gated, and opt-in.
 
-### External send (email) — the control plane & staged rollout
+### 6.4 External send (email) — the control plane & staged rollout
 
 The email channel is the **first and only** mechanism that can send to a third
 party, and it is built to be safe by construction. **Out of the box it is fully
@@ -798,7 +798,7 @@ caches). There is no shared store to leak through, so A's credential can never r
 B's data. Only metadata (which tenants exist, hashed credentials, the lifecycle audit)
 sits at the data root, managed by a system-admin who is not a member of any tenant.
 
-### Isolation by construction
+### 7.1 Isolation by construction
 
 Each tenant's canonical store is a **physically separate directory with its own git
 repo**, and its rebuildable caches (search index, graph, state) are separate DB
@@ -819,7 +819,7 @@ root. So search, graph traversal, impact, and rebuild for tenant A simply cannot
 reach B's pages, entities, or edges: cross-tenant access is *structurally
 impossible*, proven end-to-end across the CLI, MCP, Web UI, and the agents.
 
-### Tenant from the credential only
+### 7.2 Tenant from the credential only
 
 A request's tenant is derived **solely from its verified credential** — never from a
 request body, header, path, or content. Turn on credential auth with
@@ -828,7 +828,7 @@ role}`, and an absent/invalid/expired/revoked/suspended credential is **denied**
 (fail closed, no default-tenant fallback). A forged or extra tenant id in a request
 is ignored — the credential wins.
 
-### Within-tenant visibility
+### 7.3 Within-tenant visibility
 
 Inside a tenant, pages carry an owner + a visibility (`shared` = everyone in the
 tenant; `private` = owner-only, plus admins). Filtering is applied in the
@@ -836,7 +836,7 @@ data/query layer (search, graph, get, ingest), so a private page never leaks thr
 *any* surface — not the page reader, search, graph, chat, or sources. Writes respect
 role: `admin`/`member`/`agent` may write, `readonly` may not.
 
-### The admin boundary
+### 7.4 The admin boundary
 
 Tenant **lifecycle** is managed only by a **system admin** — a principal distinct
 from every tenant principal (a tenant `admin` is an admin *within its tenant*, never
@@ -858,7 +858,7 @@ mnesis admin delete  acme --confirm acme           # remove data + credentials +
 A tenant principal can never run these — `mnesis admin …` requires a system-admin
 credential, and the lifecycle functions refuse anyone else.
 
-### Quotas
+### 7.5 Quotas
 
 Per-tenant `max_pages` / `max_bytes` (config defaults `MNESIS_TENANT_MAX_*`, or a
 per-tenant override) are enforced **fail-closed at ingest**: an over-quota write is
@@ -866,7 +866,7 @@ refused with a clear `not ingested: page quota exceeded …` rather than silentl
 dropped. Quotas bound a tenant only within its own root, so one tenant can never
 exhaust another's capacity.
 
-### Per-tenant agents
+### 7.6 Per-tenant agents
 
 The agent layer is multitenant too: with `MNESIS_AGENTS_TENANTS_FILE` set (a JSON
 list of `{tenant_id, credential, …}`), the runner hosts **one set of agents per
@@ -875,7 +875,7 @@ its governance state (run audit, proposals, dead-letter, egress allowlist/quotas
 send-audit) under its own directory. A tenant without a resolvable credential won't
 start (fail closed).
 
-### Migration & deployment
+### 7.7 Migration & deployment
 
 An existing single-store layout migrates into `tenants/default/` automatically on
 first use (or `mnesis migrate-tenants`) — non-destructive and idempotent, preserving
@@ -906,7 +906,7 @@ The data (pages, sources, `.git`, `state.db`) lives on the `mnesis-data` volume
 and survives `docker compose down`; only `down -v` wipes it. The web UI is on
 **http://localhost:3000** (`MNESIS_UI_PORT`).
 
-### Optional profiles (not started by a plain `up`)
+### 8.1 Optional profiles (not started by a plain `up`)
 
 ```bash
 docker compose --profile agents up -d         # the agent runtime: dream cycle + notes inbox + action agent
@@ -919,7 +919,7 @@ The agent runtime (`--profile agents`) is covered in
 > The old `--profile maintenance` upkeep sidecar is **retired** — periodic decay /
 > graph-lint is now owned solely by the dream-cycle agent (`--profile agents`).
 
-### Local-first inference (nothing leaves the box)
+### 8.2 Local-first inference (nothing leaves the box)
 
 For a fully on-prem deployment — **no external inference calls** — point both
 mnesis and the agent at a local model you run on the host (your own Ollama or any
@@ -949,7 +949,7 @@ mnesis rewards a few habits. These turn it from "a place to dump notes" into a
 memory that genuinely compounds — and a set of agents you can trust to run
 unattended.
 
-### The knowledge layer
+### 9.1 The knowledge layer
 
 **Write sources as declarative, single claims.** The extractor produces the best
 pages from text that states *one* clear thing. "Project Atlas uses Redis for
@@ -997,10 +997,10 @@ durable, must-back-up layer is the **git history** (pages + sources) plus
 deleting the state store loses access history and open reviews. (The agent runtimes
 hold **no** canonical state — see [`docs/OPS.md`](docs/OPS.md).)
 
-### The agentic layer
+### 9.2 The agentic layer
 
 **Let the agents do the upkeep — and review what they propose.** The scheduled
-[dream cycle](#maintenance-agents-the-dream-cycle) auto-applies only *safe hygiene*
+[dream cycle](#61-maintenance-agents-the-dream-cycle) auto-applies only *safe hygiene*
 (decay, safe graph fixes) and turns every meaning-changing op into a **proposal**.
 Don't expect it to resolve contradictions or merge duplicates on its own — skim
 the proposals queue (the Web review screen, or `proposals.jsonl`) and apply the
@@ -1008,14 +1008,14 @@ ones you agree with. That split — auto for hygiene, propose for meaning — is
 whole point.
 
 **Feed the inbox; trust the dead-letter.** Dropping notes into the
-[notes inbox](#writing-agents--the-notesmarkdown-inbox) is the low-friction way to
+[notes inbox](#62-writing-agents--the-notesmarkdown-inbox) is the low-friction way to
 get knowledge in. Ingestion is **idempotent** (re-dropping the same content is a
 no-op; an *edit* re-ingests and reinforces) and **resilient** (an unreadable or
 repeatedly-failing note is **dead-lettered with a reason**, never silently lost) —
 so check the dead-letter occasionally rather than worrying about each file.
 
 **Actions are proposals — read the draft before you approve.** The
-[action agent](#action-agents-approval-gated) composes a grounded,
+[action agent](#63-action-agents-approval-gated) composes a grounded,
 cited artifact and **proposes** it; **nothing happens until you approve at the
 gate**. Use that pause: read the draft (or the dry-run email preview), check the
 citations point at real pages, confirm the recipient *yourself*, then
@@ -1033,7 +1033,7 @@ proposal time. The bundled email channel (`risk_class=external`) is **always gat
 
 **Run on-prem when the corpus is sensitive.** Set `MNESIS_LLM_PROVIDER=local` and
 the whole stack — Mnesis, the agents, and the model — stays on your host
-([details](#local-first-inference-nothing-leaves-the-box)). The agents make **no**
+([details](#82-local-first-inference-nothing-leaves-the-box)). The agents make **no**
 model calls themselves and reach Mnesis **only over MCP**, and unless you opt into
 the email channel there is **no external network egress** at all.
 
@@ -1052,7 +1052,7 @@ append-only audit (`mnesis_agents_runs/`, ids/statuses only — never secrets).
 All settings are environment variables with sensible defaults; copy
 [`.env.example`](.env.example) to `.env` to customise. The most useful ones:
 
-### Core
+### 10.1 Core
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -1071,7 +1071,7 @@ Confidence, decay, and routing have many tunable constants (stability per decay
 class, weights, auto-resolve margin, stale thresholds) — all env-overridable; see
 [`CLAUDE.md` §8/§11](CLAUDE.md) and [`.env.example`](.env.example).
 
-### MCP server (HTTP transport)
+### 10.2 MCP server (HTTP transport)
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -1082,7 +1082,7 @@ class, weights, auto-resolve margin, stale thresholds) — all env-overridable; 
 | `MNESIS_MAX_UPLOAD_BYTES` | `2000000` | Max bytes accepted by the ingestion upload endpoints. |
 | `MNESIS_UI_PORT` | `3000` | Host port for the web UI. |
 
-### Multitenancy & auth
+### 10.3 Multitenancy & auth
 
 Off by default (single-tenant `default`). See [Multitenancy](#7-multitenancy).
 
@@ -1096,7 +1096,7 @@ Off by default (single-tenant `default`). See [Multitenancy](#7-multitenancy).
 | `MNESIS_CREDENTIAL` | unset | The **CLI**'s tenant credential for tenant-scoped data ops (its tenant overrides `--tenant`; refused when auth is on and unset). |
 | `MNESIS_ADMIN_CREDENTIAL` | unset | The **system-admin** token for `mnesis admin …` lifecycle ops (a tenant credential is refused). |
 
-### Agent layer (`mnesis-agents`)
+### 10.4 Agent layer (`mnesis-agents`)
 
 The provider switch is **shared with the core** — `MNESIS_LLM_PROVIDER` /
 `MNESIS_LLM_MODEL` select the model for both. The agent runtime connects to Mnesis
@@ -1139,7 +1139,7 @@ SMTP credentials (`MNESIS_SMTP_HOST` / `…_PORT` / `…_USERNAME` / `…_PASSWO
 (`MNESIS_EGRESS_*_RATE_LIMIT` / `…_DAILY_QUOTA`), and the send-audit path live in
 [`.env.example`](.env.example); the **password comes only from `.env`/your secret
 store, never the compose file or image**. Enable a real send through the
-[staged rollout](#external-send-email--the-control-plane--staged-rollout) /
+[staged rollout](#64-external-send-email--the-control-plane--staged-rollout) /
 [`docs/OPS.md`](docs/OPS.md).
 
 ---
@@ -1149,7 +1149,7 @@ store, never the compose file or image**. Enable a real send through the
 Each phase ships a self-contained, offline demo. Run them top to bottom on a
 fresh clone.
 
-### Phase 1 — the compounding loop (`make demo`)
+### 11.1 Phase 1 — the compounding loop (`make demo`)
 
 `make demo` prints six steps. Confirm:
 - **Step 2** shows `redactions: 1` and the saved source reads
@@ -1166,7 +1166,7 @@ identical search results (also asserted by the test suite):
 rm -f /tmp/mnesis-try/wiki/tenants/default/.cache/wiki.db && uv run env MNESIS_ROOT=/tmp/mnesis-try/wiki mnesis rebuild
 ```
 
-### Phase 2 — confidence & lifecycle (`make demo-phase2`)
+### 11.2 Phase 2 — confidence & lifecycle (`make demo-phase2`)
 
 Six steps demonstrate reinforce → supersede → confidence-blended search →
 contradiction queue/resolve → decay-to-stale. Confirm a reinforcing source bumps
@@ -1175,7 +1175,7 @@ the old page to **stale**, a low-margin conflict is **queued** until `resolve`,
 and `decay` ages an unread page to stale. Durable state (access counts + review
 queue) survives a cache rebuild — asserted by `tests/test_phase2_e2e.py`.
 
-### Phase 3 — knowledge graph (`make demo-phase3`)
+### 11.3 Phase 3 — knowledge graph (`make demo-phase3`)
 
 Confirm `rebuild` reports the graph it built (entities/edges + the active
 backend), `impact library:redis` returns **auth-migration (hop 1)** and **Atlas
