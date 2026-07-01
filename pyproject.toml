@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "anthropic",
+    "argon2-cffi",   # argon2id hashing for password credentials (identity core, IAM1)
     "httpx",
     "mcp",
     "python-frontmatter",
