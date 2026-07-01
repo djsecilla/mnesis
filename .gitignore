@@ -8,6 +8,8 @@ wiki/system_audit.jsonl
 wiki/auth_throttle.json
 wiki/reset_tokens.json
 wiki/auth_audit.jsonl
+wiki/tokens.json
+wiki/revocations.json
 .venv
 __pycache__/
 *.pyc

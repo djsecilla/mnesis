@@ -307,6 +307,35 @@ def reset_tokens_path() -> Path:
 def auth_audit_path() -> Path:
     return DATA_ROOT / AUTH_AUDIT_FILENAME
 
+# --- IAM3: session & token services -----------------------------------------
+# The runtime credential mechanics for the three surfaces (web sessions, CLI/
+# automation PATs, MCP agent keys). All tokens are opaque + hashed at rest
+# (tokens.py); these are the default lifetimes (seconds; 0 = no absolute expiry).
+
+#: Web session: idle timeout (sliding — reset on use) AND an absolute cap (hard
+#: deadline that rotation does NOT extend). Defaults: 30-min idle, 8-hour absolute.
+MNESIS_SESSION_IDLE_SECONDS: int = _env_int("MNESIS_SESSION_IDLE_SECONDS", 1800)
+MNESIS_SESSION_ABSOLUTE_SECONDS: int = _env_int("MNESIS_SESSION_ABSOLUTE_SECONDS", 28800)
+
+#: Personal Access Token default lifetime (CLI/automation). Default 90 days.
+MNESIS_PAT_DEFAULT_TTL: int = _env_int("MNESIS_PAT_DEFAULT_TTL", 7776000)
+
+#: Agent/machine API key default lifetime (MCP). Default 30 days; rotate before expiry.
+MNESIS_AGENT_KEY_DEFAULT_TTL: int = _env_int("MNESIS_AGENT_KEY_DEFAULT_TTL", 2592000)
+
+#: Runtime token store + the immediate-revocation ledger — OUTSIDE any tenant root,
+#: beside the credential store, gitignored (server-side state, not from Markdown).
+TOKENS_FILENAME: str = "tokens.json"
+REVOCATIONS_FILENAME: str = "revocations.json"
+
+
+def tokens_path() -> Path:
+    return DATA_ROOT / TOKENS_FILENAME
+
+
+def revocations_path() -> Path:
+    return DATA_ROOT / REVOCATIONS_FILENAME
+
 #: Global fallback for a new page's visibility (T4) when a tenant has not set its
 #: own default. ``shared`` (visible to all principals in the tenant) or ``private``
 #: (owner-only). Per-tenant override lives on the Tenant record (registry).
