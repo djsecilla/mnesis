@@ -5,6 +5,9 @@ wiki/tenants/
 wiki/registry.json
 wiki/credentials.json
 wiki/system_audit.jsonl
+wiki/auth_throttle.json
+wiki/reset_tokens.json
+wiki/auth_audit.jsonl
 .venv
 __pycache__/
 *.pyc

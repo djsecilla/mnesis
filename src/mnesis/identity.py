@@ -606,6 +606,37 @@ class IdentityStore:
         self._save(records)
         return raw, rec
 
+    def issue_system_admin_password(
+        self, principal_id: str, password: str, *, expires_at: float | None = None, name: str | None = None
+    ) -> CredentialRecord:
+        """Mint a **system-admin password** credential (IAM2 bootstrap) — argon2id at
+        rest, not tied to any tenant. No returned secret (the operator supplied it)."""
+        self._validate_principal_id(principal_id)
+        rec = CredentialRecord(
+            id=secrets.token_hex(8),
+            secret_hash=hash_password(password),
+            tenant_id=SYSTEM_TENANT,
+            principal_id=principal_id,
+            roles=(SYSTEM_ROLE,),
+            kind=HUMAN,
+            secret_type=SECRET_PASSWORD,
+            hash_algo=ALGO_ARGON2ID,
+            created=_now_iso(),
+            expires_at=expires_at,
+            name=name,
+        )
+        records = self._load()
+        records[rec.id] = rec
+        self._save(records)
+        return rec
+
+    def has_system_admin(self) -> bool:
+        """Whether any (active or not) system-admin credential exists — the bootstrap
+        guard reads this so it can never silently clobber an established root of trust."""
+        return any(
+            r.tenant_id == SYSTEM_TENANT and SYSTEM_ROLE in r.roles for r in self._load().values()
+        )
+
     # -- revoke / remove ------------------------------------------------------
     def revoke(self, credential_id: str) -> bool:
         """Revoke a credential by id (records ``revoked_at``). True if it transitioned."""
@@ -675,6 +706,34 @@ class IdentityStore:
             ):
                 return rec
         return None
+
+    def find_password_credential(
+        self, tenant_id: str, principal_id: str
+    ) -> CredentialRecord | None:
+        """The (single) password credential for ``(tenant, principal)``, if any —
+        regardless of active state (a reset may re-activate expiry). Used by the reset flow."""
+        for rec in self._load().values():
+            if (
+                rec.secret_type == SECRET_PASSWORD
+                and rec.tenant_id == tenant_id
+                and rec.principal_id == principal_id
+            ):
+                return rec
+        return None
+
+    def set_password(self, credential_id: str, new_password: str) -> CredentialRecord:
+        """Replace a password credential's secret (argon2id), in place. Used by the
+        reset / change-password flows. The old hash is overwritten, never logged."""
+        from dataclasses import replace
+
+        records = self._load()
+        rec = records.get(credential_id)
+        if rec is None or rec.secret_type != SECRET_PASSWORD:
+            raise AuthError(f"no password credential {credential_id!r} to update")
+        updated = replace(rec, secret_hash=hash_password(new_password), hash_algo=ALGO_ARGON2ID)
+        records[credential_id] = updated
+        self._save(records)
+        return updated
 
     def migrate(self) -> int:
         """Rewrite the store into the rich IAM1 schema, upgrading any legacy T3 rows.

@@ -261,6 +261,52 @@ MNESIS_AUTH_ENABLED: bool = os.environ.get("MNESIS_AUTH_ENABLED", "").strip().lo
 #: Read by auth.py; never logged. Empty is acceptable (tokens are high-entropy).
 MNESIS_AUTH_PEPPER: str = os.environ.get("MNESIS_AUTH_PEPPER", "")
 
+# --- IAM2: local password provider, brute-force throttling, reset flow -------
+# The pluggable identity providers (providers.py) resolve a Principal. The local
+# username/password provider uses argon2id (identity.py) and these knobs.
+
+#: Which identity provider the login boundary uses ("local" password today; an
+#: "oidc" seam stub ships as a documented placeholder). Provider-agnostic Principal.
+MNESIS_IDENTITY_PROVIDER: str = os.environ.get("MNESIS_IDENTITY_PROVIDER", "local")
+
+#: Password policy: minimum length. Kept simple + strong (argon2id + length); no
+#: forced-complexity theatre. An empty/whitespace or well-known weak password is refused.
+MNESIS_PASSWORD_MIN_LENGTH: int = _env_int("MNESIS_PASSWORD_MIN_LENGTH", 12)
+
+#: Brute-force protection (per-account AND per-IP). After MAX_FAILURES failures
+#: within FAILURE_WINDOW seconds the key is locked for LOCKOUT_SECONDS (with
+#: exponential backoff on continued failures). 0 disables that dimension.
+MNESIS_AUTH_MAX_FAILURES: int = _env_int("MNESIS_AUTH_MAX_FAILURES", 5)
+MNESIS_AUTH_FAILURE_WINDOW: int = _env_int("MNESIS_AUTH_FAILURE_WINDOW", 900)
+MNESIS_AUTH_LOCKOUT_SECONDS: int = _env_int("MNESIS_AUTH_LOCKOUT_SECONDS", 300)
+MNESIS_AUTH_LOCKOUT_MAX_SECONDS: int = _env_int("MNESIS_AUTH_LOCKOUT_MAX_SECONDS", 3600)
+
+#: Password-reset token lifetime (seconds). Tokens are single-use and hashed at rest.
+MNESIS_RESET_TOKEN_TTL: int = _env_int("MNESIS_RESET_TOKEN_TTL", 3600)
+
+#: An optional operator-supplied password for the first-run system-admin bootstrap.
+#: There is NO default/hardcoded credential — bootstrap requires operator input
+#: (this env var or the CLI --password flag / prompt). Never logged.
+MNESIS_BOOTSTRAP_PASSWORD: str | None = os.environ.get("MNESIS_BOOTSTRAP_PASSWORD") or None
+
+#: Auxiliary auth state — all OUTSIDE any tenant root, beside the credential store,
+#: and gitignored. Not derivable from Markdown (like the credential store itself).
+THROTTLE_FILENAME: str = "auth_throttle.json"
+RESET_TOKENS_FILENAME: str = "reset_tokens.json"
+AUTH_AUDIT_FILENAME: str = "auth_audit.jsonl"
+
+
+def throttle_path() -> Path:
+    return DATA_ROOT / THROTTLE_FILENAME
+
+
+def reset_tokens_path() -> Path:
+    return DATA_ROOT / RESET_TOKENS_FILENAME
+
+
+def auth_audit_path() -> Path:
+    return DATA_ROOT / AUTH_AUDIT_FILENAME
+
 #: Global fallback for a new page's visibility (T4) when a tenant has not set its
 #: own default. ``shared`` (visible to all principals in the tenant) or ``private``
 #: (owner-only). Per-tenant override lives on the Tenant record (registry).

@@ -32,6 +32,10 @@ class AdminAccessError(Exception):
     """A non-system-admin attempted a tenant-lifecycle operation (fail closed)."""
 
 
+class AlreadyBootstrapped(Exception):
+    """A system admin already exists; bootstrap refuses to clobber it (guarded)."""
+
+
 def require_admin(principal: Principal | None) -> Principal:
     """Authorize a lifecycle op: the principal must be the system admin, else
     :class:`AdminAccessError`. Tenant principals (any role) are refused."""
@@ -84,14 +88,44 @@ def bootstrap_admin(
     cred_store: CredentialStore | None = None,
     audit: SystemAuditLog | None = None,
 ) -> tuple[str, "auth.Credential"]:
-    """Mint the first system-admin credential (the lifecycle root of trust). A local
-    operator action — like generating the first key on the box. Returns the raw token
-    once. Audited."""
+    """Mint the first system-admin **token** credential (the lifecycle root of trust). A
+    local operator action — like generating the first key on the box. Returns the raw
+    token once. Audited. (IAM2 adds the password variant :func:`bootstrap_system_admin`.)"""
     store = cred_store or CredentialStore()
     raw, cred = store.issue_system_admin(principal_id)
     (audit or SystemAuditLog()).record("bootstrap_admin", tenant_id=None, actor=principal_id,
                                        credential_id=cred.id)
     return raw, cred
+
+
+def bootstrap_system_admin(
+    principal_id: str,
+    password: str,
+    *,
+    cred_store: CredentialStore | None = None,
+    audit: SystemAuditLog | None = None,
+) -> "auth.Credential":
+    """Securely bootstrap the first system-admin from an **operator-supplied password**
+    (IAM2). There is **no default/hardcoded credential** — the operator must supply the
+    password (CLI ``--password``, ``MNESIS_BOOTSTRAP_PASSWORD``, or a prompt).
+
+    **Guarded + idempotent:** if a system admin already exists this raises
+    :class:`AlreadyBootstrapped` and changes nothing — it can never silently reset an
+    established root of trust. The password is policy-checked and stored argon2id;
+    the plaintext is never logged. Audited."""
+    from . import providers  # local import: providers depends on identity, avoid cycles
+
+    store = cred_store or CredentialStore()
+    if store.has_system_admin():
+        raise AlreadyBootstrapped(
+            "a system admin already exists; refusing to clobber it (revoke it explicitly first)"
+        )
+    providers.check_password_policy(password)  # fail before any write on a weak password
+    cred = store.issue_system_admin_password(principal_id, password, name="bootstrap-system-admin")
+    (audit or SystemAuditLog()).record(
+        "bootstrap_system_admin", tenant_id=None, actor=principal_id, credential_id=cred.id
+    )
+    return cred
 
 
 # --- Lifecycle (admin-only) -------------------------------------------------

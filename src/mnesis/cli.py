@@ -58,8 +58,14 @@ def _build_parser() -> argparse.ArgumentParser:
     # credential in MNESIS_ADMIN_CREDENTIAL; tenant principals can never manage tenants.
     p_admin = sub.add_parser("admin", help="system-admin tenant lifecycle (provision/list/suspend/delete)")
     adsub = p_admin.add_subparsers(dest="admin_cmd", required=True)
-    ad_boot = adsub.add_parser("bootstrap", help="mint the first system-admin credential (local root of trust)")
+    ad_boot = adsub.add_parser("bootstrap", help="create the first system-admin (local root of trust)")
     ad_boot.add_argument("--principal", default="root", help="the admin principal id")
+    ad_boot.add_argument(
+        "--password", default=None,
+        help="operator-supplied password for a PASSWORD system-admin (IAM2); else a "
+             "random TOKEN credential is minted. May come from MNESIS_BOOTSTRAP_PASSWORD "
+             "or an interactive prompt. Never a default.",
+    )
     ad_prov = adsub.add_parser("provision", help="create a tenant + its initial admin credential")
     ad_prov.add_argument("tenant_id")
     ad_prov.add_argument("--name", default=None)
@@ -225,8 +231,27 @@ def _cmd_admin(args: argparse.Namespace) -> int:
     locally; every other op requires MNESIS_ADMIN_CREDENTIAL to resolve to a
     system-admin (fail closed) and is audited in the system audit log."""
     if args.admin_cmd == "bootstrap":
+        # IAM2: a password bootstrap when the operator supplies one (flag > env > prompt);
+        # otherwise the legacy random-token root of trust. Never a hardcoded default.
+        password = args.password or config.MNESIS_BOOTSTRAP_PASSWORD
+        if password is None and sys.stdin.isatty():
+            import getpass
+            entered = getpass.getpass("system-admin password (leave blank to mint a token instead): ")
+            password = entered or None
+        if password:
+            try:
+                cred = admin.bootstrap_system_admin(args.principal, password)
+            except admin.AlreadyBootstrapped as exc:
+                print(f"error: {exc}")
+                return 2
+            except auth.AuthError as exc:  # password policy
+                print(f"error: {exc}")
+                return 2
+            print(f"system-admin (password) credential {cred.id} for principal '{args.principal}'")
+            print("  log in with this principal + password via the local identity provider")
+            return 0
         raw, cred = admin.bootstrap_admin(args.principal)
-        print(f"system-admin credential {cred.id} for principal '{args.principal}'")
+        print(f"system-admin (token) credential {cred.id} for principal '{args.principal}'")
         print(f"  token (shown ONCE — set MNESIS_ADMIN_CREDENTIAL to it): {raw}")
         return 0
 
