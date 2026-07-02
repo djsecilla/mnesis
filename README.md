@@ -64,6 +64,7 @@ is the intended design.
 | **Typed knowledge graph** | Entities and typed relations are extracted into a graph you can traverse and run **impact analysis** over ("what breaks if I change Redis?"). |
 | **Three surfaces, one core** | The same core is reached by a **CLI** (humans/scripts), an **MCP server** (agents), and a **web UI** (browser) — none has private state. |
 | **Multitenant, isolated by construction** | Each tenant's store is a **physically separate directory + git repo**; a request's tenant derives **only from its verified credential**; cross-tenant access is *structurally impossible*. Within a tenant, pages are `private`/`shared`. A system-admin manages tenant lifecycle + quotas. Single-tenant runs transparently as `default`. |
+| **Unified authentication & authorization** | One identity model across **web** (login + session cookies), **CLI** (`mnesis login` + PATs), and **MCP** (per-agent scoped keys); a **single policy decision point** enforces `role ∩ scope ∩ tenant ∩ visibility`, deny-by-default. Real login everywhere (the injected token is retired), argon2id passwords, immediate revocation, and a secret-free auth audit. |
 | **A multi-LLM agent layer** | A separately-deployable LangGraph agent runtime that uses mnesis as memory — reaching it **only over MCP**, governed, per-tenant, with on-prem inference. |
 | **Self-curating maintenance** | A multi-LLM LangGraph foundation whose scheduled **dream cycle** keeps the KB healthy — auto-applying safe hygiene (decay, graph fixes) and surfacing contradiction/dedup **proposals** for review, all over MCP and governed. |
 | **Source-connector ingestion** | A reusable pipeline turns inbound sources into governed ingestions — the first is a **notes/Markdown inbox** that watches a folder and ingests notes (dedup + retry + dead-letter). A new source = connector + parse skill + one mapping entry. |
@@ -230,12 +231,14 @@ The wiki lives under `./wiki` by default (override with `MNESIS_ROOT`).
 ### 3.3 Run it as a stack (web UI + MCP for agents)
 
 ```bash
-cp .env.example .env          # set MNESIS_MCP_TOKEN (recommended); keys optional
+cp .env.example .env          # set MNESIS_WEB_ADMIN_PASSWORD (first web login) + MNESIS_AUTH_PEPPER
 make docker-up                # mnesis + the web UI at http://localhost:3000
 make docker-seed              # ingest the bundled sample sources (offline)
 ```
 
-Point an MCP client (e.g. Claude Code) at it — this repo ships [`.mcp.json`](.mcp.json)
+The web UI has a **real login** — sign in as the admin you set with
+`MNESIS_WEB_ADMIN_PASSWORD` (bootstrapped on first run). Point an MCP client (e.g. Claude
+Code) at it — this repo ships [`.mcp.json`](.mcp.json)
 for the local stdio server, or connect over HTTP (see [the MCP surface](#52-mcp-server-for-agents)).
 This runs as the single `default` tenant; to serve multiple isolated tenants, see
 [Multitenancy](#7-multitenancy).
@@ -307,30 +310,50 @@ mnesis graph-stats                        # node/edge counts by type and predica
 mnesis graph-lint --fix                   # consistency check; --fix applies the safe auto-fixes
 ```
 
-### 4.4 Tenants, credentials & admin (multitenancy)
+### 4.4 Authentication, users & admin
 
-By default everything above runs against the single `default` tenant — no setup
-needed. To run multi-tenant, a **system admin** manages the tenant lifecycle and
-issues per-tenant credentials (see [Multitenancy](#7-multitenancy)):
+When auth is on, the CLI logs in like any surface and every command is
+authorized by the PDP (see [Authentication & authorization](#78-authentication--authorization)).
+Single-tenant, auth-off deployments skip all of this and run against `default`.
+
+```bash
+# LOG IN (password → a session token stored in a local 0600 file), or logout:
+mnesis login --principal alice             # prompts for the password; --password for scripts
+mnesis whoami                              # the resolved principal + effective permissions
+mnesis logout                              # revoke the session immediately + clear the local file
+
+# Headless / automation — mint a scoped Personal Access Token (least privilege):
+mnesis pat create --name ci --scope read   # prints the PAT once; use via --token / MNESIS_TOKEN
+mnesis --token "$PAT" query "redis"         # a read-scoped PAT can query but not ingest
+mnesis pat list                            # your tokens (no secrets); `pat revoke <id>` revokes
+```
+
+**User lifecycle (tenant-admin, within your tenant):**
+
+```bash
+mnesis user provision bob --role member    # create a user + password (prompts); admin-only
+mnesis user set-role bob admin             # reassign a role
+mnesis user list                           # the tenant's users (no secrets)
+mnesis user deactivate bob                 # FORCE-REVOKE all of bob's credentials + tokens (immediate)
+```
+
+**System-admin — tenant lifecycle + system-admins** (needs `MNESIS_ADMIN_CREDENTIAL`):
 
 ```bash
 mnesis migrate-tenants                     # move an existing single-store layout into tenants/default/
-
-# System-admin (lifecycle) — bootstrap once, then export MNESIS_ADMIN_CREDENTIAL:
-mnesis admin bootstrap --principal root    # mint the root-of-trust system-admin token (once)
+mnesis admin bootstrap --password …        # create the first system-admin from an operator password (guarded)
+mnesis init-admin --principal admin --password …   # first-run: the first tenant-admin WEB login (guarded)
 mnesis admin provision acme --name "Acme"  # create a tenant + its first admin credential (once)
 mnesis admin list                          # all tenants (status, quota, default visibility)
 mnesis admin set-quota acme --max-pages 5000
 mnesis admin suspend acme                  # deny access, RETAIN data   (resume restores)
+mnesis admin create-system-admin --principal ops --password …
 mnesis admin delete  acme --confirm acme   # remove data + credentials + agent state (guarded)
-
-# Per-tenant credentials — issue/list/revoke for a tenant principal:
-mnesis --tenant acme auth issue --principal alice --role member   # prints a token (once)
-mnesis --tenant acme auth list
 ```
 
-With auth on (`MNESIS_AUTH_ENABLED=1`), tenant-scoped data ops authenticate via
-`MNESIS_CREDENTIAL` (the credential's tenant wins over `--tenant`).
+The precedence for a command's credential is `--token` → `MNESIS_TOKEN` → the stored
+`mnesis login` session → the legacy `MNESIS_CREDENTIAL`; the credential's tenant always
+wins over `--tenant`, and an expired/revoked one prompts a re-login.
 
 ---
 
@@ -395,22 +418,22 @@ running `claude` from the project root auto-discovers the server (approve it, th
 claude mcp add mnesis -- uv run python -m mnesis.mcp_server
 ```
 
-stdio means a local subprocess — no port, no token. Set `ANTHROPIC_API_KEY` for
-real extraction, or `MNESIS_LLM_STUB=1` for offline.
+stdio means a local subprocess — no port, no token (local trust). Set
+`ANTHROPIC_API_KEY` for real extraction, or `MNESIS_LLM_STUB=1` for offline.
 
-**Networked (HTTP).** Set `MNESIS_MCP_TRANSPORT=http`; the server serves
-streamable HTTP at `/mcp` on `MNESIS_MCP_HOST:MNESIS_MCP_PORT` (default
-`0.0.0.0:8080`) plus an open `GET /health`. If `MNESIS_MCP_TOKEN` is set, every
-call must send `Authorization: Bearer <token>` (strongly recommended — the
-endpoint can modify knowledge). When clients reach the server by a name other
-than localhost (e.g. behind Docker), list it in `MNESIS_MCP_ALLOWED_HOSTS`. With
-**`MNESIS_AUTH_ENABLED=1`** the bearer is instead a **per-tenant credential** that
-resolves to a tenant + principal, and every tool runs scoped to it
-([Multitenancy](#7-multitenancy)).
+**Networked (HTTP).** Set `MNESIS_MCP_TRANSPORT=http`; the server serves streamable
+HTTP at `/mcp` on `MNESIS_MCP_HOST:MNESIS_MCP_PORT` (default `0.0.0.0:8080`) plus an
+open `GET /health`. Every `/mcp` call authenticates with a **per-tenant, per-principal
+agent key** (`Authorization: Bearer <agent-key>`) that resolves to a tenant + principal
++ scopes, and every tool enforces those scopes through the PDP (a `read`-scoped key can
+query but not ingest). The **single global `MNESIS_MCP_TOKEN` is retired** — there is no
+shared-token or unauthenticated path. Mint keys per agent (least privilege) and
+distribute them; when clients reach the server by a name other than localhost (e.g.
+behind Docker), list it in `MNESIS_MCP_ALLOWED_HOSTS`.
 
 ```bash
 claude mcp add mnesis --transport http http://<host>:8080/mcp \
-  --header "Authorization: Bearer $MNESIS_MCP_TOKEN"
+  --header "Authorization: Bearer $MNESIS_AGENT_KEY"
 ```
 
 ### 5.3 Web UI (for humans, in the browser)
@@ -432,8 +455,9 @@ The UI is a full **read + write** surface, but every write routes through the
 same previewed, human-confirmed, git-committed ingestion path as everywhere else.
 Canonical page **editing is intentionally not offered** on any surface — knowledge
 changes only by ingesting sources and resolving contradictions, so the audit trail
-stays a coherent record of *why* each change happened. The browser never holds the
-bearer token (nginx injects it server-side).
+stays a coherent record of *why* each change happened. Access is a **real login** — a
+secure/httpOnly/SameSite session cookie with CSRF on writes, resolved server-side and
+PDP-checked on every request (the old server-injected bearer token is retired).
 
 ---
 
@@ -822,11 +846,12 @@ impossible*, proven end-to-end across the CLI, MCP, Web UI, and the agents.
 ### 7.2 Tenant from the credential only
 
 A request's tenant is derived **solely from its verified credential** — never from a
-request body, header, path, or content. Turn on credential auth with
-`MNESIS_AUTH_ENABLED=1`; the bearer token then resolves to a `{tenant, principal,
-role}`, and an absent/invalid/expired/revoked/suspended credential is **denied**
-(fail closed, no default-tenant fallback). A forged or extra tenant id in a request
-is ignored — the credential wins.
+request body, header, path, or content. Every surface's credential (a Web **session**,
+a CLI login/**PAT**, or an MCP **agent key**) resolves to a `{tenant, principal, roles,
+scopes}`, and an absent/invalid/expired/revoked/suspended credential is **denied** (fail
+closed, no default-tenant fallback). A forged or extra tenant id in a request is ignored
+— the credential wins. (`MNESIS_AUTH_ENABLED=1` turns on multi-tenant credentials; see
+[Authentication & authorization](#78-authentication--authorization).)
 
 ### 7.3 Within-tenant visibility
 
@@ -1133,31 +1158,43 @@ class, weights, auto-resolve margin, stale thresholds) — all env-overridable; 
 |---|---|---|
 | `MNESIS_MCP_TRANSPORT` | `stdio` | `stdio` (local subprocess) or `http` (networked). |
 | `MNESIS_MCP_HOST` / `MNESIS_MCP_PORT` | `0.0.0.0` / `8080` | HTTP bind address/port. |
-| `MNESIS_MCP_TOKEN` | unset | **Legacy single-tenant** bearer token (used only when `MNESIS_AUTH_ENABLED` is off). Multi-tenant uses per-tenant credentials instead. |
+| `MNESIS_MCP_TOKEN` | unset | **Retired** as a server credential — `/mcp` authenticates each call with a per-agent **agent key**, not a shared token. Kept only as the name the *agent layer* reads to present its own bearer (an agent key). |
 | `MNESIS_MCP_ALLOWED_HOSTS` | unset (localhost) | Host allowlist for DNS-rebinding protection (`host:port` / `host:*`). List the service name for networked clients. |
 | `MNESIS_MAX_UPLOAD_BYTES` | `2000000` | Max bytes accepted by the ingestion upload endpoints. |
 | `MNESIS_UI_PORT` | `3000` | Host port for the web UI. |
 
-### 10.3 Multitenancy & auth
+### 10.3 Identity, auth & multitenancy
 
-Off by default (single-tenant `default`). See [Multitenancy](#7-multitenancy).
+Unified identity across web/CLI/MCP; identity and authorization derive from a verified
+credential. See [Authentication & authorization](#78-authentication--authorization) and
+[Multitenancy](#7-multitenancy). Single-tenant runs as `default`, still with a real login.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `MNESIS_AUTH_ENABLED` | unset | `1` resolves the bearer/credential to a per-tenant, per-principal `{tenant, principal, role}` (tenant from the credential only; unresolved → denied, no default fallback). Off = legacy single-tenant. |
-| `MNESIS_AUTH_PEPPER` | unset | Server-side secret mixed into credential hashes at rest (never logged). |
+| `MNESIS_AUTH_ENABLED` | unset | `1` requires per-tenant credentials at every boundary (tenant from the credential only; unresolved → denied, no default fallback). Off = single-tenant `default`. |
+| `MNESIS_AUTH_PEPPER` | unset | **Secret** — server-side pepper mixed into credential hashes at rest (from a secret store; never logged). |
+| `MNESIS_BOOTSTRAP_PASSWORD` | unset | **Secret** — first-run system-admin password (guarded/idempotent bootstrap; no default). |
+| `MNESIS_WEB_ADMIN_USER` / `…_PASSWORD` | `admin` / unset | **Secret** — first-run tenant-admin **web login** so `docker compose up` has a real login (guarded; no default). |
+| `MNESIS_IDENTITY_PROVIDER` | `local` | Login backend: `local` (argon2id username/password) today; `oidc` is a documented seam stub. |
+| `MNESIS_SESSION_IDLE_SECONDS` / `…_ABSOLUTE_SECONDS` | `1800` / `28800` | Web session idle (sliding) and absolute (hard-cap) expiry. |
+| `MNESIS_PAT_DEFAULT_TTL` / `MNESIS_AGENT_KEY_DEFAULT_TTL` | `7776000` / `2592000` | Default lifetimes (s) for CLI PATs (90d) and MCP agent keys (30d). |
+| `MNESIS_WEB_COOKIE_SECURE` / `…_SAMESITE` | `1` / `lax` | Web session/CSRF cookie flags (HTTPS-only; SameSite). |
+| `MNESIS_TOKEN` | unset | The **CLI**'s PAT/token for headless auth (`--token` overrides; else the stored `mnesis login` session). |
+| `MNESIS_CLI_CREDENTIALS` | `~/.config/mnesis/credentials.json` | Where `mnesis login` stores the local session token (owner-only `0600`). |
+| `MNESIS_CREDENTIAL` | unset | Legacy CLI tenant credential (still accepted; superseded by `mnesis login` / `MNESIS_TOKEN`). |
+| `MNESIS_ADMIN_CREDENTIAL` | unset | The **system-admin** token for `mnesis admin …` lifecycle ops (a tenant credential is refused). |
 | `MNESIS_DEFAULT_TENANT` | `default` | The tenant a single-tenant deployment runs as transparently. |
 | `MNESIS_DEFAULT_VISIBILITY` | `shared` | New-page visibility within a tenant (`shared`\|`private`); per-tenant override set by the admin. |
 | `MNESIS_TENANT_MAX_PAGES` / `…_MAX_BYTES` | `0` | Per-tenant resource quotas (0 = unlimited); fail-closed at ingest. Per-tenant override on the Tenant record. |
-| `MNESIS_CREDENTIAL` | unset | The **CLI**'s tenant credential for tenant-scoped data ops (its tenant overrides `--tenant`; refused when auth is on and unset). |
-| `MNESIS_ADMIN_CREDENTIAL` | unset | The **system-admin** token for `mnesis admin …` lifecycle ops (a tenant credential is refused). |
 
 ### 10.4 Agent layer (`mnesis-agents`)
 
 The provider switch is **shared with the core** — `MNESIS_LLM_PROVIDER` /
-`MNESIS_LLM_MODEL` select the model for both. The agent runtime connects to Mnesis
-over MCP via `MNESIS_MCP_URL` (default `http://localhost:8080/mcp`) and
-`MNESIS_MCP_TOKEN` (must match the server's).
+`MNESIS_LLM_MODEL` select the model for both. The agent runtime connects to Mnesis over
+MCP via `MNESIS_MCP_URL` (default `http://localhost:8080/mcp`) and presents its bearer
+credential — a per-agent **agent key** (mint one with the documented least-privilege
+scopes), read from `MNESIS_MCP_TOKEN` (single-tenant) or the per-tenant `credential` in
+`MNESIS_AGENTS_TENANTS_FILE` (multi-tenant).
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -1246,7 +1283,9 @@ rebuildable cache — asserted by `tests/test_phase3_e2e.py`.
 
 ```
 src/mnesis/          the core: store · filters · ingest · search · graph · confidence ·
-                     lifecycle · vocab · maintenance · tenancy · auth · authz · admin · quotas ·
+                     lifecycle · vocab · maintenance · tenancy · quotas · admin ·
+                     identity/auth · providers (login) · tokens (sessions/PATs/agent keys) ·
+                     authz (the PDP) · webauth · cli_auth · audit ·
                      MCP server · REST/SSE gateway · CLI
 src/mnesis_agents/   the LangGraph agent foundation: multi-LLM base · category ABCs · skills ·
                      governance · triggers/runner · the MaintenanceAgent (dream cycle) ·
@@ -1255,7 +1294,9 @@ src/mnesis_agents/   the LangGraph agent foundation: multi-LLM base · category 
                      per-tenant TenantScope (tenancy.py)
 src/mnesis_llm/      the shared, provider-agnostic chat-model factory (used by core + agents)
 ui/                  the React + Vite web UI (served by nginx in Docker)
-wiki/                the data root: registry.json · credentials.json (hashed) · system_audit.jsonl ·
+wiki/                the data root (all OUTSIDE any tenant root): registry.json ·
+                     credentials.json (hashed) · tokens.json + revocations.json ·
+                     system_audit.jsonl + auth_audit.jsonl (no secrets) ·
                      tenants/<id>/{pages, sources (tracked), .cache (gitignored)} + its own git repo
 tests/               the full offline test suite
 docs/OPS.md          backup / restore / operations
@@ -1278,8 +1319,11 @@ approval-gate + egress** pattern and the **approval-gated `ActionAgent`**
 opt-in dry-run/egress-gated/recipient-confirmed email channel) · **multitenancy**
 (physically per-tenant stores/caches/git · tenant-from-credential auth · within-tenant
 private/shared visibility · enforced across MCP/Web UI/CLI and the agents · tenant
-lifecycle + system-admin boundary + per-tenant quotas) · Docker deployment with
-local-first inference.
+lifecycle + system-admin boundary + per-tenant quotas) · **unified authentication &
+authorization** (one identity model + one PDP across web/CLI/MCP · argon2id passwords ·
+web sessions, CLI login/PATs, per-agent scoped MCP keys · role ∩ scope enforcement ·
+user/credential lifecycle with force-revoke · secret-free auth audit · the injected
+token retired) · Docker deployment with local-first inference.
 
 **Deferred** (see [`CLAUDE.md` §13](CLAUDE.md) for the full map): session/query
 automation hooks and a general hook framework — *on-source ingestion (the
