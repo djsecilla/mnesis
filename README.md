@@ -48,7 +48,7 @@ is the intended design.
 8. [Running with Docker](#8-running-with-docker)
 9. [Making the most of mnesis](#9-making-the-most-of-mnesis) — best practices
 10. [Configuration reference](#10-configuration-reference)
-11. [Verify it works](#11-verify-it-works) — guided demos
+11. [Verify it works](#11-verify-it-works) — the test suite, guided demos, agent smoke tests & security drills
 12. [Project layout & scope](#12-project-layout--scope)
 
 ---
@@ -1239,10 +1239,23 @@ store, never the compose file or image**. Enable a real send through the
 
 ## 11. Verify it works
 
-Each phase ships a self-contained, offline demo. Run them top to bottom on a
-fresh clone.
+Everything below runs **offline** — a deterministic stub stands in for the LLM, so
+there is no network call and no API key. The **authoritative** check is the full test
+suite; the guided demos and smoke scripts then walk specific capabilities end to end on
+a throwaway store.
 
-### 11.1 Phase 1 — the compounding loop (`make demo`)
+### 11.1 The full offline suite (`make test`)
+
+`make test` runs the whole suite (600+ tests) with no network — the fastest way to
+confirm a clean checkout is healthy. It exercises the entire system: the compounding
+loop, the confidence/decay lifecycle, the knowledge graph, the agent layer, **multitenant
+isolation** (`test_isolation_drills.py`, `test_surface_isolation.py`), and the **IAM
+security drills** — unauthenticated access refused on web/CLI/MCP, scoped credentials
+that can't be exceeded, immediate revocation, tenant-admin confinement, deactivation
+force-revoke, and a secret-free audit (`test_security_drills.py`, plus `test_web_auth.py`
+/ `test_cli_auth.py` / `test_mcp_auth.py`).
+
+### 11.2 The compounding loop (`make demo`)
 
 `make demo` prints six steps. Confirm:
 - **Step 2** shows `redactions: 1` and the saved source reads
@@ -1259,7 +1272,7 @@ identical search results (also asserted by the test suite):
 rm -f /tmp/mnesis-try/wiki/tenants/default/.cache/wiki.db && uv run env MNESIS_ROOT=/tmp/mnesis-try/wiki mnesis rebuild
 ```
 
-### 11.2 Phase 2 — confidence & lifecycle (`make demo-phase2`)
+### 11.3 Confidence & lifecycle (`make demo-phase2`)
 
 Six steps demonstrate reinforce → supersede → confidence-blended search →
 contradiction queue/resolve → decay-to-stale. Confirm a reinforcing source bumps
@@ -1268,7 +1281,7 @@ the old page to **stale**, a low-margin conflict is **queued** until `resolve`,
 and `decay` ages an unread page to stale. Durable state (access counts + review
 queue) survives a cache rebuild — asserted by `tests/test_phase2_e2e.py`.
 
-### 11.3 Phase 3 — knowledge graph (`make demo-phase3`)
+### 11.4 Knowledge graph (`make demo-phase3`)
 
 Confirm `rebuild` reports the graph it built (entities/edges + the active
 backend), `impact library:redis` returns **auth-migration (hop 1)** and **Atlas
@@ -1276,6 +1289,41 @@ backend), `impact library:redis` returns **auth-migration (hop 1)** and **Atlas
 states in words — a superseding source **demotes** the old edge and the new one
 takes over the chain, and `graph-lint --fix` reports **clean**. The graph is a
 rebuildable cache — asserted by `tests/test_phase3_e2e.py`.
+
+### 11.5 The agent layer (real-stack smoke tests)
+
+Three scripts bring up Mnesis + the agentic runtime (`docker compose --profile agents`)
+and prove each agent end to end over MCP:
+
+- `scripts/smoke_dream_cycle.sh` — the **dream cycle** runs, auto-applies safe hygiene
+  (decay + safe graph fixes), queues contradiction/dedup **proposals**, and writes a
+  report (also `make dream-now` / `make dream-report`).
+- `scripts/smoke_notes_inbox.sh` — the **notes-inbox writing agent**: drop a `.md` → it's
+  parsed, redacted, and ingested (visible via query); re-drop → no duplicate; a bad blob
+  → dead-lettered, never silently lost (also `make ingest-note`).
+- `scripts/smoke_action_agent.sh` — the **approval-gated action agent**: compose → a
+  **pending** proposal (nothing delivered) → approve → the draft lands in the outbox
+  volume; draft-only, no external egress (also `make action-brief` / `actions` /
+  `action-approve`).
+
+### 11.6 Multitenancy & authentication
+
+Isolation and auth are proven by the drills in `make test` (§11.1); you can also spot-check
+the auth flow by hand on a throwaway store:
+
+```bash
+export MNESIS_ROOT=/tmp/mnesis-iam MNESIS_AUTH_ENABLED=1
+mnesis init-admin --principal admin --password 'a-strong-operator-password'  # first-run (guarded/idempotent)
+mnesis login   --principal admin --password 'a-strong-operator-password'     # stores a 0600 session token
+mnesis whoami                                                                # the resolved principal + permissions
+mnesis pat create --name ci --scope read                                     # a read-scoped PAT: can query, cannot ingest
+mnesis logout                                                                # revokes immediately → later queries refuse
+```
+
+Cross-tenant access is *structurally impossible* (each tenant is a physically separate
+store), a scoped credential can never exceed its scope, deactivating a user
+force-revokes all their credentials at once, and the retired injected token no longer
+authenticates — see [Authentication & authorization](#78-authentication--authorization).
 
 ---
 
