@@ -544,6 +544,11 @@ class _TenantBindingMiddleware:
         if scope.get("type") not in ("http", "websocket"):
             await self.app(scope, receive, send)
             return
+        # The web surface (/api) is owned by the IAM5 session middleware, which binds
+        # the tenant from the authenticated session — never the default tenant.
+        if scope.get("path", "").startswith("/api"):
+            await self.app(scope, receive, send)
+            return
         ctx = tenancy.open_tenant(config.DEFAULT_TENANT_ID)
         with tenancy.use(ctx):
             await self.app(scope, receive, send)
@@ -565,7 +570,10 @@ class _PrincipalBindingMiddleware:
         if scope.get("type") not in ("http", "websocket"):
             await self.app(scope, receive, send)
             return
-        if scope.get("path") == "/health":
+        path = scope.get("path", "")
+        # /health is open; /api is the web surface (session auth, IAM5) — both bypass
+        # the agent/MCP bearer path here.
+        if path == "/health" or path.startswith("/api"):
             await self.app(scope, receive, send)
             return
         headers = dict(scope.get("headers") or [])
@@ -593,7 +601,10 @@ class _BearerAuthMiddleware:
         self.token = token
 
     async def __call__(self, scope, receive, send) -> None:
-        if scope.get("type") == "http" and scope.get("path") != "/health":
+        path = scope.get("path", "")
+        # /health is open; /api is the web surface (session auth, IAM5) — the single
+        # injected bearer token no longer guards the browser path.
+        if scope.get("type") == "http" and path != "/health" and not path.startswith("/api"):
             headers = dict(scope.get("headers") or [])
             presented = headers.get(b"authorization", b"").decode()
             if presented != f"Bearer {self.token}":
@@ -605,23 +616,32 @@ class _BearerAuthMiddleware:
 
 
 def build_http_app():
-    """Build the streamable-HTTP ASGI app: MCP at ``/mcp``, the REST+SSE gateway
-    at ``/api`` (web UI), ``GET /health``, and bearer auth when ``MNESIS_MCP_TOKEN``
-    is set (guards ``/mcp`` and ``/api``; ``/health`` stays open). Tool functions
-    and core modules are reused as-is."""
-    from . import webapi  # lazy: webapi imports mcp_server, avoid an import cycle
+    """Build the streamable-HTTP ASGI app with **two distinct auth surfaces** (IAM5):
+
+    - ``/api/*`` — the **web UI**: interactive login + **cookie sessions** + CSRF + the
+      PDP (``webauth.WebSessionMiddleware``). The single browser-injected bearer token
+      is **retired** — the web no longer authenticates with ``MNESIS_MCP_TOKEN``.
+    - ``/mcp`` — the **agent/MCP** surface: per-principal **bearer credentials**
+      (``_PrincipalBindingMiddleware`` when ``MNESIS_AUTH_ENABLED``; else the legacy
+      ``MNESIS_MCP_TOKEN`` + default tenant). These middlewares skip ``/api`` (owned by
+      the session choke point).
+    - ``GET /health`` — open.
+    """
+    from . import webapi, webauth  # lazy: they import mcp_server, avoid an import cycle
 
     app = mcp.streamable_http_app()
     webapi.mount_api(app)
+    # Inner: the web session/CSRF/PDP choke point for /api (retires the injected token).
+    webauth.install(app)
+    # Outer: the agent/MCP bearer path (skips /api + /health).
     if config.MNESIS_AUTH_ENABLED:
-        # Credential auth (T3): the bearer token resolves to (tenant, principal);
-        # the tenant comes ONLY from the credential and an unresolved one is denied
-        # (fail closed, no default tenant). Replaces the legacy single-token path.
+        # Credential auth: the bearer token resolves to (tenant, principal); the tenant
+        # comes ONLY from the credential and an unresolved one is denied (fail closed).
         app.add_middleware(_PrincipalBindingMiddleware)
     else:
         if config.MNESIS_MCP_TOKEN:
             app.add_middleware(_BearerAuthMiddleware, token=config.MNESIS_MCP_TOKEN)
-        # Added last → outermost: bind the default tenant before any handler.
+        # Added last → outermost: bind the default tenant before any /mcp handler.
         app.add_middleware(_TenantBindingMiddleware)
     return app
 

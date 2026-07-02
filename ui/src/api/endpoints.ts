@@ -98,12 +98,18 @@ export async function ingestPreview(input: PreviewInput): Promise<IngestPlan> {
     form.append("file", input.file);
     if (input.sourceRef) form.append("source_ref", input.sourceRef);
     return unwrap(
-      await fetch(`${API_BASE}/ingest/preview`, { method: "POST", headers: authHeaders(), body: form }),
+      await fetch(`${API_BASE}/ingest/preview`, {
+        method: "POST",
+        credentials: "include",
+        headers: authHeaders(),
+        body: form,
+      }),
     );
   }
   return unwrap(
     await fetch(`${API_BASE}/ingest/preview`, {
       method: "POST",
+      credentials: "include",
       headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ text: input.text ?? "", source_ref: input.sourceRef }),
     }),
@@ -115,6 +121,7 @@ export async function ingestCommit(plan: IngestPlan, overrides?: IngestOverrides
   return unwrap(
     await fetch(`${API_BASE}/ingest/commit`, {
       method: "POST",
+      credentials: "include",
       headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ plan, overrides }),
     }),

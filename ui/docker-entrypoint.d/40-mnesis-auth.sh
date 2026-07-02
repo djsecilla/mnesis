@@ -1,22 +1,20 @@
 #!/bin/sh
-# Server-side bearer-token injection for the /api proxy.
+# IAM5: the server-side bearer-token injection is RETIRED.
 #
-# On this trusted-host deployment the browser never handles the API token: if
-# MNESIS_MCP_TOKEN is set, nginx adds the Authorization header to every proxied
-# /api request here, so the token stays on the server. When unset, the include
-# is emptied and /api is proxied without auth (matches an unguarded mnesis).
+# The browser no longer carries an API token. It authenticates with a real login
+# (POST /api/auth/login) that sets an httpOnly session cookie, and nginx simply
+# forwards the request (Cookie / Set-Cookie pass through the proxy). Per-user auth
+# and the policy decision point are enforced by the mnesis backend on every /api
+# request and SSE stream.
 #
-# Tradeoff: anyone who can reach this UI port reaches the API with the proxy's
-# privileges — the host/network is the trust boundary. Per-user auth is a
-# future iteration. Runs (nginx image convention) before nginx starts.
+# This script is kept as a no-op so any older nginx.conf that still `include`d the
+# generated auth header file finds an empty one instead of failing to start.
 set -e
 
 CONF=/etc/nginx/auth_header.conf
-
+: > "$CONF"
 if [ -n "${MNESIS_MCP_TOKEN:-}" ]; then
-    printf 'proxy_set_header Authorization "Bearer %s";\n' "$MNESIS_MCP_TOKEN" > "$CONF"
-    echo "mnesis-ui: injecting Authorization header on the /api proxy"
-else
-    : > "$CONF"
-    echo "mnesis-ui: MNESIS_MCP_TOKEN unset — proxying /api without an auth header"
+    echo "mnesis-ui: MNESIS_MCP_TOKEN is set but NO LONGER injected into /api (IAM5);" \
+         "the web UI authenticates with a login + session cookie. The token now only" \
+         "guards the /mcp agent surface on the backend."
 fi

@@ -33,6 +33,7 @@ export async function streamChat(
   try {
     const res = await fetch(`${API_BASE}/chat`, {
       method: "POST",
+      credentials: "include",
       headers: authHeaders({ "Content-Type": "application/json", Accept: "text/event-stream" }),
       body: JSON.stringify({ message, history }),
     });

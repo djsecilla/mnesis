@@ -17,8 +17,9 @@ RUN npm run build
 FROM nginx:alpine AS runtime
 # Server config: SPA fallback + /api proxy with SSE-friendly settings.
 COPY nginx.conf /etc/nginx/conf.d/default.conf
-# Startup hooks (run before nginx): inject the bearer token server-side when
-# MNESIS_MCP_TOKEN is set, and align client_max_body_size with the upload limit.
+# Startup hooks (run before nginx): the auth hook is now a no-op (IAM5 retired the
+# injected bearer token — the web UI uses a login + session cookie), and the upload
+# hook aligns client_max_body_size with the backend limit.
 # Seed sane default includes so the config is valid even before the hooks run.
 COPY docker-entrypoint.d/40-mnesis-auth.sh /docker-entrypoint.d/40-mnesis-auth.sh
 COPY docker-entrypoint.d/41-mnesis-upload.sh /docker-entrypoint.d/41-mnesis-upload.sh

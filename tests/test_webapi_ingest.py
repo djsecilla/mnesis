@@ -17,11 +17,12 @@ import pytest
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
-from mnesis import config, mcp_server, search, state, store, webapi, tenancy
+from mnesis import config, mcp_server, providers, search, state, store, webapi, webauth, tenancy
 from mnesis.store import Page
 
-TOKEN = "ingest-token"
-AUTH = {"Authorization": f"Bearer {TOKEN}"}
+ADMIN_PW = "correct horse battery staple"
+#: Populated after login with the CSRF header (IAM5 web sessions; injected token gone).
+AUTH: dict = {}
 SECRET = "sk-ABCDEF0123456789abcdef"
 SECRET_TEXT = f"Project Atlas uses Redis for caching. Deploy key {SECRET}."
 
@@ -31,17 +32,22 @@ def client(monkeypatch):
     tmp = Path(tempfile.mkdtemp(prefix="mnesis-ingest-"))
     monkeypatch.setattr(config, "DATA_ROOT", tmp / "data")
     monkeypatch.setattr(config, "MNESIS_LLM_STUB", True)
-    monkeypatch.setattr(config, "MNESIS_MCP_TOKEN", TOKEN)
+    monkeypatch.setattr(config, "MNESIS_WEB_COOKIE_SECURE", False)
 
     ctx = tenancy.open_tenant(config.DEFAULT_TENANT_ID)
     token = tenancy.bind(ctx)
     search.rebuild()
+    providers.LocalPasswordProvider().register(config.DEFAULT_TENANT_ID, "admin", "admin", ADMIN_PW)
 
     app = Starlette()
     webapi.mount_api(app)
-    app.add_middleware(mcp_server._BearerAuthMiddleware, token=TOKEN)
-    app.add_middleware(mcp_server._TenantBindingMiddleware)  # bind a tenant per request
+    webauth.install(app)  # IAM5: session cookie + CSRF + PDP for /api
     with TestClient(app) as c:
+        r = c.post("/api/auth/login", json={"username": "admin", "password": ADMIN_PW})
+        assert r.status_code == 200, r.text
+        AUTH.clear()
+        AUTH["X-CSRF-Token"] = c.cookies["mnesis_csrf"]
+        c.anon = TestClient(app)  # cookie-less client for the "unauthenticated" case
         yield c
     tenancy.unbind(token)
     shutil.rmtree(tmp, ignore_errors=True)
@@ -198,6 +204,6 @@ def test_resolve_bad_keep_is_rejected(client):
 # --- auth -------------------------------------------------------------------
 
 
-def test_writes_require_token(client):
-    r = client.post("/api/ingest/preview", json={"text": "x"})  # no Authorization
+def test_writes_require_session(client):
+    r = client.anon.post("/api/ingest/preview", json={"text": "x"})  # no session cookie
     assert r.status_code == 401

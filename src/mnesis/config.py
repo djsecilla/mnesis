@@ -336,6 +336,19 @@ def tokens_path() -> Path:
 def revocations_path() -> Path:
     return DATA_ROOT / REVOCATIONS_FILENAME
 
+# --- IAM5: web authentication (interactive login + cookie sessions) ----------
+# The web UI authenticates with a real login (LocalPasswordProvider, IAM2) that
+# issues a cookie-borne web session (IAM3). The single injected bearer token for
+# the browser is RETIRED — /api requires a session; /mcp keeps agent bearer keys.
+
+#: Web session cookie flags. Secure=on means the cookie is only sent over HTTPS
+#: (correct in production behind TLS); tests/local-HTTP set it off. SameSite=lax
+#: lets top-level navigation carry the cookie while blocking cross-site POSTs.
+MNESIS_WEB_COOKIE_SECURE: bool = os.environ.get("MNESIS_WEB_COOKIE_SECURE", "1").strip().lower() in {
+    "1", "true", "yes", "on",
+}
+MNESIS_WEB_COOKIE_SAMESITE: str = os.environ.get("MNESIS_WEB_COOKIE_SAMESITE", "lax").strip().lower()
+
 #: Global fallback for a new page's visibility (T4) when a tenant has not set its
 #: own default. ``shared`` (visible to all principals in the tenant) or ``private``
 #: (owner-only). Per-tenant override lives on the Tenant record (registry).

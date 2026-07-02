@@ -135,6 +135,7 @@ def _edge_dict(e: dict) -> dict:
 
 
 async def _list_pages(request: Request) -> JSONResponse:
+    authz.require_permission(authz.READ)
     qp = request.query_params
     pages = _visible_pages(status=qp.get("status") or None, kind=qp.get("kind") or None)
     q = (qp.get("q") or "").strip().lower()
@@ -148,6 +149,7 @@ async def _list_pages(request: Request) -> JSONResponse:
 
 
 async def _get_page(request: Request) -> JSONResponse:
+    authz.require_permission(authz.READ)
     pid = request.path_params["page_id"]
     try:
         page = store.read_page(pid)
@@ -174,6 +176,7 @@ async def _get_page(request: Request) -> JSONResponse:
 
 
 async def _search(request: Request) -> JSONResponse:
+    authz.require_permission(authz.READ)
     qp = request.query_params
     q = qp.get("q", "")
     try:
@@ -282,6 +285,7 @@ def _build_subgraph(root: str | None, depth: int, include_demoted: bool) -> dict
 
 
 async def _graph(request: Request) -> JSONResponse:
+    authz.require_permission(authz.READ)
     qp = request.query_params
     try:
         depth = int(qp.get("depth", 2))
@@ -310,6 +314,7 @@ async def _entity(request: Request) -> JSONResponse:
     co-occurring entity tags, and typed-edge neighbours. Thin — reuses graph +
     store + confidence; `pages`/`edges` are kept for back-compat (the page reader
     looks up edge confidence via this endpoint)."""
+    authz.require_permission(authz.READ)
     ref = request.path_params["ref"]
     ent = graph.entity(ref)
     if ent is None:
@@ -367,6 +372,7 @@ async def _entity(request: Request) -> JSONResponse:
 
 
 async def _impact(request: Request) -> JSONResponse:
+    authz.require_permission(authz.READ)
     ref = request.path_params["ref"]
     try:
         depth = int(request.query_params.get("depth", 3))
@@ -378,6 +384,7 @@ async def _impact(request: Request) -> JSONResponse:
 async def _fileback(request: Request) -> JSONResponse:
     from . import mcp_server  # reuse the exact file-back path (lazy: avoids import cycle)
 
+    authz.require_permission(authz.WRITE)
     body = await request.json()
     question = (body.get("question") or "").strip()
     answer = (body.get("answer") or "").strip()
@@ -417,6 +424,7 @@ def _grounded_answer(message: str, pages: list[store.Page]) -> str:
 
 
 async def _chat(request: Request) -> EventSourceResponse:
+    authz.require_permission(authz.READ)
     body = await request.json()
     message = (body.get("message") or "").strip()
 
@@ -604,6 +612,7 @@ def _llm_err(exc: Exception) -> JSONResponse:
 
 async def _ingest_preview(request: Request) -> JSONResponse:
     """Side-effect-free preview: returns the IngestPlan (calls plan_ingest only)."""
+    authz.require_permission(authz.WRITE)
     try:
         text, ref = await _read_ingest_input(request)
     except _IngestInputError as e:
@@ -620,6 +629,7 @@ async def _ingest_preview(request: Request) -> JSONResponse:
 
 async def _ingest_commit(request: Request) -> JSONResponse:
     """Apply a previously previewed plan (+ optional overrides): returns the result."""
+    authz.require_permission(authz.WRITE)
     try:
         body = await request.json()
     except Exception:
@@ -670,6 +680,7 @@ def _source_ingested_at(path: Path) -> str | None:
 
 
 async def _list_sources(request: Request) -> JSONResponse:
+    authz.require_permission(authz.READ)
     by_source = _pages_by_source()
     sources_dir = tenancy.current().sources_dir
     sources_dir.mkdir(parents=True, exist_ok=True)
@@ -689,6 +700,7 @@ async def _list_sources(request: Request) -> JSONResponse:
 
 
 async def _get_source(request: Request) -> JSONResponse:
+    authz.require_permission(authz.READ)
     ref = request.path_params["source_id"]
     if "/" in ref or "\\" in ref or ref in {"", ".", ".."}:
         return _err("invalid_source", "invalid source id", 400)
@@ -735,6 +747,7 @@ def _review_visible(r: dict) -> bool:
 
 
 async def _list_reviews(request: Request) -> JSONResponse:
+    authz.require_permission(authz.READ)
     reviews = [
         {
             "id": r["id"],
@@ -751,6 +764,7 @@ async def _list_reviews(request: Request) -> JSONResponse:
 async def _resolve_review(request: Request) -> JSONResponse:
     from . import mcp_server  # reuse the exact resolve path (lazy: avoids import cycle)
 
+    authz.require_permission(authz.MAINTAIN)
     try:
         review_id = int(request.path_params["review_id"])
     except (ValueError, TypeError):
@@ -774,6 +788,15 @@ async def _resolve_review(request: Request) -> JSONResponse:
     if msg.startswith("no open review"):
         return _err("not_found", msg, 404)
     return _err("invalid_keep", msg, 400)
+
+
+async def _admin_credentials(request: Request) -> JSONResponse:
+    """Admin-only: list the tenant's credentials (no secrets). Gated by the PDP on
+    ``credentials:issue`` — a member/readonly gets 403, a tenant-admin gets the list."""
+    authz.require_permission(authz.CREDENTIALS_ISSUE)
+    ctx = tenancy.current()
+    creds = auth.CredentialStore().list_for_tenant(ctx.tenant_id)
+    return JSONResponse({"credentials": [c.public_dict() for c in creds], "total": len(creds)})
 
 
 async def _config(_request: Request) -> JSONResponse:
@@ -805,6 +828,7 @@ API_ROUTES = [
     Route("/api/sources/{source_id}", _get_source, methods=["GET"]),
     Route("/api/reviews", _list_reviews, methods=["GET"]),
     Route("/api/reviews/{review_id}/resolve", _resolve_review, methods=["POST"]),
+    Route("/api/admin/credentials", _admin_credentials, methods=["GET"]),
 ]
 
 

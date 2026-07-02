@@ -14,25 +14,30 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 from starlette.testclient import TestClient
 
-from mnesis import config, graph, mcp_server, search, store, tenancy, webapi
+from mnesis import config, graph, mcp_server, providers, search, store, tenancy, webapi, webauth
 from mnesis.store import Page
 
-TOKEN = "web-token"
-AUTH = {"Authorization": f"Bearer {TOKEN}"}
+ADMIN_PW = "correct horse battery staple"
+#: Populated after login with the CSRF header; the session rides the TestClient cookie
+#: jar (IAM5 retires the injected bearer token — /api is authenticated by a session).
+AUTH: dict = {}
 
 
 @pytest.fixture(scope="module")
 def client():
     tmp = Path(tempfile.mkdtemp(prefix="mnesis-web-"))
-    saved = {k: getattr(config, k) for k in ("DATA_ROOT", "MNESIS_LLM_STUB", "MNESIS_MCP_TOKEN")}
+    saved = {k: getattr(config, k) for k in ("DATA_ROOT", "MNESIS_LLM_STUB", "MNESIS_WEB_COOKIE_SECURE")}
     config.DATA_ROOT = tmp / "data"
     config.MNESIS_LLM_STUB = True
-    config.MNESIS_MCP_TOKEN = TOKEN
+    config.MNESIS_WEB_COOKIE_SECURE = False  # TestClient speaks http; don't require https
 
     # Provision + bind the default tenant for fixture-time seeding; each request
-    # rebinds it via the tenant-binding middleware below.
+    # rebinds it via the web session middleware below.
     _ctx = tenancy.open_tenant(config.DEFAULT_TENANT_ID)
     _token = tenancy.bind(_ctx)
+
+    # A real admin user to log in as (IAM2 local password provider).
+    providers.LocalPasswordProvider().register(config.DEFAULT_TENANT_ID, "admin", "admin", ADMIN_PW)
 
     store.write_page(Page(
         id="atlas", title="Atlas uses Redis for caching", body="Project Atlas uses Redis.",
@@ -53,18 +58,25 @@ def client():
     search.rebuild()
     graph.rebuild_graph()
 
-    # Standalone app: the REAL /api routes (via mount_api) + the REAL auth
-    # middleware + an open /health — without the FastMCP streamable app, whose
-    # session manager can only be built once per process (see test_mcp_http).
+    # Standalone app: the REAL /api routes (via mount_api) + the REAL IAM5 web-auth
+    # (session cookie + CSRF + PDP, via webauth.install) + an open /health — without
+    # the FastMCP streamable app, whose session manager can only be built once per
+    # process (see test_mcp_http).
     async def _health(_req):
         return JSONResponse(mcp_server._health_payload())
 
     app = Starlette(routes=[Route("/health", _health, methods=["GET"])])
     webapi.mount_api(app)
-    app.add_middleware(mcp_server._BearerAuthMiddleware, token=TOKEN)
-    app.add_middleware(mcp_server._TenantBindingMiddleware)  # bind a tenant per request
+    webauth.install(app)
 
     with TestClient(app) as c:
+        # Log in as the admin; the session cookie is stored in the client jar and the
+        # CSRF token is echoed on state-changing requests via ``AUTH``.
+        r = c.post("/api/auth/login", json={"username": "admin", "password": ADMIN_PW})
+        assert r.status_code == 200, r.text
+        AUTH.clear()
+        AUTH["X-CSRF-Token"] = c.cookies["mnesis_csrf"]
+        c.anon = TestClient(app)  # a cookie-less client for the "unauthenticated" case
         yield c
 
     tenancy.unbind(_token)
@@ -99,9 +111,9 @@ def _sse_answer(text: str) -> str:
 # --- auth -------------------------------------------------------------------
 
 
-def test_health_open_but_api_requires_token(client):
+def test_health_open_but_api_requires_session(client):
     assert client.get("/health").status_code == 200            # open
-    assert client.get("/api/pages").status_code == 401         # token required
+    assert client.anon.get("/api/pages").status_code == 401    # session required
     assert client.get("/api/pages", headers=AUTH).status_code == 200
 
 

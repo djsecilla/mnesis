@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Suspense, useEffect, useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 import { listReviews } from "../api/endpoints";
+import { useAuth } from "../auth/AuthContext";
 import { activeBatchCount, useBatchItems } from "../batch/store";
 import CommandPalette from "./CommandPalette";
 import { ChatIcon, GraphIcon, PagesIcon, PlusIcon, ReviewIcon, SearchIcon, SourcesIcon } from "./Icon";
@@ -56,6 +57,26 @@ function BatchIndicator() {
   );
 }
 
+function UserMenu() {
+  // The signed-in principal + a one-click logout (IAM5). Identity comes from the
+  // server-resolved session, never the client.
+  const { session, logout } = useAuth();
+  return (
+    <div className="flex items-center gap-2 text-xs text-muted">
+      <span title={`${session.principal_id} · ${session.roles.join(", ")} · ${session.tenant_id}`}>
+        {session.principal_id}
+      </span>
+      <button
+        onClick={() => void logout()}
+        className="rounded-md border border-border px-2 py-1 text-xs text-muted transition hover:border-accent hover:text-fg"
+        title="Sign out"
+      >
+        Sign out
+      </button>
+    </div>
+  );
+}
+
 export default function Shell() {
   const [paletteOpen, setPaletteOpen] = useState(false);
 
@@ -86,6 +107,7 @@ export default function Shell() {
         <div className="flex items-center gap-3">
           <BatchIndicator />
           <ThemeToggle />
+          <UserMenu />
         </div>
       </header>
 
