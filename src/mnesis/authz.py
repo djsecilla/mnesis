@@ -1,90 +1,305 @@
-"""Authorization & within-tenant visibility (T4, CLAUDE.md §16).
+"""Authorization — RBAC + scopes + **the single policy decision point** (IAM4, T4, §16).
 
-Cross-tenant access is already structurally impossible (§16, T1/T2). This is the
-finer layer *inside* a resolved tenant:
+Cross-tenant access is already structurally impossible (§16, T1/T2). This module is the
+**one** place any surface (Web, CLI, MCP) turns an authenticated principal into an
+allow/deny decision. No surface makes ad hoc authz decisions — they all call
+:func:`decide` / :func:`require_permission` / the :func:`enforce` decorator.
 
-  - **Authorization** — what a :class:`~mnesis.auth.Principal` may *do*. A single
-    :func:`authorize` (and :func:`require`) gates reads/writes/maintenance/admin by
-    role. ``admin``/``member`` may write; ``readonly`` may only read; ``agent`` gets
-    a scoped set (read/write/maintain, never tenant/credential admin).
-  - **Visibility** — what a principal may *see*. Pages carry ``owner_principal`` +
-    ``visibility`` (``shared`` = every principal in the tenant; ``private`` =
-    owner-only). The default for new pages is configurable per tenant (default
-    ``shared``). Filtering is applied in the **data/query layer** (search, graph,
-    get, ingest) — never only in a surface — so no surface can leak a private page.
+A single decision combines, **fail closed** (deny by default):
 
-When **no principal is bound** (the legacy single-tenant path, the CLI, internal
-maintenance), nothing is narrowed: every check passes and every page is visible, so
-existing single-tenant behaviour is unchanged. Enforcement engages only once a
-principal is bound at a boundary (T3).
+  1. **Tenant match** — the principal's tenant must equal the resource's tenant (the
+     bound tenant, or an explicit ``context["tenant_id"]``); system-level actions
+     (tenant lifecycle) are tenant-agnostic. Cross-tenant always denies.
+  2. **Effective permission = role permissions ∩ credential scopes** (least privilege —
+     an **intersection**, never a union). A scope entry may be a fine permission
+     (``pages:write``) or a coarse class (``write``) that covers its fine permissions;
+     an empty scope set means "unrestricted within the role". The role→permission
+     matrix is explicit (:data:`ROLE_PERMISSIONS`).
+  3. **Within-tenant visibility** (T4) — a per-page ``read`` also requires visibility; a
+     per-page ``write`` also requires ownership (or ``admin``).
+
+Every denial carries a machine ``reason`` (on the :class:`Decision` and the raised
+:class:`AuthorizationError`), so it is auditable; an optional audit sink
+(:func:`set_audit_sink`) is notified on every deny.
+
+**Backward compatibility.** The T4 surface is preserved verbatim: the coarse actions
+``READ``/``WRITE``/``MAINTAIN``/``ADMIN``, :func:`authorize` (bool) / :func:`require`
+(raises), and every visibility helper behave exactly as before — including the
+legacy "no principal bound ⇒ permitted" path for the single-tenant/CLI/internal case.
+The fine-grained model and the PDP are additive.
 """
 
 from __future__ import annotations
 
-from . import auth, config, store, tenancy, vocab
+import functools
+from dataclasses import dataclass
 
-# --- Authorization ---------------------------------------------------------
+from . import auth, config, identity, store, tenancy, vocab
 
-#: Coarse actions the surfaces gate on.
+# --- Coarse actions (T4) — also the permission "classes" for scope families ---
+
 READ = "read"
 WRITE = "write"
 MAINTAIN = "maintain"  # decay / rebuild / graph-lint
 ADMIN = "admin"  # tenant + credential administration
 ACTIONS = frozenset({READ, WRITE, MAINTAIN, ADMIN})
+_CLASSES = ACTIONS
 
-#: Role → capability set. ``agent`` is a non-human principal scoped to read/write/
-#: maintain but never tenant/credential administration.
-ROLE_CAPABILITIES: dict[str, frozenset[str]] = {
-    "admin": frozenset({READ, WRITE, MAINTAIN, ADMIN}),
-    "member": frozenset({READ, WRITE, MAINTAIN}),
-    "agent": frozenset({READ, WRITE, MAINTAIN}),
-    "readonly": frozenset({READ}),
+
+# --- Fine-grained permissions (IAM4): resource:action over the domain ---------
+
+PAGES_READ = "pages:read"
+PAGES_WRITE = "pages:write"
+PAGES_DELETE = "pages:delete"  # supersede/retire a page (§12: reversible, not hard-delete)
+GRAPH_MAINTAIN = "graph:maintain"  # decay / rebuild / graph-lint
+AGENTS_RUN = "agents:run"  # drive the agent runtime / maintenance passes
+USERS_MANAGE = "users:manage"  # manage principals within a tenant
+CREDENTIALS_ISSUE = "credentials:issue"  # mint PATs / agent keys / credentials
+EGRESS_CONFIGURE = "egress:configure"  # configure the outbound egress plane
+TENANTS_MANAGE = "tenants:manage"  # provision/suspend/delete tenants (SYSTEM level)
+
+#: Each fine permission belongs to one coarse class (used for scope-family expansion
+#: and to answer the coarse T4 actions). The class is *grouping only* — what a role
+#: actually grants is the explicit matrix below, never the class.
+PERMISSION_CLASS: dict[str, str] = {
+    PAGES_READ: READ,
+    PAGES_WRITE: WRITE,
+    PAGES_DELETE: WRITE,
+    GRAPH_MAINTAIN: MAINTAIN,
+    AGENTS_RUN: MAINTAIN,
+    USERS_MANAGE: ADMIN,
+    CREDENTIALS_ISSUE: ADMIN,
+    EGRESS_CONFIGURE: ADMIN,
+    TENANTS_MANAGE: ADMIN,
+}
+PERMISSIONS: frozenset[str] = frozenset(PERMISSION_CLASS)
+
+#: Actions that are NOT tenant-scoped (they operate at the system level), so the
+#: tenant-match step is skipped for them. Only the system admin's role grants these.
+SYSTEM_LEVEL_ACTIONS: frozenset[str] = frozenset({TENANTS_MANAGE})
+
+
+# --- The role → permission matrix (explicit) ---------------------------------
+# Roles: system_admin, admin (tenant-admin), member, readonly, agent. `agent` is a
+# non-human principal — read/write/maintain + run, never tenant/credential/user admin.
+
+ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
+    # System admin operates at the system level (tenant lifecycle). It holds every
+    # permission, but the tenant-match step still bars it from any single tenant's
+    # data, so "manage tenants" is what it can actually do (cross-tenant page access
+    # is denied by construction).
+    identity.SYSTEM_ROLE: frozenset(PERMISSIONS),
+    "admin": frozenset({
+        PAGES_READ, PAGES_WRITE, PAGES_DELETE, GRAPH_MAINTAIN, AGENTS_RUN,
+        USERS_MANAGE, CREDENTIALS_ISSUE, EGRESS_CONFIGURE,
+    }),
+    "member": frozenset({PAGES_READ, PAGES_WRITE, PAGES_DELETE, GRAPH_MAINTAIN}),
+    "agent": frozenset({PAGES_READ, PAGES_WRITE, PAGES_DELETE, GRAPH_MAINTAIN, AGENTS_RUN}),
+    "readonly": frozenset({PAGES_READ}),
 }
 
 
-class AuthorizationError(Exception):
-    """A principal attempted an action its role/ownership does not permit."""
+def role_permissions(roles) -> frozenset[str]:
+    """Union of the fine permissions granted by ``roles`` (unknown roles grant none)."""
+    out: set[str] = set()
+    for r in roles:
+        out |= ROLE_PERMISSIONS.get(r, frozenset())
+    return frozenset(out)
+
+
+def _scope_covers(scopes: set[str], perm: str) -> bool:
+    """A scope grants ``perm`` if it names the permission or its coarse class."""
+    return perm in scopes or PERMISSION_CLASS.get(perm, "") in scopes
+
+
+def effective_permissions(principal: "auth.Principal") -> frozenset[str]:
+    """**Effective permission = role permissions ∩ credential scopes** (least privilege).
+
+    An empty scope set means the credential is unrestricted within its roles (no
+    narrowing). Otherwise only role permissions that a scope covers survive — the
+    intersection, **never** the union: a scope can only ever *reduce* a role's grant."""
+    rp = role_permissions(principal.roles)
+    scopes = set(principal.scopes)
+    if not scopes:
+        return rp
+    return frozenset(p for p in rp if _scope_covers(scopes, p))
+
+
+#: T4 back-compat: the coarse capability classes a role covers (derived from the matrix).
+ROLE_CAPABILITIES: dict[str, frozenset[str]] = {
+    role: frozenset(PERMISSION_CLASS[p] for p in perms)
+    for role, perms in ROLE_PERMISSIONS.items()
+}
 
 
 def capabilities(role: str) -> frozenset[str]:
     return ROLE_CAPABILITIES.get(role, frozenset())
 
 
-def authorize(principal: "auth.Principal | None", action: str, resource=None) -> bool:
-    """Return True if ``principal`` may perform ``action`` (optionally on ``resource``).
+# --- The decision ----------------------------------------------------------
 
-    No bound principal → permitted (legacy/CLI/internal path). Otherwise: the role
-    must hold the capability for ``action``; a per-page ``read`` additionally
-    requires visibility (:func:`can_see`); a per-page ``write`` on an *existing*
-    page additionally requires ownership or ``admin`` (you may not mutate or
-    re-scope another principal's page)."""
+
+class AuthorizationError(Exception):
+    """A principal attempted an action its role/scope/ownership/tenant does not permit.
+    Carries a machine ``reason`` and the full :class:`Decision`."""
+
+    def __init__(self, message: str, *, reason: str = "denied", decision: "Decision | None" = None) -> None:
+        super().__init__(message)
+        self.reason = reason
+        self.decision = decision
+
+
+@dataclass(frozen=True)
+class Decision:
+    """The PDP's verdict. ``reason`` is a stable machine code; it is set on both allow
+    (``"ok"``) and deny so every outcome is auditable."""
+
+    allowed: bool
+    reason: str
+    action: str = ""
+    principal_id: str | None = None
+    tenant_id: str | None = None
+
+    def __bool__(self) -> bool:
+        return self.allowed
+
+
+# An optional sink notified on every deny (surfaces wire real auditing). Kept off by
+# default so the pure decision path does no I/O.
+_audit_sink = None
+
+
+def set_audit_sink(sink) -> None:
+    """Register ``sink(decision)`` to be called on every deny (or ``None`` to disable)."""
+    global _audit_sink
+    _audit_sink = sink
+
+
+def _deny(reason: str, action: str, principal, *, tenant_id: str | None = None) -> Decision:
+    d = Decision(
+        allowed=False,
+        reason=reason,
+        action=action,
+        principal_id=getattr(principal, "principal_id", None),
+        tenant_id=tenant_id if tenant_id is not None else getattr(principal, "tenant_id", None),
+    )
+    if _audit_sink is not None:
+        try:
+            _audit_sink(d)
+        except Exception:
+            pass
+    return d
+
+
+def _target_tenant(principal, context) -> str | None:
+    if context and context.get("tenant_id"):
+        return context["tenant_id"]
+    ctx = tenancy.current_or_none()
+    return ctx.tenant_id if ctx is not None else None
+
+
+def decide(principal: "auth.Principal | None", action: str, resource=None, context: dict | None = None) -> Decision:
+    """**The PDP.** Return an allow/deny :class:`Decision`, fail closed.
+
+    Combines tenant match, effective permission (role ∩ scope), and within-tenant
+    visibility. ``action`` may be a fine permission (``pages:write``) or a coarse class
+    (``read``/``write``/``maintain``/``admin``). A missing principal denies (a pure
+    fail-closed decision — the lenient legacy path lives in :func:`authorize`/:func:`require`)."""
+    if principal is None:
+        return _deny("no_principal", action, principal)
+
+    fine = action if action in PERMISSIONS else None
+    if fine is None and action not in _CLASSES:
+        return _deny("unknown_action", action, principal)
+
+    # 1) Tenant match (skipped for system-level actions).
+    if action not in SYSTEM_LEVEL_ACTIONS:
+        target = _target_tenant(principal, context)
+        if target is not None and principal.tenant_id != target:
+            return _deny("cross_tenant", action, principal, tenant_id=target)
+
+    # 2) Effective permission = role ∩ scope.
+    rp = role_permissions(principal.roles)
+    eff = effective_permissions(principal)
+    if fine is not None:
+        if fine not in eff:
+            reason = "out_of_scope" if fine in rp else "insufficient_role"
+            return _deny(reason, action, principal)
+    else:  # coarse class: satisfied by ANY permission of that class
+        class_perms = {p for p, c in PERMISSION_CLASS.items() if c == action}
+        if not (eff & class_perms):
+            reason = "out_of_scope" if (rp & class_perms) else "insufficient_role"
+            return _deny(reason, action, principal)
+
+    # 3) Within-tenant visibility / ownership for a concrete page.
+    if isinstance(resource, store.Page):
+        is_read = action == READ or fine == PAGES_READ
+        is_write = action == WRITE or fine in (PAGES_WRITE, PAGES_DELETE)
+        if is_read and not can_see(principal, resource):
+            return _deny("not_visible", action, principal)
+        if is_write and not _owns_or_admin(principal, resource):
+            return _deny("not_owner", action, principal)
+
+    return Decision(True, "ok", action, getattr(principal, "principal_id", None), getattr(principal, "tenant_id", None))
+
+
+# --- Enforcement API (the one call surfaces make) --------------------------
+
+
+def authorize(principal: "auth.Principal | None", action: str, resource=None, context: dict | None = None) -> bool:
+    """Boolean gate. **Legacy-compatible:** an unbound principal (``None``) is permitted
+    (single-tenant/CLI/internal path). A bound principal goes through the full PDP."""
     if principal is None:
         return True
-    if action not in capabilities(principal.role):
-        return False
-    if isinstance(resource, store.Page):
-        if action == READ:
-            return can_see(principal, resource)
-        if action == WRITE:
-            return _owns_or_admin(principal, resource)
-    return True
+    return decide(principal, action, resource, context).allowed
 
 
-def require(principal: "auth.Principal | None", action: str, resource=None) -> None:
-    """:func:`authorize` or raise :class:`AuthorizationError`."""
-    if not authorize(principal, action, resource):
-        who = principal.principal_id if principal else "?"
-        role = principal.role if principal else "?"
-        raise AuthorizationError(f"{who} (role {role}) may not {action}")
+def require(principal: "auth.Principal | None", action: str, resource=None, context: dict | None = None) -> None:
+    """:func:`authorize` or raise :class:`AuthorizationError` (with the deny reason).
+    An unbound principal is permitted (legacy path), matching T4."""
+    if principal is None:
+        return
+    d = decide(principal, action, resource, context)
+    if not d.allowed:
+        who = d.principal_id or "?"
+        raise AuthorizationError(f"{who} may not {action} ({d.reason})", reason=d.reason, decision=d)
+
+
+def require_permission(action: str, resource=None, context: dict | None = None) -> None:
+    """The **surface entry point**: enforce ``action`` for the currently-bound principal
+    in one call. **Fail closed** — when auth is enabled and no principal is bound, deny;
+    when auth is off (legacy single-tenant), permit (nothing to narrow)."""
+    principal = auth.current_principal_or_none()
+    if principal is None:
+        if config.MNESIS_AUTH_ENABLED:
+            d = _deny("no_principal", action, None)
+            raise AuthorizationError("no authenticated principal", reason="no_principal", decision=d)
+        return
+    require(principal, action, resource, context)
+
+
+def enforce(action: str):
+    """Decorator: gate a handler/tool with a single line — ``@enforce(authz.PAGES_WRITE)``.
+    Enforces ``action`` for the bound principal before the wrapped function runs."""
+
+    def deco(fn):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            require_permission(action)
+            return fn(*args, **kwargs)
+
+        return wrapper
+
+    return deco
 
 
 def _owns_or_admin(principal: "auth.Principal", page: store.Page) -> bool:
-    return principal.role == "admin" or (
+    return principal.role == "admin" or principal.role == identity.SYSTEM_ROLE or (
         page.owner_principal is not None and page.owner_principal == principal.principal_id
     )
 
 
-# --- Visibility ------------------------------------------------------------
+# --- Visibility (T4) — unchanged ------------------------------------------
 
 PRIVATE = "private"
 SHARED = "shared"
