@@ -137,9 +137,10 @@ def test_readonly_principal_cannot_write(acme):
     with as_principal(acme, READER):
         with pytest.raises(authz.AuthorizationError):
             ingest.ingest_source("A new fact about penguins.", "peng")
-        # file-back declines for a readonly principal (no write).
-        out = mcp_server.mnesis_file_back("Q?", "An answer worth keeping.", 0.9)
-        assert "not filed" in out
+        # file-back is refused for a readonly principal (no write): the PDP enforces
+        # every tool uniformly now (IAM7), so it raises rather than returning a note.
+        with pytest.raises(authz.AuthorizationError):
+            mcp_server.mnesis_file_back("Q?", "An answer worth keeping.", 0.9)
     # A member CAN write.
     with as_principal(acme, P2):
         assert mcp_server.mnesis_file_back("What caches Atlas?", "Atlas uses Redis.", 0.9).startswith("filed digest")

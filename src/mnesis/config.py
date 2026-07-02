@@ -243,9 +243,11 @@ MNESIS_MCP_TRANSPORT: str = os.environ.get("MNESIS_MCP_TRANSPORT", "stdio")
 MNESIS_MCP_HOST: str = os.environ.get("MNESIS_MCP_HOST", "0.0.0.0")
 MNESIS_MCP_PORT: int = _env_int("MNESIS_MCP_PORT", 8080)
 
-#: Optional bearer token for HTTP mode. If set, every tool call must present
-#: ``Authorization: Bearer <token>``. Empty = no auth (privileged endpoint).
-#: LEGACY single-tenant path: used only when ``MNESIS_AUTH_ENABLED`` is off.
+#: RETIRED as a server credential (IAM7): the HTTP ``/mcp`` surface no longer accepts a
+#: single shared token — every call authenticates with a per-agent **agent key** (IAM3)
+#: and is scope-checked. This env survives only as the name the **agent layer** reads to
+#: present *its own* bearer credential (which should be a per-agent key), so it is kept
+#: for backward compatibility; the mnesis server itself ignores it.
 MNESIS_MCP_TOKEN: str = os.environ.get("MNESIS_MCP_TOKEN", "")
 
 #: When set, the HTTP boundary resolves a per-tenant, per-principal **credential**

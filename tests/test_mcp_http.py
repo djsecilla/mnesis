@@ -24,8 +24,6 @@ from mcp.client.streamable_http import streamablehttp_client
 
 from mnesis import config, ingest, mcp_server, tenancy
 
-TOKEN = "s3cret-token"
-
 
 def _free_port() -> int:
     s = socket.socket()
@@ -37,7 +35,12 @@ def _free_port() -> int:
 
 @pytest.fixture(scope="module")
 def http_server():
-    """A running HTTP MCP server (module-scoped) with a token and a seeded page."""
+    """A running HTTP MCP server (module-scoped) with a seeded page and a per-agent
+    **agent key** (IAM7 — the global MCP token is retired). Yields ``(base, key)``."""
+    import types
+
+    from mnesis import tokens
+
     tmp = Path(tempfile.mkdtemp(prefix="mnesis-http-"))
     saved = {
         k: getattr(config, k)
@@ -47,16 +50,22 @@ def http_server():
     }
     config.DATA_ROOT = tmp / "data"
     config.MNESIS_LLM_STUB = True
-    config.MNESIS_MCP_TOKEN = TOKEN
+    config.MNESIS_MCP_TOKEN = ""  # no global token — retired
 
     # Provision + bind the default tenant for fixture-time seeding; the running
-    # server rebinds it per request via the tenant-binding middleware.
+    # server authenticates each request with the agent key below.
     _ctx = tenancy.open_tenant(config.DEFAULT_TENANT_ID)
     _token = tenancy.bind(_ctx)
 
     # Seed a page so /health stats and a tool call have something to report.
     ingest.ingest_source("Project Atlas uses Redis for caching.", "atlas")
     mcp_server.mnesis_rebuild()
+
+    # A per-tenant, per-agent-principal agent key with full agent scopes (read+write+
+    # maintain) — enough for mnesis_list. Scope narrowing is exercised in test_mcp_auth.
+    agent_key, _ = tokens.TokenService().issue_agent_key(
+        config.DEFAULT_TENANT_ID, "ci-agent", ("agent",), ("read", "write", "maintain"),
+    )
 
     port = _free_port()
     server = uvicorn.Server(
@@ -75,7 +84,7 @@ def http_server():
     else:
         raise RuntimeError("HTTP MCP server did not become ready")
 
-    yield base
+    yield types.SimpleNamespace(base=base, key=agent_key)
 
     server.should_exit = True
     thread.join(timeout=5)
@@ -94,7 +103,7 @@ async def _call_tool(url: str, name: str, args: dict, token: str | None):
 
 
 def test_health_returns_200_with_stats(http_server):
-    r = httpx.get(f"{http_server}/health", timeout=5)
+    r = httpx.get(f"{http_server.base}/health", timeout=5)
     assert r.status_code == 200
     data = r.json()
     assert data["status"] == "ok"
@@ -104,14 +113,14 @@ def test_health_returns_200_with_stats(http_server):
 
 
 def test_health_is_unauthenticated(http_server):
-    # No token header, yet /health is reachable (safe for probes).
-    assert httpx.get(f"{http_server}/health", timeout=5).status_code == 200
+    # No credential, yet /health is reachable (safe for probes).
+    assert httpx.get(f"{http_server.base}/health", timeout=5).status_code == 200
 
 
-def test_tool_call_rejected_without_token(http_server):
-    # The MCP endpoint requires the bearer token; a bare POST is 401.
+def test_tool_call_rejected_without_key(http_server):
+    # The MCP endpoint requires an agent key; a bare POST is 401 (no global token).
     r = httpx.post(
-        f"{http_server}/mcp",
+        f"{http_server.base}/mcp",
         json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
         headers={"accept": "application/json, text/event-stream", "content-type": "application/json"},
         timeout=5,
@@ -119,14 +128,14 @@ def test_tool_call_rejected_without_token(http_server):
     assert r.status_code == 401
 
 
-def test_tool_call_succeeds_with_token(http_server):
-    result = asyncio.run(_call_tool(f"{http_server}/mcp", "mnesis_list", {}, TOKEN))
+def test_tool_call_succeeds_with_agent_key(http_server):
+    result = asyncio.run(_call_tool(f"{http_server.base}/mcp", "mnesis_list", {}, http_server.key))
     assert not result.isError
     text = "".join(getattr(c, "text", "") for c in result.content)
     assert "project-atlas-uses-redis-for-caching" in text
 
 
-def test_mcp_client_rejected_without_token(http_server):
-    # A full client handshake without the token must fail.
+def test_mcp_client_rejected_without_key(http_server):
+    # A full client handshake without a credential must fail.
     with pytest.raises(Exception):
-        asyncio.run(_call_tool(f"{http_server}/mcp", "mnesis_list", {}, None))
+        asyncio.run(_call_tool(f"{http_server.base}/mcp", "mnesis_list", {}, None))

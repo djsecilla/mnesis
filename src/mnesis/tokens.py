@@ -40,8 +40,11 @@ from .identity import (
     AuthError,
     Deny,
     HUMAN,
+    MAINTAIN,
     Principal,
+    READ,
     SYSTEM_TENANT,
+    WRITE,
     hash_token,
     permissions_for,
 )
@@ -52,6 +55,17 @@ SESSION: str = "session"
 PAT: str = "pat"
 AGENT_KEY: str = "agent_key"
 TOKEN_TYPES: frozenset[str] = frozenset({SESSION, PAT, AGENT_KEY})
+
+#: Per-agent-kind **least-privilege** scopes for the agent-layer keys (IAM7). An agent
+#: key carries the ``agent`` role; these scopes narrow it (effective = role ∩ scope):
+#:   - writing agents ingest → ``write``;
+#:   - action agents read Mnesis to compose (egress/send is separately controlled) → ``read``;
+#:   - maintenance agents run the dream cycle → ``read`` + ``maintain``.
+AGENT_KIND_SCOPES: dict[str, tuple[str, ...]] = {
+    "writing": (WRITE,),
+    "action": (READ,),
+    "maintenance": (READ, MAINTAIN),
+}
 
 #: Prefixes aid humans/log-scrubbers spotting a leaked token by type; the secret is the
 #: high-entropy remainder and the *whole* string is hashed, so the prefix grants nothing.
@@ -551,3 +565,55 @@ def _tenant_exists(tenant_id: str) -> bool:
         return tenancy.TenantRegistry().exists(tenant_id)
     except Exception:
         return False
+
+
+# --- Agent-layer least-privilege keys (IAM7) -------------------------------
+
+
+def issue_agent_key_for(
+    agent_kind: str,
+    tenant_id: str,
+    principal_id: str,
+    *,
+    name: str | None = None,
+    ttl: int | None = None,
+    service: "TokenService | None" = None,
+) -> tuple[str, TokenRecord]:
+    """Mint a **per-tenant, per-agent-principal** agent key with the documented
+    least-privilege scopes for ``agent_kind`` (``writing`` / ``action`` / ``maintenance``
+    — see :data:`AGENT_KIND_SCOPES`). Rotatable + revocable like any agent key."""
+    scopes = AGENT_KIND_SCOPES.get(agent_kind)
+    if scopes is None:
+        raise TokenError(f"unknown agent kind {agent_kind!r}; one of {sorted(AGENT_KIND_SCOPES)}")
+    return (service or TokenService()).issue_agent_key(
+        tenant_id, principal_id, ("agent",), scopes, name=name or f"{agent_kind}-agent", ttl=ttl
+    )
+
+
+# --- The shared bearer resolver (used by MCP + the CLI) --------------------
+
+
+def resolve_bearer(
+    raw: str | None,
+    *,
+    token_store: "TokenService | None" = None,
+    cred_store=None,
+    data_root=None,
+):
+    """Resolve an opaque bearer credential to ``(TenantContext, Principal)`` using the
+    **same** machinery every surface shares. Tries an IAM3 token/agent-key/PAT first
+    (the token service, carrying its scopes), then falls back to a legacy IAM1
+    credential (``mnesis auth issue``). Fail-closed: raises :class:`Deny` (with the token
+    service's reason — ``expired``/``revoked``/``unknown``) or
+    :class:`~mnesis.auth.InvalidCredential`; the tenant is taken only from the credential."""
+    try:
+        ap = (token_store or TokenService()).validate(raw)
+        ctx = tenancy.open_tenant(ap.tenant_id, data_root=data_root)
+        return ctx, ap.to_principal()
+    except Deny as deny:
+        from . import auth  # local import: auth → identity (no cycle with tokens)
+
+        try:
+            return auth.resolve_principal(raw, store=cred_store, data_root=data_root)
+        except auth.AuthError:
+            raise deny  # surface the token-service reason (expired/revoked/unknown)

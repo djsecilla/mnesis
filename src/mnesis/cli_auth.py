@@ -25,7 +25,7 @@ import json
 import os
 from pathlib import Path
 
-from . import auth, config, identity, tenancy, tokens
+from . import config, tokens
 
 #: Env override for the local credential file (tests point this at a temp path).
 CLI_CREDENTIALS_ENV = "MNESIS_CLI_CREDENTIALS"
@@ -95,18 +95,7 @@ class CliCredentialStore:
 
 
 def resolve_token(raw: str, *, data_root: Path | str | None = None):
-    """Resolve an opaque ``raw`` credential to ``(TenantContext, Principal)`` using the
-    **same** machinery as the other surfaces. Tries an IAM3 token/PAT first (the token
-    service), then falls back to a legacy IAM1 credential. Fail-closed: raises
-    :class:`~mnesis.identity.Deny` (with the token service's reason) or
-    :class:`~mnesis.auth.InvalidCredential`."""
-    try:
-        ap = tokens.TokenService().validate(raw)
-        ctx = tenancy.open_tenant(ap.tenant_id, data_root=data_root)
-        return ctx, ap.to_principal()
-    except identity.Deny as deny:
-        # Maybe it's a legacy IAM1 credential (mnesis auth issue) rather than a token.
-        try:
-            return auth.resolve_principal(raw, data_root=data_root)
-        except auth.AuthError:
-            raise deny  # surface the token-service reason (expired/revoked/unknown)
+    """Resolve an opaque ``raw`` credential to ``(TenantContext, Principal)`` — the
+    **same** shared resolver the MCP surface uses (:func:`mnesis.tokens.resolve_bearer`):
+    an IAM3 token/PAT first, then a legacy IAM1 credential. Fail-closed."""
+    return tokens.resolve_bearer(raw, data_root=data_root)

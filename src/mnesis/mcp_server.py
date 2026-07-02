@@ -10,10 +10,12 @@ Newly written pages are ``search.upsert``-ed into the index immediately, so a
 ``mnesis_query`` — the compounding loop the PoC exists to demonstrate.
 
 Two transports (selected by ``MNESIS_MCP_TRANSPORT``): **stdio** (default; local
-Claude Code spawns it as a subprocess — unchanged) and **http** (streamable
-HTTP for container deployment, with a ``GET /health`` endpoint and optional
-bearer-token auth). Verified against mcp 1.27.x: ``FastMCP``, ``@mcp.tool()``,
-``mcp.custom_route``, ``mcp.streamable_http_app()``, ``mcp.run()``.
+Claude Code spawns it as a subprocess — unchanged, local trust) and **http**
+(streamable HTTP for container deployment, with a ``GET /health`` endpoint). Over
+HTTP every ``/mcp`` call authenticates with a per-tenant, per-principal **agent key**
+(IAM7) and each tool enforces that key's scopes through the PDP — there is no global
+token. Verified against mcp 1.27.x: ``FastMCP``, ``@mcp.tool()``, ``mcp.custom_route``,
+``mcp.streamable_http_app()``, ``mcp.run()``.
 """
 
 from __future__ import annotations
@@ -38,11 +40,39 @@ from . import (
     state,
     store,
     tenancy,
+    tokens,
 )
 from .filters import scrub
 from .store import Page
 
 log = logging.getLogger(__name__)
+
+
+# --- Explicit tool → scope mapping (IAM7) ----------------------------------
+# Every mnesis_* tool call goes through the PDP with the credential's scopes, so
+# effective access = role ∩ scope ∩ tenant ∩ visibility. A read-scoped agent key
+# can query but not ingest; a maintenance-scoped key can decay but not write, etc.
+# The coarse action maps to the fine permissions via the PDP's permission classes.
+_TOOL_SCOPES: dict[str, str] = {
+    # reads
+    "mnesis_query": authz.READ, "mnesis_get": authz.READ, "mnesis_list": authz.READ,
+    "mnesis_impact": authz.READ, "mnesis_entity": authz.READ, "mnesis_neighbors": authz.READ,
+    "mnesis_traverse": authz.READ, "mnesis_graph_stats": authz.READ,
+    "mnesis_health_report": authz.READ, "mnesis_find_duplicates": authz.READ,
+    "mnesis_review": authz.READ,
+    # writes
+    "mnesis_ingest": authz.WRITE, "mnesis_file_back": authz.WRITE,
+    # maintenance
+    "mnesis_rebuild": authz.MAINTAIN, "mnesis_decay": authz.MAINTAIN,
+    "mnesis_graph_lint": authz.MAINTAIN, "mnesis_resolve": authz.MAINTAIN,
+}
+
+
+def _authorize(tool: str) -> None:
+    """Enforce the PDP for ``tool`` against the bound principal (its role ∩ scope).
+    Raises :class:`~mnesis.authz.AuthorizationError` on denial (surfaced by FastMCP as a
+    tool error). No principal bound (local stdio / in-process) → permitted."""
+    authz.require_permission(_TOOL_SCOPES[tool])
 
 
 def _transport_security():
@@ -125,6 +155,7 @@ def mnesis_ingest(text: str, source_ref: str) -> str:
     review id. The action/review lines let an automated client (e.g. the ingest
     daemon) report the outcome without forcing any resolution.
     """
+    _authorize("mnesis_ingest")  # PDP: role ∩ scope must grant write (IAM7)
     plan = ingest.plan_ingest(text, source_ref)
     try:
         result = ingest.apply_ingest(plan)  # the rich IngestResult (routing + ids)
@@ -159,6 +190,7 @@ def mnesis_query(query: str, limit: int = 10, include_stale: bool = False) -> st
     marked ``↳ graph`` and grounded by the connecting edge. Stale pages are
     excluded unless ``include_stale=True``. Reading top hits records access.
     """
+    _authorize("mnesis_query")
     hits = graph.graph_query(query, limit, include_stale=include_stale)
     if not hits:
         return f'no results for "{query}"'
@@ -194,6 +226,7 @@ def mnesis_get(page_id: str) -> str:
     line, not the frontmatter. Reading a page records an access (reinforcement)
     and refreshes its cached confidence.
     """
+    _authorize("mnesis_get")
     if "/" in page_id or "\\" in page_id:
         return f"invalid page id: {page_id}"
     path = tenancy.current().pages_dir / f"{page_id}.md"
@@ -225,13 +258,8 @@ def mnesis_file_back(question: str, answer: str, quality_score: float | None = N
     reason. Digest pages are tagged ``kind:digest`` so they never masquerade as
     primary sourced facts (CLAUDE.md §5, §9).
     """
-    # Authorization (T4): filing back is a write (readonly denied).
+    _authorize("mnesis_file_back")  # PDP: role ∩ scope must grant write (IAM7)
     principal = auth.current_principal_or_none()
-    try:
-        authz.require(principal, authz.WRITE)
-    except authz.AuthorizationError as exc:
-        return f"not filed: {exc}"
-
     score = quality_score if quality_score is not None else _heuristic_quality(answer)
     threshold = config.MNESIS_FILEBACK_THRESHOLD
     if score < threshold:
@@ -259,6 +287,7 @@ def mnesis_file_back(question: str, answer: str, quality_score: float | None = N
 @mcp.tool()
 def mnesis_list() -> str:
     """List every page the principal may see: id, kind/status, and title."""
+    _authorize("mnesis_list")
     principal = auth.current_principal_or_none()
     pages = store.list_pages()
     if principal is not None:
@@ -272,6 +301,7 @@ def mnesis_list() -> str:
 def mnesis_rebuild() -> str:
     """Rebuild the rebuildable caches from Markdown: the search index AND the
     knowledge graph. The durable state store is never cleared."""
+    _authorize("mnesis_rebuild")
     n = search.rebuild()
     g = graph.rebuild_graph()
     return (
@@ -288,6 +318,7 @@ def mnesis_impact(entity: str, depth: int = 3) -> str:
     with their dependency path back to ``entity``, the connecting predicate, edge
     confidence, and the grounding pages. Demoted (stale-only) edges excluded.
     """
+    _authorize("mnesis_impact")
     affected = graph.impact(entity, depth=depth)
     if not affected:
         return f"nothing depends on or uses {entity}"
@@ -308,6 +339,7 @@ def mnesis_entity(ref: str) -> str:
     declare/assert it, and its typed edges with confidence and grounding pages.
     Traversal/edges are confidence-weighted and exclude stale (demoted) edges by
     default."""
+    _authorize("mnesis_entity")
     ent = graph.entity(ref)
     if ent is None:
         return f"no such entity: {ref}"
@@ -333,6 +365,7 @@ def mnesis_neighbors(ref: str, predicate: str | None = None, direction: str = "o
     """Adjacent entities of ``ref`` via non-demoted edges. ``direction`` is
     ``out``/``in``/``both``; optional ``predicate`` filter. Each result cites the
     pages behind its edge."""
+    _authorize("mnesis_neighbors")
     try:
         ns = graph.neighbors(ref, predicate=predicate, direction=direction)
     except ValueError as exc:
@@ -354,6 +387,7 @@ def mnesis_traverse(ref: str, predicate: str | None = None, depth: int = 2) -> s
     """Entities reachable from ``ref`` within ``depth`` hops (out edges), with the
     path and predicates. Cycle-safe, confidence-ordered upstream, excludes stale
     (demoted) edges."""
+    _authorize("mnesis_traverse")
     rows = graph.traverse(ref, predicate=predicate, depth=depth)
     if not rows:
         return f"nothing reachable from {ref}"
@@ -368,6 +402,7 @@ def mnesis_traverse(ref: str, predicate: str | None = None, depth: int = 2) -> s
 def mnesis_graph_stats() -> str:
     """Knowledge-graph size: node and edge counts by type/predicate, plus the
     demoted-edge count."""
+    _authorize("mnesis_graph_stats")
     s = graph.graph_stats()
     lines = [f"entities: {s['entities']}   edges: {s['edges']}   demoted: {s['demoted']}"]
     if s.get("entities_by_type"):
@@ -384,6 +419,7 @@ def mnesis_graph_lint(fix: bool = False) -> str:
     edge confidence) and flags the rest (undeclared/orphan entities, dangling
     structural edges) for human review. Idempotent; never deletes an edge with an
     active supporting page."""
+    _authorize("mnesis_graph_lint")
     return graph_lint.graph_lint(fix=fix).summary()
 
 
@@ -397,6 +433,7 @@ def mnesis_health_report() -> str:
     and whether the search index and graph cache are in sync with the Markdown
     (the canonical source). Writes nothing.
     """
+    _authorize("mnesis_health_report")
     r = maintenance.health_report()
     bs = ", ".join(f"{k}={v}" for k, v in r["by_status"].items()) or "(none)"
     bk = ", ".join(f"{k}={v}" for k, v in r["by_kind"].items()) or "(none)"
@@ -436,6 +473,7 @@ def mnesis_find_duplicates(limit: int = 20) -> str:
     vectors** (semantic similarity); it changes nothing — a human or agent
     decides what, if anything, to do (e.g. ingest a reconciling source).
     """
+    _authorize("mnesis_find_duplicates")
     dupes = maintenance.find_duplicates(limit=limit)
     if not dupes:
         return "no near-duplicate candidates found (heuristic)"
@@ -452,6 +490,7 @@ def mnesis_decay() -> str:
     """Run the decay/lifecycle pass: recompute confidence corpus-wide and
     transition pages between active and stale (aged, unread, low-confidence pages
     go stale; reinforced ones revive). Idempotent. Returns the transition counts."""
+    _authorize("mnesis_decay")
     s = lifecycle.recompute_all()
     return (
         f"decay: scanned {s['scanned']}, restaled {s['restaled']}, "
@@ -463,6 +502,7 @@ def mnesis_decay() -> str:
 def mnesis_review() -> str:
     """List open contradiction reviews: queue id, both pages (with current
     confidence and title), and the conflict detail."""
+    _authorize("mnesis_review")
     reviews = state.list_open_reviews()
     if not reviews:
         return "(no open contradictions)"
@@ -488,6 +528,7 @@ def mnesis_resolve(review_id: int, keep_id: str) -> str:
     kept page's confidence) and closes the review. Goes through
     ``store.supersede`` — no ad hoc edits; the loser stays as stale history.
     """
+    _authorize("mnesis_resolve")
     review = next((r for r in state.list_open_reviews() if r["id"] == review_id), None)
     if review is None:
         return f"no open review with id {review_id}"
@@ -529,24 +570,17 @@ async def _health(_request):
     return JSONResponse(_health_payload())
 
 
-class _TenantBindingMiddleware:
-    """ASGI middleware that resolves and binds a :class:`TenantContext` for the
-    duration of each HTTP request, so the store is reachable inside handlers.
-
-    For now it binds the ``default`` tenant (single-tenant deployment); a later
-    prompt resolves the tenant from credentials/session here. Binding happens in the
-    request's context, so it propagates to sync tools dispatched to worker threads."""
+class _HealthTenantMiddleware:
+    """Bind the ``default`` tenant for the open ``/health`` probe **only**, so it can
+    report quick stats. Every other path passes through untouched — ``/mcp`` is bound
+    by the agent-key auth (:class:`_PrincipalBindingMiddleware`) and ``/api`` by the
+    web session choke point."""
 
     def __init__(self, app) -> None:
         self.app = app
 
     async def __call__(self, scope, receive, send) -> None:
-        if scope.get("type") not in ("http", "websocket"):
-            await self.app(scope, receive, send)
-            return
-        # The web surface (/api) is owned by the IAM5 session middleware, which binds
-        # the tenant from the authenticated session — never the default tenant.
-        if scope.get("path", "").startswith("/api"):
+        if scope.get("type") not in ("http", "websocket") or scope.get("path", "") != "/health":
             await self.app(scope, receive, send)
             return
         ctx = tenancy.open_tenant(config.DEFAULT_TENANT_ID)
@@ -555,24 +589,27 @@ class _TenantBindingMiddleware:
 
 
 class _PrincipalBindingMiddleware:
-    """Credential auth (T3): resolve the bearer token to ``(TenantContext, Principal)``
-    and bind BOTH for the request. **Fail closed** — a missing/invalid/expired/revoked
-    credential is ``401`` (``/health`` stays open and tenant-agnostic). The tenant is
-    taken **only** from the validated credential; any client-supplied tenant id
-    (header/body/path) is ignored by construction. Installed when
-    ``MNESIS_AUTH_ENABLED`` is set, replacing the legacy single-token + default-tenant path."""
+    """MCP agent-key auth (IAM7): resolve the bearer credential to
+    ``(TenantContext, Principal)`` and bind BOTH for the request. The bearer is a
+    per-tenant, per-principal **agent/machine API key** (IAM3, carrying its scopes) — or
+    a legacy IAM1 credential — resolved by the shared :func:`mnesis.tokens.resolve_bearer`.
+    **Fail closed:** a missing/invalid/expired/revoked credential is ``401``. The tenant
+    is taken **only** from the validated credential; any client-supplied tenant id
+    (header/body/path) is ignored by construction. Guards ``/mcp`` (and any non-``/api``,
+    non-``/health`` path); ``/health`` is open and ``/api`` is the web session surface.
+
+    There is **no single global MCP token** — every call is authenticated + scope-checked
+    (the tools enforce the credential's scopes through the PDP)."""
 
     def __init__(self, app, store=None) -> None:
         self.app = app
-        self.store = store
+        self.store = store  # optional IAM1 credential store (for the legacy fallback)
 
     async def __call__(self, scope, receive, send) -> None:
         if scope.get("type") not in ("http", "websocket"):
             await self.app(scope, receive, send)
             return
         path = scope.get("path", "")
-        # /health is open; /api is the web surface (session auth, IAM5) — both bypass
-        # the agent/MCP bearer path here.
         if path == "/health" or path.startswith("/api"):
             await self.app(scope, receive, send)
             return
@@ -580,7 +617,7 @@ class _PrincipalBindingMiddleware:
         presented = headers.get(b"authorization", b"").decode()
         token = presented[7:] if presented.startswith("Bearer ") else ""
         try:
-            ctx, principal = auth.resolve_principal(token, store=self.store)
+            ctx, principal = tokens.resolve_bearer(token, cred_store=self.store)
         except auth.AuthError:
             await JSONResponse({"error": "unauthorized"}, status_code=401)(scope, receive, send)
             return
@@ -592,40 +629,18 @@ class _PrincipalBindingMiddleware:
                 auth.unbind_principal(ptok)
 
 
-class _BearerAuthMiddleware:
-    """ASGI middleware requiring ``Authorization: Bearer <token>`` on every HTTP
-    request except ``/health``. Installed only when a token is configured."""
-
-    def __init__(self, app, token: str) -> None:
-        self.app = app
-        self.token = token
-
-    async def __call__(self, scope, receive, send) -> None:
-        path = scope.get("path", "")
-        # /health is open; /api is the web surface (session auth, IAM5) — the single
-        # injected bearer token no longer guards the browser path.
-        if scope.get("type") == "http" and path != "/health" and not path.startswith("/api"):
-            headers = dict(scope.get("headers") or [])
-            presented = headers.get(b"authorization", b"").decode()
-            if presented != f"Bearer {self.token}":
-                await JSONResponse({"error": "unauthorized"}, status_code=401)(
-                    scope, receive, send
-                )
-                return
-        await self.app(scope, receive, send)
-
-
 def build_http_app():
-    """Build the streamable-HTTP ASGI app with **two distinct auth surfaces** (IAM5):
+    """Build the streamable-HTTP ASGI app with **three distinct auth surfaces**:
 
-    - ``/api/*`` — the **web UI**: interactive login + **cookie sessions** + CSRF + the
-      PDP (``webauth.WebSessionMiddleware``). The single browser-injected bearer token
-      is **retired** — the web no longer authenticates with ``MNESIS_MCP_TOKEN``.
-    - ``/mcp`` — the **agent/MCP** surface: per-principal **bearer credentials**
-      (``_PrincipalBindingMiddleware`` when ``MNESIS_AUTH_ENABLED``; else the legacy
-      ``MNESIS_MCP_TOKEN`` + default tenant). These middlewares skip ``/api`` (owned by
-      the session choke point).
-    - ``GET /health`` — open.
+    - ``/api/*`` — the **web UI** (IAM5): interactive login + **cookie sessions** + CSRF
+      + the PDP (``webauth.WebSessionMiddleware``). The browser-injected bearer token is
+      retired.
+    - ``/mcp`` — the **agent/MCP** surface (IAM7): a per-tenant, per-principal
+      **agent/machine API key** authenticates every call (``_PrincipalBindingMiddleware``
+      → ``tokens.resolve_bearer``), and every tool enforces the key's scopes through the
+      PDP. The **single global MCP token is retired** — there is no unauthenticated or
+      shared-token path.
+    - ``GET /health`` — open (its default-tenant stats bound by ``_HealthTenantMiddleware``).
     """
     from . import webapi, webauth  # lazy: they import mcp_server, avoid an import cycle
 
@@ -633,16 +648,10 @@ def build_http_app():
     webapi.mount_api(app)
     # Inner: the web session/CSRF/PDP choke point for /api (retires the injected token).
     webauth.install(app)
-    # Outer: the agent/MCP bearer path (skips /api + /health).
-    if config.MNESIS_AUTH_ENABLED:
-        # Credential auth: the bearer token resolves to (tenant, principal); the tenant
-        # comes ONLY from the credential and an unresolved one is denied (fail closed).
-        app.add_middleware(_PrincipalBindingMiddleware)
-    else:
-        if config.MNESIS_MCP_TOKEN:
-            app.add_middleware(_BearerAuthMiddleware, token=config.MNESIS_MCP_TOKEN)
-        # Added last → outermost: bind the default tenant before any /mcp handler.
-        app.add_middleware(_TenantBindingMiddleware)
+    # Middle: the agent/MCP surface — an agent key authenticates every /mcp call.
+    app.add_middleware(_PrincipalBindingMiddleware)
+    # Outer: bind the default tenant for the open /health probe only.
+    app.add_middleware(_HealthTenantMiddleware)
     return app
 
 
@@ -651,12 +660,9 @@ def serve() -> None:
     if config.MNESIS_MCP_TRANSPORT == "http":
         import uvicorn
 
-        if not config.MNESIS_MCP_TOKEN:
-            log.warning(
-                "MCP HTTP transport starting WITHOUT a bearer token "
-                "(MNESIS_MCP_TOKEN unset). This endpoint can ingest and modify "
-                "knowledge — treat it as privileged and restrict network access."
-            )
+        # IAM7: the HTTP /mcp surface always authenticates each call with a per-agent
+        # agent key (no global token, no open path). Provision keys with
+        # `mnesis pat`/`tokens.issue_agent_key_for` and distribute per agent.
         uvicorn.run(
             build_http_app(), host=config.MNESIS_MCP_HOST, port=config.MNESIS_MCP_PORT
         )

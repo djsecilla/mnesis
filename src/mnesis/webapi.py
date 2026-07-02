@@ -1,8 +1,9 @@
 """Browser-friendly REST + SSE gateway for the web UI.
 
 Mounted under ``/api`` in the **same** Starlette app the MCP server serves (see
-``mcp_server.build_http_app``), so it reuses one process, one port, and the same
-bearer-token auth (``MNESIS_MCP_TOKEN`` guards ``/api/*``; ``/health`` stays open).
+``mcp_server.build_http_app``), so it reuses one process and port. Authentication is the
+IAM5 **web session** (cookie + CSRF + the PDP, via ``webauth.WebSessionMiddleware``);
+``/mcp`` uses per-agent keys (IAM7) and ``/health`` stays open.
 
 These routes are **thin adapters** — no business logic lives here that isn't in
 ``store`` / ``search`` / ``graph`` / ``confidence`` / ``mcp_server``. All graph
