@@ -15,6 +15,14 @@ import pytest
 from mnesis import config, tenancy
 
 
+@pytest.fixture(autouse=True)
+def _isolate_cli_credentials(tmp_path, monkeypatch):
+    """Point the CLI's local credential file (IAM6) at a per-test temp path, so no
+    test ever reads or writes the developer's real ``~/.config/mnesis/credentials.json``.
+    """
+    monkeypatch.setenv("MNESIS_CLI_CREDENTIALS", str(tmp_path / "cli-credentials.json"))
+
+
 def bind_tenant(tmp_path, monkeypatch, tenant_id: str | None = None):
     """Point DATA_ROOT at ``tmp_path/data``, provision + bind ``tenant_id`` (default),
     and return its :class:`TenantContext`. Caller-managed binding lives for the test

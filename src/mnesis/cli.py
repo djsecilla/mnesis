@@ -15,7 +15,7 @@ import os
 import sys
 from pathlib import Path
 
-from . import admin, auth, config, mcp_server, tenancy
+from . import admin, auth, authz, cli_auth, config, identity, mcp_server, providers, tenancy, tokens
 
 
 def _read_source(path: str) -> str:
@@ -34,7 +34,34 @@ def _build_parser() -> argparse.ArgumentParser:
         default=config.DEFAULT_TENANT_ID,
         help=f"tenant to operate on (default: {config.DEFAULT_TENANT_ID})",
     )
+    parser.add_argument(
+        "--token",
+        default=None,
+        help="a PAT or session token for headless auth (else MNESIS_TOKEN, else the "
+             "token stored by `mnesis login`).",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
+
+    # Interactive auth (IAM6): log in with a password (IAM2) → a stored session token.
+    p_login = sub.add_parser("login", help="log in with a password; stores a local session token")
+    p_login.add_argument("--principal", "--username", dest="principal", required=True,
+                         help="the username / principal id")
+    p_login.add_argument("--password", default=None,
+                         help="the password (else MNESIS_PASSWORD, else an interactive prompt)")
+    sub.add_parser("logout", help="revoke the stored session and clear the local credential")
+    sub.add_parser("whoami", help="show the currently-authenticated principal")
+
+    # Personal Access Tokens (IAM6/IAM3): headless automation credentials.
+    p_pat = sub.add_parser("pat", help="manage personal access tokens (headless automation)")
+    ptsub = p_pat.add_subparsers(dest="pat_cmd", required=True)
+    pt_create = ptsub.add_parser("create", help="mint a scoped PAT (prints the token ONCE)")
+    pt_create.add_argument("--name", required=True, help="a label for the PAT")
+    pt_create.add_argument("--scope", action="append", default=[], dest="scopes",
+                           help="a permission scope to grant, repeatable (default: read)")
+    pt_create.add_argument("--ttl", type=int, default=None, help="lifetime in seconds (default: 90 days)")
+    ptsub.add_parser("list", help="list your PATs (no secrets)")
+    pt_revoke = ptsub.add_parser("revoke", help="revoke one of your tokens by id")
+    pt_revoke.add_argument("token_id", help="the token id (not the token)")
 
     sub.add_parser(
         "migrate-tenants",
@@ -151,6 +178,18 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+# Per-command PDP action (IAM6). Every data command enforces this against the
+# resolved principal before it runs; the same coarse actions the other surfaces use.
+_COMMAND_PERMISSION: dict[str, str] = {
+    "query": authz.READ, "get": authz.READ, "list": authz.READ, "impact": authz.READ,
+    "entity": authz.READ, "neighbors": authz.READ, "graph-stats": authz.READ,
+    "health": authz.READ, "find-duplicates": authz.READ, "review": authz.READ,
+    "ingest": authz.WRITE, "file-back": authz.WRITE,
+    "rebuild": authz.MAINTAIN, "decay": authz.MAINTAIN, "graph-lint": authz.MAINTAIN,
+    "resolve": authz.MAINTAIN,
+}
+
+
 def _dispatch(args: argparse.Namespace) -> None:
     if args.command == "ingest":
         text = _read_source(args.file)
@@ -190,9 +229,132 @@ def _dispatch(args: argparse.Namespace) -> None:
         print(mcp_server.mnesis_resolve(args.review_id, args.keep_id))
 
 
+def _cmd_login(args: argparse.Namespace) -> int:
+    """Log in with a password (IAM2) and store a session token (IAM3) locally.
+
+    The tenant is the ``--tenant`` (default ``default``); identity is proven against the
+    local password provider. Never prints the token."""
+    import getpass
+
+    tenant, username = args.tenant, args.principal
+    password = args.password or os.environ.get("MNESIS_PASSWORD")
+    if not password and sys.stdin.isatty():
+        password = getpass.getpass(f"password for {tenant}/{username}: ")
+    if not password:
+        print("error: a password is required (--password, MNESIS_PASSWORD, or an interactive prompt)")
+        return 2
+
+    try:
+        principal = providers.LocalPasswordProvider().authenticate(tenant, username, password)
+    except providers.AccountLocked as exc:
+        print(f"error: account locked after too many attempts; try again in ~{int(exc.retry_after)}s")
+        return 2
+    except identity.AuthError:
+        print("error: invalid username or password")
+        return 2
+
+    raw, _rec = tokens.TokenService().issue_session(principal)
+    store = cli_auth.CliCredentialStore()
+    store.save(raw, tenant_id=principal.tenant_id, principal_id=principal.principal_id,
+               roles=principal.roles)
+    print(f"logged in as {principal.principal_id} (tenant {principal.tenant_id}, "
+          f"roles {', '.join(sorted(principal.roles))})")
+    print(f"  session stored at {store.path} (mode 0600); re-run `mnesis login` when it expires")
+    return 0
+
+
+def _cmd_logout(_args: argparse.Namespace) -> int:
+    """Revoke the stored session server-side and clear the local credential file."""
+    store = cli_auth.CliCredentialStore()
+    raw = store.token()
+    if not raw:
+        print("not logged in")
+        return 0
+    try:
+        tokens.TokenService().revoke_token(raw)  # immediate, server-side
+    except Exception:  # noqa: BLE001 — always clear the local file regardless
+        pass
+    store.clear()
+    print("logged out (session revoked and local credential cleared)")
+    return 0
+
+
+def _cmd_whoami(args: argparse.Namespace) -> int:
+    """Show the currently-authenticated principal (or report not logged in)."""
+    try:
+        ctx, principal = _resolve_optional(args)
+    except _CliDenied as exc:
+        print(f"error: {exc}")
+        return 2
+    if principal is None:
+        print("not logged in (run `mnesis login`, or set MNESIS_TOKEN / MNESIS_CREDENTIAL)")
+        return 1
+    perms = ", ".join(sorted(authz.effective_permissions(principal))) or "(none)"
+    print(f"{principal.principal_id} @ {principal.tenant_id}")
+    print(f"  roles: {', '.join(sorted(principal.roles))}")
+    print(f"  permissions: {perms}")
+    return 0
+
+
+def _cmd_pat(args: argparse.Namespace) -> int:
+    """Manage the caller's Personal Access Tokens (headless automation)."""
+    try:
+        _ctx, principal = _resolve_optional(args)
+    except _CliDenied as exc:
+        print(f"error: {exc}")
+        return 2
+    if principal is None:
+        print("error: not authenticated — run `mnesis login` first to manage PATs")
+        return 2
+
+    svc = tokens.TokenService()
+    if args.pat_cmd == "create":
+        scopes = tuple(args.scopes) or (authz.READ,)  # default least-privilege: read only
+        try:
+            raw, rec = svc.issue_pat(principal, args.name, scopes, ttl=args.ttl)
+        except tokens.ScopeError as exc:
+            print(f"error: {exc}")
+            return 2
+        print(f"created PAT {rec.id} '{rec.name}' (scopes {', '.join(rec.scopes)})")
+        print(f"  token (shown ONCE — store it securely): {raw}")
+        return 0
+    if args.pat_cmd == "list":
+        pats = [t for t in svc.list_for_principal(principal.tenant_id, principal.principal_id)
+                if t.token_type == tokens.PAT]
+        if not pats:
+            print("no PATs")
+            return 0
+        for t in pats:
+            state = "revoked" if t.revoked_at else "active"
+            print(f"  {t.id}  {t.name or '-':16} [{', '.join(t.scopes) or 'read'}]  {state}")
+        return 0
+    if args.pat_cmd == "revoke":
+        ok = svc.revoke(args.token_id)
+        print(f"revoked {args.token_id}" if ok else f"nothing to revoke: {args.token_id}")
+        return 0 if ok else 1
+    return 2
+
+
 def _cmd_auth(args: argparse.Namespace) -> int:
-    """Issue / revoke / list credentials for the ``--tenant`` (default ``default``)."""
+    """Issue / revoke / list credentials for the ``--tenant`` (default ``default``).
+
+    Admin-only (IAM6): the caller must resolve to a principal that may
+    ``credentials:issue`` for the target tenant. In legacy (auth-off) mode with no
+    principal, nothing is narrowed."""
     import time
+
+    # Enforce the admin role on credential management (PDP), when a caller is resolved.
+    try:
+        _ctx, caller = _resolve_optional(args)
+    except _CliDenied as exc:
+        print(f"error: {exc}")
+        return 2
+    if caller is not None and not authz.authorize(
+        caller, authz.CREDENTIALS_ISSUE, context={"tenant_id": args.tenant}
+    ):
+        print(f"error: '{caller.principal_id}' (role {caller.role}) may not manage "
+              f"credentials for tenant '{args.tenant}'")
+        return 3
 
     store = auth.CredentialStore()
     if args.auth_cmd == "issue":
@@ -317,8 +479,19 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
+    # Interactive auth (IAM6): login/logout/whoami/pat operate on the credential
+    # stores; they manage authentication rather than tenant data.
+    if args.command == "login":
+        return _cmd_login(args)
+    if args.command == "logout":
+        return _cmd_logout(args)
+    if args.command == "whoami":
+        return _cmd_whoami(args)
+    if args.command == "pat":
+        return _cmd_pat(args)
+
     # Credential admin operates on the credential store (outside any tenant root),
-    # scoped to --tenant; no tenant binding is needed.
+    # scoped to --tenant; admin-only when a caller is resolved.
     if args.command == "auth":
         return _cmd_auth(args)
 
@@ -336,6 +509,19 @@ def main(argv: list[str] | None = None) -> int:
     with tenancy.use(ctx):
         token = auth.bind_principal(principal) if principal is not None else None
         try:
+            # PDP enforcement (IAM6): every data command is authorized against the
+            # resolved principal (role ∩ scope ∩ tenant ∩ visibility). No principal
+            # bound (legacy auth-off) → permitted.
+            perm = _COMMAND_PERMISSION.get(args.command)
+            if perm is not None:
+                try:
+                    authz.require_permission(perm)
+                except authz.AuthorizationError as exc:
+                    who = principal.principal_id if principal else "?"
+                    role = principal.role if principal else "?"
+                    print(f"error: '{who}' (role {role}) is not authorized to run "
+                          f"'{args.command}' ({exc.reason})")
+                    return 3
             _dispatch(args)
         finally:
             if token is not None:
@@ -347,27 +533,64 @@ class _CliDenied(Exception):
     """A tenant-scoped CLI op was refused (no resolved authenticated context)."""
 
 
+def _collect_raw(args: argparse.Namespace) -> tuple[str | None, str]:
+    """The raw credential to resolve, in precedence order, with its source label:
+    the ``--token`` flag, ``MNESIS_TOKEN`` (headless PAT), the stored ``mnesis login``
+    session, then the legacy ``MNESIS_CREDENTIAL``."""
+    if getattr(args, "token", None):
+        return args.token, "flag"
+    env_token = os.environ.get("MNESIS_TOKEN")
+    if env_token:
+        return env_token, "env"
+    stored = cli_auth.CliCredentialStore().token()
+    if stored:
+        return stored, "login"
+    legacy = os.environ.get("MNESIS_CREDENTIAL")
+    if legacy:
+        return legacy, "credential"
+    return None, "none"
+
+
+def _resolve_optional(args: argparse.Namespace):
+    """Resolve ``(TenantContext, Principal)`` from any available credential, or
+    ``(None, None)`` when none is present. A **present-but-invalid** credential fails
+    closed (:class:`_CliDenied`), with a re-login hint when it came from the stored
+    login session."""
+    raw, source = _collect_raw(args)
+    if not raw:
+        return None, None
+    try:
+        return cli_auth.resolve_token(raw)
+    except auth.AuthError as exc:
+        reason = getattr(exc, "reason", None) or "invalid"
+        if source == "login":
+            raise _CliDenied(
+                f"your CLI session is {reason} — run `mnesis login` to re-authenticate"
+            ) from exc
+        raise _CliDenied(
+            f"credential rejected ({reason}); provide a valid --token / MNESIS_TOKEN / "
+            "MNESIS_CREDENTIAL"
+        ) from exc
+
+
 def _resolve_data_context(args: argparse.Namespace):
     """Resolve the (TenantContext, Principal|None) a tenant-scoped CLI op runs under.
 
-    Tenant identity comes from a verified credential, not the bare ``--tenant`` flag:
-      - ``MNESIS_CREDENTIAL`` (an opaque token) → resolve it (tenant + principal);
-        the credential's tenant is authoritative and any ``--tenant`` is ignored.
-      - else when ``MNESIS_AUTH_ENABLED`` → **refuse** (fail closed): there is no
-        unauthenticated way to reach a tenant's data.
-      - else (legacy single-tenant, auth off) → the local ``--tenant`` (default
-        ``default``) with no principal — the pre-multitenant convenience path.
+    Identity comes from a verified token/credential, never the bare ``--tenant`` flag
+    (see :func:`_collect_raw` for the precedence). A resolved credential's tenant is
+    authoritative and any ``--tenant`` is ignored. When none is present:
+      - ``MNESIS_AUTH_ENABLED`` → **refuse** (fail closed): no unauthenticated access
+        to tenant data;
+      - else (legacy single-tenant, auth off) → the local ``--tenant`` with no
+        principal (the pre-multitenant convenience path; nothing is narrowed).
     """
-    token = os.environ.get("MNESIS_CREDENTIAL")
-    if token:
-        try:
-            return auth.resolve_principal(token)
-        except auth.AuthError as exc:
-            raise _CliDenied(f"credential rejected ({exc}); set a valid MNESIS_CREDENTIAL") from exc
+    ctx, principal = _resolve_optional(args)
+    if principal is not None:
+        return ctx, principal
     if config.MNESIS_AUTH_ENABLED:
         raise _CliDenied(
-            "authentication is enabled but no credential was provided; set "
-            "MNESIS_CREDENTIAL to an issued token (the --tenant flag is not trusted)"
+            "not authenticated: no credential provided — run `mnesis login` (or set "
+            "MNESIS_TOKEN / MNESIS_CREDENTIAL); the --tenant flag is not trusted"
         )
     return tenancy.open_tenant(args.tenant), None
 
