@@ -32,6 +32,23 @@ if [ "$CMD" != "agents" ]; then
 fi
 
 # --- dispatch ---------------------------------------------------------------
+# --- first-run auth bootstrap (IAM8) ----------------------------------------
+# Real auth needs a real login. On the `serve` path we (idempotently, guarded)
+# bootstrap the identities from operator-supplied passwords — NEVER a default:
+#   - MNESIS_BOOTSTRAP_PASSWORD -> the system-admin (tenant lifecycle root of trust)
+#   - MNESIS_WEB_ADMIN_PASSWORD -> the first tenant-admin web user (default tenant)
+# Both are no-ops if that admin already exists, so restarts are safe.
+if [ "$CMD" = "serve" ]; then
+    if [ -n "${MNESIS_BOOTSTRAP_PASSWORD:-}" ]; then
+        mnesis admin bootstrap --password "$MNESIS_BOOTSTRAP_PASSWORD" >/dev/null 2>&1 || true
+    fi
+    if [ -n "${MNESIS_WEB_ADMIN_PASSWORD:-}" ]; then
+        mnesis --tenant "${MNESIS_WEB_ADMIN_TENANT:-default}" init-admin \
+            --principal "${MNESIS_WEB_ADMIN_USER:-admin}" \
+            --password "$MNESIS_WEB_ADMIN_PASSWORD" || true
+    fi
+fi
+
 case "$CMD" in
     serve)
         # Launch the MCP server (stdio transport; HTTP is wired in compose).

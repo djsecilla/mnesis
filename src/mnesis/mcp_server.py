@@ -660,6 +660,9 @@ def serve() -> None:
     if config.MNESIS_MCP_TRANSPORT == "http":
         import uvicorn
 
+        from . import audit
+        # IAM8: audit every PDP denial (and IAM2/3 logins/tokens) to the auth audit log.
+        audit.enable_pdp_audit()
         # IAM7: the HTTP /mcp surface always authenticates each call with a per-agent
         # agent key (no global token, no open path). Provision keys with
         # `mnesis pat`/`tokens.issue_agent_key_for` and distribute per agent.

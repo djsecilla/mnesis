@@ -23,7 +23,8 @@ import os
 import shutil
 from pathlib import Path
 
-from . import auth, config, tenancy
+from . import audit as _authaudit
+from . import auth, authz, config, providers, tenancy, tokens
 from .auth import CredentialStore, Principal, is_system_admin
 from .config import now_iso as _now_iso  # local alias keeps call sites unchanged
 
@@ -257,3 +258,152 @@ def delete_tenant(
         "tenant_id": tenant_id, "removed_root": removed_root,
         "credentials_removed": creds_removed, "agent_state_removed": agent_removed,
     }
+
+
+# --- User lifecycle (tenant-admin scoped, IAM8) -----------------------------
+# A tenant-admin manages users WITHIN their own tenant. The boundary is the PDP:
+# users:manage + tenant match — so a tenant-admin of A can never touch tenant B
+# (cross_tenant deny), and a member/readonly/agent can never manage users at all.
+
+
+class UserManagementError(Exception):
+    """A caller attempted user management it is not authorized for (fail closed)."""
+
+
+def _require_tenant_admin(actor: Principal | None, tenant_id: str) -> None:
+    if not authz.authorize(actor, authz.USERS_MANAGE, context={"tenant_id": tenant_id}):
+        who = getattr(actor, "principal_id", "?")
+        raise UserManagementError(
+            f"{who!r} may not manage users in tenant {tenant_id!r} "
+            "(requires the admin role within that tenant)"
+        )
+
+
+def provision_user(
+    tenant_id: str,
+    principal_id: str,
+    role: str,
+    password: str,
+    *,
+    actor: Principal,
+    cred_store: CredentialStore | None = None,
+    provider: "providers.LocalPasswordProvider | None" = None,
+) -> "auth.Credential":
+    """Provision a user in ``tenant_id`` with ``role`` and a password (argon2id). The
+    ``actor`` must be a tenant-admin of that tenant. Audited (no secret)."""
+    _require_tenant_admin(actor, tenant_id)
+    prov = provider or providers.LocalPasswordProvider(store=cred_store or CredentialStore())
+    rec = prov.register(tenant_id, principal_id, role, password)
+    _authaudit.record(
+        "user_provisioned", tenant_id=tenant_id, principal_id=principal_id,
+        credential_id=rec.id, action="users:manage", result="ok",
+        actor=actor.principal_id, role=role,
+    )
+    return rec
+
+
+def deactivate_user(
+    tenant_id: str,
+    principal_id: str,
+    *,
+    actor: Principal,
+    cred_store: CredentialStore | None = None,
+    token_service: "tokens.TokenService | None" = None,
+) -> dict:
+    """Deactivate a user: **force-revoke** every credential AND runtime token they hold
+    (immediate everywhere). Tenant-admin only, audited."""
+    _require_tenant_admin(actor, tenant_id)
+    store = cred_store or CredentialStore()
+    n_creds = store.revoke_for_principal(tenant_id, principal_id)
+    n_tokens = (token_service or tokens.TokenService()).revoke_all_for_principal(tenant_id, principal_id)
+    _authaudit.record(
+        "user_deactivated", tenant_id=tenant_id, principal_id=principal_id,
+        action="users:manage", result="ok", actor=actor.principal_id,
+        credentials_revoked=n_creds, tokens_revoked=n_tokens,
+    )
+    return {"credentials_revoked": n_creds, "tokens_revoked": n_tokens}
+
+
+def set_user_role(
+    tenant_id: str,
+    principal_id: str,
+    role: str,
+    *,
+    actor: Principal,
+    cred_store: CredentialStore | None = None,
+) -> int:
+    """Assign ``role`` to a user (updates all their credentials). Tenant-admin only,
+    audited. Returns the number of credentials updated."""
+    _require_tenant_admin(actor, tenant_id)
+    store = cred_store or CredentialStore()
+    updated = 0
+    for rec in store.list_for_tenant(tenant_id):
+        if rec.principal_id == principal_id:
+            store.set_roles(rec.id, (role,))
+            updated += 1
+    _authaudit.record(
+        "user_role_assigned", tenant_id=tenant_id, principal_id=principal_id,
+        action="users:manage", result="ok", actor=actor.principal_id, role=role,
+    )
+    return updated
+
+
+def list_users(
+    tenant_id: str, *, actor: Principal, cred_store: CredentialStore | None = None
+) -> list[dict]:
+    """List the users in ``tenant_id`` (principals + roles + active state, no secrets).
+    Tenant-admin only."""
+    _require_tenant_admin(actor, tenant_id)
+    return (cred_store or CredentialStore()).principals_for_tenant(tenant_id)
+
+
+def bootstrap_tenant_admin(
+    tenant_id: str,
+    principal_id: str,
+    password: str,
+    *,
+    cred_store: CredentialStore | None = None,
+    provider: "providers.LocalPasswordProvider | None" = None,
+    data_root: Path | str | None = None,
+) -> dict:
+    """First-run deploy bootstrap: create ``tenant_id`` and its **first tenant-admin
+    web user** from an operator-supplied password (no default). **Guarded + idempotent**:
+    if the tenant already has an active admin user this is a no-op — it can never reset an
+    existing admin. Local operator action (like ``admin bootstrap``); audited."""
+    tenancy.create_tenant(tenant_id, data_root=data_root)
+    store = cred_store or CredentialStore(
+        (Path(data_root) / config.CREDENTIALS_FILENAME) if data_root else None
+    )
+    for u in store.principals_for_tenant(tenant_id):
+        if "admin" in u["roles"] and u["active"]:
+            return {"created": False, "reason": "a tenant-admin already exists", "tenant_id": tenant_id}
+    providers.check_password_policy(password)
+    rec = (provider or providers.LocalPasswordProvider(store=store)).register(
+        tenant_id, principal_id, "admin", password
+    )
+    _authaudit.record(
+        "tenant_admin_bootstrapped", tenant_id=tenant_id, principal_id=principal_id,
+        credential_id=rec.id, action="bootstrap", result="ok",
+    )
+    return {"created": True, "credential_id": rec.id, "tenant_id": tenant_id}
+
+
+def create_system_admin(
+    principal_id: str,
+    password: str,
+    *,
+    admin: Principal,
+    cred_store: CredentialStore | None = None,
+    audit: SystemAuditLog | None = None,
+) -> "auth.Credential":
+    """Create an additional **system-admin** (password). Only an existing system-admin
+    may do this; recorded in the SYSTEM audit log. No default password."""
+    require_admin(admin)
+    providers.check_password_policy(password)
+    rec = (cred_store or CredentialStore()).issue_system_admin_password(
+        principal_id, password, name="system-admin"
+    )
+    (audit or SystemAuditLog()).record(
+        "create_system_admin", tenant_id=None, actor=admin.principal_id, credential_id=rec.id
+    )
+    return rec

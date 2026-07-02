@@ -15,7 +15,7 @@ import os
 import sys
 from pathlib import Path
 
-from . import admin, auth, authz, cli_auth, config, identity, mcp_server, providers, tenancy, tokens
+from . import admin, audit, auth, authz, cli_auth, config, identity, mcp_server, providers, tenancy, tokens
 
 
 def _read_source(path: str) -> str:
@@ -51,6 +51,20 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("logout", help="revoke the stored session and clear the local credential")
     sub.add_parser("whoami", help="show the currently-authenticated principal")
 
+    # User lifecycle (IAM8) — tenant-admin scoped (within --tenant); PDP-enforced.
+    p_user = sub.add_parser("user", help="manage users in --tenant (tenant-admin only)")
+    usub = p_user.add_subparsers(dest="user_cmd", required=True)
+    u_prov = usub.add_parser("provision", help="create a user with a role + password")
+    u_prov.add_argument("principal", help="the user's principal id")
+    u_prov.add_argument("--role", default="member", help="admin|member|readonly|agent")
+    u_prov.add_argument("--password", default=None, help="password (else MNESIS_NEW_USER_PASSWORD/prompt)")
+    u_deact = usub.add_parser("deactivate", help="force-revoke all a user's credentials + tokens")
+    u_deact.add_argument("principal", help="the user's principal id")
+    u_role = usub.add_parser("set-role", help="assign a role to a user")
+    u_role.add_argument("principal", help="the user's principal id")
+    u_role.add_argument("role", help="admin|member|readonly|agent")
+    usub.add_parser("list", help="list the tenant's users (no secrets)")
+
     # Personal Access Tokens (IAM6/IAM3): headless automation credentials.
     p_pat = sub.add_parser("pat", help="manage personal access tokens (headless automation)")
     ptsub = p_pat.add_subparsers(dest="pat_cmd", required=True)
@@ -67,6 +81,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "migrate-tenants",
         help="move an existing single-store layout into tenants/default/ (idempotent)",
     )
+
+    # First-run deploy bootstrap (IAM8): create the first tenant-admin web user so a
+    # fresh deployment has a real login. Guarded/idempotent; no default password.
+    p_init = sub.add_parser("init-admin", help="create the first tenant-admin web user (first-run)")
+    p_init.add_argument("--principal", default="admin", help="the admin user's principal id")
+    p_init.add_argument("--password", default=None, help="password (else MNESIS_WEB_ADMIN_PASSWORD)")
 
     # Credential admin (T3): operates on the credential store, scoped to --tenant.
     p_auth = sub.add_parser("auth", help="issue/revoke/list tenant+principal credentials")
@@ -93,6 +113,9 @@ def _build_parser() -> argparse.ArgumentParser:
              "random TOKEN credential is minted. May come from MNESIS_BOOTSTRAP_PASSWORD "
              "or an interactive prompt. Never a default.",
     )
+    ad_csa = adsub.add_parser("create-system-admin", help="create another system-admin (password)")
+    ad_csa.add_argument("--principal", required=True, help="the new system-admin's principal id")
+    ad_csa.add_argument("--password", default=None, help="password (else MNESIS_NEW_ADMIN_PASSWORD/prompt)")
     ad_prov = adsub.add_parser("provision", help="create a tenant + its initial admin credential")
     ad_prov.add_argument("tenant_id")
     ad_prov.add_argument("--name", default=None)
@@ -253,7 +276,9 @@ def _cmd_login(args: argparse.Namespace) -> int:
         print("error: invalid username or password")
         return 2
 
-    raw, _rec = tokens.TokenService().issue_session(principal)
+    raw, rec = tokens.TokenService().issue_session(principal)
+    audit.record("session_issued", tenant_id=principal.tenant_id, principal_id=principal.principal_id,
+                 credential_id=rec.id, action="login", result="ok")
     store = cli_auth.CliCredentialStore()
     store.save(raw, tenant_id=principal.tenant_id, principal_id=principal.principal_id,
                roles=principal.roles)
@@ -272,6 +297,9 @@ def _cmd_logout(_args: argparse.Namespace) -> int:
         return 0
     try:
         tokens.TokenService().revoke_token(raw)  # immediate, server-side
+        stored = store.load() or {}
+        audit.record("session_revoked", tenant_id=stored.get("tenant_id"),
+                     principal_id=stored.get("principal_id"), action="logout", result="ok")
     except Exception:  # noqa: BLE001 — always clear the local file regardless
         pass
     store.clear()
@@ -315,6 +343,8 @@ def _cmd_pat(args: argparse.Namespace) -> int:
         except tokens.ScopeError as exc:
             print(f"error: {exc}")
             return 2
+        audit.record("token_issued", tenant_id=principal.tenant_id, principal_id=principal.principal_id,
+                     credential_id=rec.id, action="pat:create", result="ok", token_type="pat")
         print(f"created PAT {rec.id} '{rec.name}' (scopes {', '.join(rec.scopes)})")
         print(f"  token (shown ONCE — store it securely): {raw}")
         return 0
@@ -330,8 +360,64 @@ def _cmd_pat(args: argparse.Namespace) -> int:
         return 0
     if args.pat_cmd == "revoke":
         ok = svc.revoke(args.token_id)
+        if ok:
+            audit.record("token_revoked", tenant_id=principal.tenant_id,
+                         principal_id=principal.principal_id, credential_id=args.token_id,
+                         action="pat:revoke", result="ok")
         print(f"revoked {args.token_id}" if ok else f"nothing to revoke: {args.token_id}")
         return 0 if ok else 1
+    return 2
+
+
+def _cmd_user(args: argparse.Namespace) -> int:
+    """Tenant-admin user lifecycle (IAM8) — always within the CALLER'S tenant (a
+    tenant-admin can never reach another tenant). PDP-enforced + audited."""
+    try:
+        _ctx, actor = _resolve_optional(args)
+    except _CliDenied as exc:
+        print(f"error: {exc}")
+        return 2
+    if actor is None:
+        print("error: not authenticated — run `mnesis login` as a tenant-admin")
+        return 2
+    tenant = actor.tenant_id  # never a --tenant override: you manage only your tenant
+    try:
+        if args.user_cmd == "provision":
+            password = args.password or os.environ.get("MNESIS_NEW_USER_PASSWORD")
+            if not password and sys.stdin.isatty():
+                import getpass
+                password = getpass.getpass(f"password for {tenant}/{args.principal}: ")
+            if not password:
+                print("error: a password is required (--password / MNESIS_NEW_USER_PASSWORD / prompt)")
+                return 2
+            admin.provision_user(tenant, args.principal, args.role, password, actor=actor)
+            print(f"provisioned user '{args.principal}' (role {args.role}) in tenant '{tenant}'")
+            return 0
+        if args.user_cmd == "deactivate":
+            res = admin.deactivate_user(tenant, args.principal, actor=actor)
+            print(f"deactivated '{args.principal}': force-revoked "
+                  f"{res['credentials_revoked']} credential(s) + {res['tokens_revoked']} token(s)")
+            return 0
+        if args.user_cmd == "set-role":
+            n = admin.set_user_role(tenant, args.principal, args.role, actor=actor)
+            print(f"assigned role '{args.role}' to '{args.principal}' ({n} credential(s) updated)")
+            return 0
+        if args.user_cmd == "list":
+            users = admin.list_users(tenant, actor=actor)
+            if not users:
+                print(f"no users in tenant '{tenant}'")
+                return 0
+            print(f"users in tenant '{tenant}':")
+            for u in users:
+                state = "active" if u["active"] else "inactive"
+                print(f"  {u['principal_id']:16} {','.join(u['roles']):22} {state}")
+            return 0
+    except admin.UserManagementError as exc:
+        print(f"error: {exc}")
+        return 3
+    except auth.AuthError as exc:  # password policy / invalid role
+        print(f"error: {exc}")
+        return 2
     return 2
 
 
@@ -425,6 +511,21 @@ def _cmd_admin(args: argparse.Namespace) -> int:
               "system-admin token (mnesis admin bootstrap)")
         return 2
 
+    if args.admin_cmd == "create-system-admin":
+        password = args.password or os.environ.get("MNESIS_NEW_ADMIN_PASSWORD")
+        if not password and sys.stdin.isatty():
+            import getpass
+            password = getpass.getpass(f"password for new system-admin '{args.principal}': ")
+        if not password:
+            print("error: a password is required (no default)")
+            return 2
+        try:
+            cred = admin.create_system_admin(args.principal, password, admin=adminp)
+        except auth.AuthError as exc:
+            print(f"error: {exc}")
+            return 2
+        print(f"created system-admin credential {cred.id} for principal '{args.principal}'")
+        return 0
     if args.admin_cmd == "provision":
         info = admin.provision_tenant(args.tenant_id, args.name, admin=adminp)
         print(f"provisioned tenant '{info['tenant_id']}' at {info['root']}")
@@ -467,7 +568,16 @@ def _cmd_admin(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
+    # Audit PDP denials for the duration of the command (never leak the global sink —
+    # reset it afterwards so unrelated in-process code does no audit I/O).
+    audit.enable_pdp_audit()
+    try:
+        return _run(args)
+    finally:
+        audit.disable_pdp_audit()
 
+
+def _run(args: argparse.Namespace) -> int:
     # `migrate-tenants` runs against the data root directly (no tenant bound yet).
     if args.command == "migrate-tenants":
         result = tenancy.migrate_legacy_to_default()
@@ -477,6 +587,23 @@ def main(argv: list[str] | None = None) -> int:
             f"({'migrated' if result['migrated'] else 'already current'}; {moved}; "
             f"{result['pages']} pages)"
         )
+        return 0
+
+    # First-run deploy bootstrap (IAM8) — guarded/idempotent; no tenant binding.
+    if args.command == "init-admin":
+        password = args.password or os.environ.get("MNESIS_WEB_ADMIN_PASSWORD")
+        if not password:
+            print("error: a password is required (--password or MNESIS_WEB_ADMIN_PASSWORD); no default")
+            return 2
+        try:
+            res = admin.bootstrap_tenant_admin(args.tenant, args.principal, password)
+        except auth.AuthError as exc:  # password policy
+            print(f"error: {exc}")
+            return 2
+        if res["created"]:
+            print(f"created tenant-admin '{args.principal}' in tenant '{args.tenant}' — log in via the web UI")
+        else:
+            print(f"tenant-admin already exists in '{args.tenant}' ({res['reason']}); nothing to do")
         return 0
 
     # Interactive auth (IAM6): login/logout/whoami/pat operate on the credential
@@ -489,6 +616,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_whoami(args)
     if args.command == "pat":
         return _cmd_pat(args)
+    if args.command == "user":
+        return _cmd_user(args)
 
     # Credential admin operates on the credential store (outside any tenant root),
     # scoped to --tenant; admin-only when a caller is resolved.

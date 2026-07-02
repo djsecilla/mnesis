@@ -44,7 +44,7 @@ is the intended design.
 4. [Using the CLI](#4-using-the-cli)
 5. [The three surfaces](#5-the-three-surfaces) — CLI · MCP · Web UI
 6. [The agent layer](#6-the-langgraph-agent-foundation) — multi-LLM agents: the maintenance **dream cycle**, the notes-inbox **writing agent**, and the approval-gated **action agent**
-7. [Multitenancy](#7-multitenancy) — isolation by construction, the admin boundary, quotas
+7. [Multitenancy](#7-multitenancy) — isolation by construction, the admin boundary, quotas, [authentication & authorization](#78-authentication--authorization)
 8. [Running with Docker](#8-running-with-docker)
 9. [Making the most of mnesis](#9-making-the-most-of-mnesis) — best practices
 10. [Configuration reference](#10-configuration-reference)
@@ -885,6 +885,62 @@ Credentials are stored hashed; for sensitive corpora, keep the data volume on an
 encrypted filesystem (per-tenant keys are a future hardening). The design contract
 is [`CLAUDE.md` §16](CLAUDE.md).
 
+### 7.8 Authentication & authorization
+
+mnesis has **one unified identity** across the web, CLI, and MCP surfaces. **Identity
+and authorization derive solely from a verified credential** — a client can never
+assert who it is or which tenant it belongs to — and every surface enforces the **same
+policy decision point (PDP)**, deny-by-default. There is **no shared/injected token**
+anywhere anymore.
+
+**The principal model.** A request resolves to an `AuthenticatedPrincipal` — a
+`principal_id` in a `tenant_id`, with `roles` and `scopes`. Roles map to permissions
+(`pages:read/write/delete`, `graph:maintain`, `agents:run`, `users:manage`,
+`credentials:issue`, `egress:configure`, `tenants:manage`); scopes **narrow** a
+credential to a subset. **Effective permission = role ∩ scope**, and the PDP then also
+checks **tenant match** and **within-tenant visibility** (private/shared pages).
+
+**Credential types** (all opaque, hashed at rest, shown once, revocable — revocation is
+immediate):
+
+| Type | Surface | How it's obtained | Scope |
+|---|---|---|---|
+| **Password** | login | provisioned by an admin (argon2id) | proves identity → issues a session |
+| **Web session** | Web UI | `POST /api/auth/login` → httpOnly cookie + CSRF | the user's full role |
+| **PAT** | CLI / automation | `mnesis pat create --scope …` | ≤ the issuer's permissions |
+| **Agent key** | MCP | provisioned per agent (`tokens.issue_agent_key_for`) | least-privilege per agent kind |
+
+**Per-surface flows.**
+- **Web** — log in (password) → a secure/httpOnly/SameSite **session cookie** + CSRF on
+  writes; every `/api` request + SSE stream resolves the session server-side and calls
+  the PDP. Retired: the nginx-injected bearer token.
+- **CLI** — `mnesis login` stores a session token in a local `0600` file; `mnesis pat`
+  mints scoped PATs for headless use (`--token`/`MNESIS_TOKEN`); every command is
+  PDP-checked. `mnesis logout` revokes immediately.
+- **MCP** — each agent presents a per-tenant, per-principal **agent key**; every
+  `mnesis_*` tool enforces the key's scopes (a `read` key can query but not ingest).
+  Retired: the single global `MNESIS_MCP_TOKEN`.
+
+**Least privilege for agents.** Writing agents get an `ingest` (write) key, action
+agents a `read` key (sending/egress is separately controlled), maintenance agents a
+`read`+`maintain` key — so a compromised agent can do only its job, in only its tenant.
+
+**Admin boundaries.** A **tenant-admin** provisions/deactivates users and assigns roles
+**within their own tenant** (`mnesis user provision|deactivate|set-role|list`) — never
+another tenant (the PDP denies it). Deactivating a user **force-revokes all their
+credentials + tokens** at once. Only a **system-admin** manages tenants and other
+system-admins. Every login, token issue/rotate/revoke, user-lifecycle op, and PDP
+denial is written to an **auth audit log** (`auth_audit.jsonl`) with the principal,
+tenant, credential id, action, and result — **never a secret**.
+
+**Bootstrap & secrets.** The first admin is created from an **operator-supplied
+password with no default** (`mnesis admin bootstrap` for the system-admin; `mnesis
+init-admin` / `MNESIS_WEB_ADMIN_PASSWORD` for the first web admin), guarded so it can
+never silently reset an existing admin. Secrets (the hashing pepper, bootstrap
+passwords, SMTP) come from `.env` / a secret store and are **never baked into the image
+or logged**. `docker compose up` brings up a working stack with a **real login**. The
+end-to-end **security drills** live in `tests/test_security_drills.py`.
+
 ---
 
 ## 8. Running with Docker
@@ -893,7 +949,7 @@ A containerized stack — no Python/uv needed on the host. See
 [`docs/OPS.md`](docs/OPS.md) for backup/restore and operations.
 
 ```bash
-cp .env.example .env          # then edit: MNESIS_MCP_TOKEN (recommended), keys, etc.
+cp .env.example .env          # then edit: MNESIS_WEB_ADMIN_PASSWORD (first login), MNESIS_AUTH_PEPPER, keys
 make docker-build             # build the image
 make docker-up                # start mnesis + the web UI; wait for healthy
 make docker-seed              # ingest bundled sample sources (offline, idempotent)

@@ -36,15 +36,21 @@ services:
       # data volume (MNESIS_ROOT), OUTSIDE every tenant root. Stores are PHYSICALLY
       # per-tenant (tenants/<id>/), so cross-tenant access is impossible by
       # construction; a request's tenant derives ONLY from its verified credential.
-      #   - Off (default): the legacy single `default` tenant; MNESIS_MCP_TOKEN is the
-      #     bearer; behaves exactly as before.
-      #   - On: set MNESIS_AUTH_ENABLED=1 — the bearer is a per-tenant, per-principal
-      #     credential (issue via `mnesis admin provision`); an unresolved credential
-      #     is denied (no default-tenant fallback).
+      #   - Off (default): the single `default` tenant. The web UI still uses a REAL
+      #     login (IAM5–8) — set MNESIS_WEB_ADMIN_PASSWORD to bootstrap the first admin.
+      #   - On: set MNESIS_AUTH_ENABLED=1 for multi-tenant; per-tenant credentials via
+      #     `mnesis admin provision`. (The single injected MCP token is RETIRED — /mcp
+      #     uses per-agent keys, /api uses sessions, the CLI uses login/PATs.)
       MNESIS_AUTH_ENABLED: ${MNESIS_AUTH_ENABLED:-}
-      # A server-side pepper mixed into credential hashes at rest (set via secret
-      # store; never baked into the image). Recommended when auth is enabled.
+      # SECRETS — supplied via .env / a secret store, NEVER baked into the image:
+      #  - MNESIS_AUTH_PEPPER: server-side pepper mixed into credential hashes at rest.
+      #  - MNESIS_BOOTSTRAP_PASSWORD: first-run system-admin password (guarded/idempotent).
+      #  - MNESIS_WEB_ADMIN_USER/PASSWORD: first-run tenant-admin web login (guarded).
+      # The entrypoint bootstraps the admins on first `serve` from these (no defaults).
       MNESIS_AUTH_PEPPER: ${MNESIS_AUTH_PEPPER:-}
+      MNESIS_BOOTSTRAP_PASSWORD: ${MNESIS_BOOTSTRAP_PASSWORD:-}
+      MNESIS_WEB_ADMIN_USER: ${MNESIS_WEB_ADMIN_USER:-admin}
+      MNESIS_WEB_ADMIN_PASSWORD: ${MNESIS_WEB_ADMIN_PASSWORD:-}
       # Default new-page visibility within a tenant (shared|private); per-tenant
       # override is set by the admin.
       MNESIS_DEFAULT_VISIBILITY: ${MNESIS_DEFAULT_VISIBILITY:-shared}
@@ -82,8 +88,9 @@ services:
   # --- Web UI: static nginx serving the SPA + proxying /api to mnesis ----------
   # Started by a plain `docker compose up` (no profile). The browser talks ONLY
   # to this service; it reverse-proxies /api (and the SSE chat stream) to the
-  # mnesis service over the internal network, injecting the bearer token
-  # server-side. Stateless: no volume — all knowledge lives in mnesis.
+  # mnesis service over the internal network. IAM5+: the browser authenticates
+  # with a real login + httpOnly session cookie (no injected token). Stateless:
+  # no volume — all knowledge lives in mnesis.
   mnesis-ui:
     build: ./ui
     image: mnesis-ui:latest
@@ -95,8 +102,9 @@ services:
       - path: .env
         required: false
     environment:
-      # When set, nginx adds `Authorization: Bearer <token>` to proxied /api
-      # requests so the browser never holds the token (see ui/nginx.conf).
+      # IAM5+: the browser authenticates with a real login + httpOnly session cookie;
+      # nginx no longer injects a bearer token (it just forwards /api + the cookie).
+      # MNESIS_MCP_TOKEN is retired here (kept only for backward-compat parsing).
       MNESIS_MCP_TOKEN: ${MNESIS_MCP_TOKEN:-}
       # Aligns nginx's client_max_body_size with the backend's upload limit so
       # multipart uploads pass through the proxy (entrypoint adds headroom).

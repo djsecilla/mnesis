@@ -660,6 +660,56 @@ class IdentityStore:
             self._save(records)
         return len(doomed)
 
+    def revoke_for_principal(self, tenant_id: str, principal_id: str) -> int:
+        """**Force-revoke** every credential for a principal (IAM8 deactivation). Returns
+        the number newly revoked. The records are kept (revoked, not deleted) for audit."""
+        from dataclasses import replace
+
+        records = self._load()
+        n = 0
+        for cid, rec in records.items():
+            if rec.tenant_id == tenant_id and rec.principal_id == principal_id and rec.revoked_at is None:
+                records[cid] = replace(rec, revoked_at=_now_iso())
+                n += 1
+        if n:
+            self._save(records)
+        return n
+
+    def set_roles(self, credential_id: str, roles) -> CredentialRecord:
+        """Reassign a credential's roles (IAM8 role assignment). Validates each role."""
+        from dataclasses import replace
+
+        roles_t = tuple(validate_role(r) for r in roles)
+        records = self._load()
+        rec = records.get(credential_id)
+        if rec is None:
+            raise AuthError(f"no credential {credential_id!r} to update")
+        updated = replace(rec, roles=roles_t)
+        records[credential_id] = updated
+        self._save(records)
+        return updated
+
+    def principals_for_tenant(self, tenant_id: str) -> list[dict]:
+        """Distinct principals in a tenant, aggregated for user listing (IAM8): each
+        ``{principal_id, roles, kind, active, credentials}`` — no secrets."""
+        validate_tenant_id(tenant_id)
+        by_principal: dict[str, dict] = {}
+        for rec in self.list_for_tenant(tenant_id):
+            u = by_principal.setdefault(
+                rec.principal_id,
+                {"principal_id": rec.principal_id, "roles": set(), "kind": rec.kind,
+                 "active": False, "credentials": 0},
+            )
+            u["roles"].update(rec.roles)
+            u["credentials"] += 1
+            if rec.is_active():
+                u["active"] = True
+        out = []
+        for u in sorted(by_principal.values(), key=lambda x: x["principal_id"]):
+            u["roles"] = sorted(u["roles"])
+            out.append(u)
+        return out
+
     # -- lookup ---------------------------------------------------------------
     def get(self, credential_id: str) -> CredentialRecord | None:
         return self._load().get(credential_id)
