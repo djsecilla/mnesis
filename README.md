@@ -904,11 +904,13 @@ start (fail closed).
 
 An existing single-store layout migrates into `tenants/default/` automatically on
 first use (or `mnesis migrate-tenants`) — non-destructive and idempotent, preserving
-prior behaviour. `docker compose up` works **single-tenant** out of the box; set
-`MNESIS_AUTH_ENABLED=1` (+ a pepper, and per-tenant credentials) for **multi-tenant**.
-Credentials are stored hashed; for sensitive corpora, keep the data volume on an
-encrypted filesystem (per-tenant keys are a future hardening). The design contract
-is [`CLAUDE.md` §16](CLAUDE.md).
+prior behaviour. `docker compose up` runs **single-tenant** (the `default` tenant) with
+a **real web login** — set `MNESIS_WEB_ADMIN_PASSWORD` (+ `MNESIS_AUTH_PEPPER`) so the
+first admin is bootstrapped on first run (see [Authentication &
+authorization](#78-authentication--authorization)); set `MNESIS_AUTH_ENABLED=1` (+
+per-tenant credentials) for **multi-tenant**. Credentials are stored hashed; for
+sensitive corpora, keep the data volume on an encrypted filesystem (per-tenant keys are
+a future hardening). The design contract is [`CLAUDE.md` §16](CLAUDE.md).
 
 ### 7.8 Authentication & authorization
 
