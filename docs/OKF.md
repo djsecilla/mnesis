@@ -162,3 +162,27 @@ re-serializing it through the §3 mapping. Guarantees:
   and redacts everything), and an embedded "instruction" in a concept body has no effect
   beyond becoming ordinary ingested text. Import never bypasses redaction/governance. See
   `tests/test_okf_interop.py`.
+
+## 7. Conformance gate & migration runbook (OKF7)
+
+**The gate.** Conformance is enforced, not hoped for: `store._write_file` validates every
+document and raises `store.OKFConformanceError` before writing/committing (a non-conformant
+write cannot land). `tests/test_okf_conformance_gate.py` locks this in — a non-conformant
+write is rejected, every stored entry validates through the full lifecycle (ingest →
+reinforce → supersede → contradict → file-back → decay → rebuild), exports conform, and
+confidence/decay/supersession are byte-identical before/after migration (representation
+only). The whole existing suite runs on OKF data (it is what the store now writes) and is
+green — `make test`. `make verify-okf` runs an end-to-end proof that search/graph/
+confidence/decay/supersession/multitenancy all behave unchanged on OKF entries.
+
+**Migrating a live deployment (runbook).**
+1. **Back up** the data volume (git history + `.index/state.db`) as usual (`docs/OPS.md`).
+2. **Preview:** `mnesis migrate-okf --dry-run` (per tenant) — reports what will change; writes nothing.
+3. **Migrate:** `mnesis migrate-okf` — rewrites to OKF in one commit and tags the pre-migration
+   HEAD as `pre-okf-migration`. Lossless + idempotent; re-running is a no-op.
+4. **Rebuild caches:** `mnesis rebuild` (search index + graph) — deterministic, per-tenant.
+5. **Verify:** `mnesis okf-export …` should report `conformant: True`; spot-check a page.
+6. **Rollback if needed:** `mnesis migrate-okf --rollback` restores the pre-migration state
+   byte-for-byte. Multi-tenant: run per tenant (`--tenant`/credential); each is its own bundle.
+Readers tolerate both shapes during the transition, so a partially-migrated deployment stays
+fully functional.

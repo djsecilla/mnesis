@@ -25,6 +25,9 @@ demo-phase2: ## Run the Phase-2 lifecycle demo (offline, throwaway wiki)
 demo-phase3: ## Run the Phase-3 graph demo (offline, throwaway wiki)
 	uv run python scripts/demo_phase3.py
 
+verify-okf: ## Verify every feature operates unchanged on OKF-migrated data (offline)
+	uv run python scripts/verify_okf.py
+
 run-mcp: ## Start the MCP server over stdio
 	uv run python -m mnesis.mcp_server
 

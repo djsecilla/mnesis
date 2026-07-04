@@ -39,7 +39,7 @@ is the intended design.
 ## Table of contents
 
 1. [What you get](#1-what-you-get)
-2. [How it works](#2-how-it-works) — the mental model
+2. [How it works](#2-how-it-works) — the mental model, [OKF conformance](#29-okf-conformance)
 3. [Quickstart](#3-quickstart)
 4. [Using the CLI](#4-using-the-cli)
 5. [The three surfaces](#5-the-three-surfaces) — CLI · MCP · Web UI
@@ -189,6 +189,37 @@ quality threshold, it is written as a `digest` page — so the next time anyone 
 any agent) asks a related question, the synthesized answer surfaces as durable
 knowledge rather than being re-derived from scratch. Knowledge that did not exist
 as a page now does.
+
+### 2.9 OKF conformance
+
+Mnesis's Markdown is **[Open Knowledge Format v0.1](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf)** — Google Cloud's portable standard for knowledge bundles. Each tenant's `pages/` directory **is an OKF bundle** (its own git repo). The full reference + validator live in [`docs/OKF.md`](docs/OKF.md) and [`src/mnesis/okf.py`](src/mnesis/okf.py); this is the summary.
+
+**The Mnesis ↔ OKF mapping.** Mnesis is a *strict superset* of the OKF core — it fills OKF's fields and carries the rest as tolerated extensions:
+
+| OKF core | ← Mnesis | | Mnesis **extension** (OKF-tolerated) |
+|---|---|---|---|
+| `type` *(required)* | `kind` (`fact`/`digest`/`note`) | | `id` (alias of the path identity) |
+| `title` | `title` | | `status` · `decay_class` |
+| `description` | first sentence of the body | | `created` · `last_confirmed` · `source_count` · `sources` |
+| `timestamp` | `updated` | | `supersedes` · `superseded_by` · `contradicts` · `relations` |
+| `tags` | `tags` | | `owner_principal` · `visibility` · `question` |
+| `resource` | *omitted* (abstract concepts) | | |
+
+**Identity & cross-links.** A concept's canonical id is its **bundle-relative path** (`pages/<id>.md` → `<id>`); the `id` frontmatter key is a retained alias. **Cross-links** are bundle-absolute Markdown links (`/<concept-id>`) generated in the body from the page's `relations` + lifecycle links — a link asserts a relationship whose *kind* is in the prose. Two files are reserved: `index.md` (a directory listing, no frontmatter) and `log.md` (a git-derived changelog with ISO-date headings). Per OKF, consumers tolerate unknown types/keys, broken links, and missing optional fields.
+
+**Extensions never break conformance** — a conforming OKF consumer preserves and ignores unknown keys, and the validator (`okf.validate_document`/`validate_bundle`) enforces only OKF's strict rules (frontmatter parses · non-empty `type` · reserved-file formats) as errors.
+
+**Enforced, everywhere.** Every write is serialized as OKF and **validated before commit** (`store.OKFConformanceError`, fail-closed) — a non-conformant write cannot land. Ingestion and the writing agents inherit this through the store; a conformance gate (`tests/test_okf_conformance_gate.py`) locks it in. OKF is **representation only**: confidence/decay/supersession/governance semantics are unchanged (proven byte-for-byte across migration).
+
+**Interop (import/export).** Export a tenant as a conformant bundle and import external OKF bundles:
+
+```bash
+mnesis okf-export ./atlas-bundle --tar     # a validator-clean .tar.gz (concepts + index.md/log.md)
+mnesis okf-import ./external-bundle         # UNTRUSTED: each concept flows through the governed
+                                            # ingest path (redaction → route → review); never bypassed
+```
+
+The same is available over MCP (`mnesis_okf_concept`/`mnesis_okf_export`/`mnesis_okf_import`) and the Web API (`GET /api/okf/export`, `POST /api/okf/import`, and an `okf` block on page detail). **Imported bundle content is data, never instructions** — its frontmatter is not trusted; Mnesis re-derives and redacts everything, so an embedded directive in a concept body has no effect. Migration of an existing corpus is a lossless, idempotent, reversible `mnesis migrate-okf` (with `--dry-run`/`--rollback`); `make verify-okf` proves every feature operates unchanged on OKF data.
 
 ---
 
