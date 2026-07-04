@@ -135,6 +135,31 @@ export default function PageDetail() {
         </div>
       </header>
 
+      {/* OKF concept fields (OKF6) — the Open Knowledge Format view of this page. */}
+      {data.okf && (
+        <section className="mb-4 rounded-lg border border-border bg-elev/40 p-3 text-xs">
+          <div className="mb-1.5 flex items-center gap-2 text-[10px] uppercase tracking-wide text-muted">
+            <span>Open Knowledge Format</span>
+            <span className="rounded bg-accent/15 px-1.5 py-0.5 font-medium text-accent">
+              type: {data.okf.type}
+            </span>
+          </div>
+          {data.okf.description && <p className="text-fg">{data.okf.description}</p>}
+          <dl className="mt-1.5 grid grid-cols-[max-content_1fr] gap-x-3 gap-y-0.5 text-muted">
+            <dt>concept</dt>
+            <dd className="font-mono text-fg/80">/{data.okf.concept_id}</dd>
+            <dt>timestamp</dt>
+            <dd className="tabular-nums">{data.okf.timestamp}</dd>
+            {data.okf.resource && (
+              <>
+                <dt>resource</dt>
+                <dd className="truncate">{data.okf.resource}</dd>
+              </>
+            )}
+          </dl>
+        </section>
+      )}
+
       {/* Digest: originating question, distinctly */}
       {kind === "digest" && question && (
         <blockquote className="mb-4 border-l-2 border-accent pl-3 text-sm text-muted">

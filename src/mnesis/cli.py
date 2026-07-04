@@ -15,7 +15,7 @@ import os
 import sys
 from pathlib import Path
 
-from . import admin, audit, auth, authz, cli_auth, config, identity, mcp_server, providers, store, tenancy, tokens
+from . import admin, audit, auth, authz, cli_auth, config, identity, mcp_server, okf_bundle, providers, store, tenancy, tokens
 
 
 def _read_source(path: str) -> str:
@@ -174,6 +174,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p_mokf.add_argument("--rollback", action="store_true",
                         help="restore the pre-migration state from the backup ref")
 
+    p_oexp = sub.add_parser("okf-export", help="export this tenant as a conformant OKF bundle")
+    p_oexp.add_argument("dest", help="destination directory (or .tar.gz path with --tar)")
+    p_oexp.add_argument("--tar", action="store_true", help="emit a .tar.gz instead of a directory")
+    p_oimp = sub.add_parser("okf-import", help="import an external OKF bundle through governance")
+    p_oimp.add_argument("src", help="a bundle directory or .tar.gz")
+
     p_impact = sub.add_parser("impact", help="what depends on/uses an entity (graph)")
     p_impact.add_argument("entity", help="a type:value entity ref, e.g. library:redis")
     p_impact.add_argument("--depth", type=int, default=3, help="reverse-traversal depth (default 3)")
@@ -219,6 +225,7 @@ _COMMAND_PERMISSION: dict[str, str] = {
     "ingest": authz.WRITE, "file-back": authz.WRITE,
     "rebuild": authz.MAINTAIN, "decay": authz.MAINTAIN, "graph-lint": authz.MAINTAIN,
     "resolve": authz.MAINTAIN, "migrate-okf": authz.MAINTAIN,
+    "okf-export": authz.READ, "okf-import": authz.WRITE,
 }
 
 
@@ -276,6 +283,18 @@ def _dispatch(args: argparse.Namespace) -> None:
             print("  already OKF-conformant — nothing to do")
         elif rep.get("backup_ref"):
             print(f"  backup ref: {rep['backup_ref'][:10]} (roll back with `mnesis migrate-okf --rollback`)")
+    elif args.command == "okf-export":
+        rep = okf_bundle.export_bundle(args.dest, fmt=("tar" if args.tar else "dir"))
+        print(f"exported {len(rep['concepts'])} concept(s) as an OKF bundle ({rep['format']}) to {rep['path']}")
+        print(f"  conformant: {rep['conformant']}" + ("" if rep["conformant"] else f" — {'; '.join(rep['issues'])}"))
+    elif args.command == "okf-import":
+        try:
+            rep = okf_bundle.import_bundle(args.src)
+        except (ValueError, FileNotFoundError, OSError) as exc:
+            print(f"error: {exc}")
+            return
+        print(f"imported {rep['imported']}/{rep['concepts']} concept(s) through governance "
+              f"({rep['redactions']} redaction(s) applied)")
 
 
 def _cmd_login(args: argparse.Namespace) -> int:

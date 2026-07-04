@@ -54,6 +54,7 @@ src/mnesis/               # the core (canonical store + tools)
   quotas.py               # per-tenant resource quotas, fail-closed at the write boundary (§16)
   store.py                # canonical Markdown + frontmatter + git (Store, tenant-scoped)
   okf.py                  # OKF v0.1 conformance contract + validator (validate_document/validate_bundle) + Mnesis↔OKF mapping (§4, docs/OKF.md)
+  okf_bundle.py           # OKF6 bundle interop: export_bundle (dir/tar) + import_bundle (through the GOVERNED ingest path; untrusted content) (docs/OKF.md)
   filters.py              # secret / PII redaction (pure functions)
   llm.py                  # Anthropic client wrapper, with offline stub
   ingest.py               # pipeline: filter -> persist source -> extract -> write

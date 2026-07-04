@@ -29,7 +29,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 from sse_starlette.sse import EventSourceResponse
 
-from . import auth, authz, config, confidence, graph, ingest, llm, search, state, store, tenancy, vocab
+from . import auth, authz, config, confidence, graph, ingest, llm, okf, okf_bundle, search, state, store, tenancy, vocab
 
 log = logging.getLogger(__name__)
 
@@ -105,6 +105,21 @@ def _page_summary(page: store.Page) -> dict:
     }
 
 
+def _okf_core(page: store.Page) -> dict:
+    """The OKF-core view of a page (OKF6) — additive to the existing `frontmatter` block,
+    so existing consumers are unaffected. `concept_id` is the OKF path identity."""
+    m = okf.to_okf_metadata(page)
+    return {
+        "concept_id": page.id,      # OKF identity = the bundle path (pages/<id>)
+        "type": m["type"],
+        "title": m["title"],
+        "description": m["description"],
+        "resource": m.get("resource"),   # None: Mnesis concepts are abstract (provenance = sources)
+        "tags": m["tags"],
+        "timestamp": m["timestamp"],
+    }
+
+
 def _frontmatter(page: store.Page) -> dict:
     return {
         "id": page.id, "title": page.title, "created": page.created, "updated": page.updated,
@@ -164,6 +179,7 @@ async def _get_page(request: Request) -> JSONResponse:
     return JSONResponse({
         "id": page.id,
         "frontmatter": _frontmatter(page),
+        "okf": _okf_core(page),          # OKF6: additive OKF-core fields (path id + type/description/…)
         "body": page.body,
         "raw": raw,
         "confidence": round(score, 4),
@@ -800,6 +816,68 @@ async def _admin_credentials(request: Request) -> JSONResponse:
     return JSONResponse({"credentials": [c.public_dict() for c in creds], "total": len(creds)})
 
 
+# --- OKF interop (export / import / concept) --------------------------------
+
+
+async def _okf_concept(request: Request) -> JSONResponse:
+    """The OKF-conformant concept document + its OKF-core fields (path identity)."""
+    authz.require_permission(authz.READ)
+    pid = request.path_params["page_id"]
+    try:
+        page = store.read_page(pid)
+    except (FileNotFoundError, ValueError):
+        return _err("not_found", f"no such concept: {pid}", 404)
+    if not authz.page_visible_to_active(page):
+        return _err("not_found", f"no such concept: {pid}", 404)
+    return JSONResponse({"concept_id": page.id, "okf": _okf_core(page),
+                         "document": okf.to_okf_document(page)})
+
+
+async def _okf_export(request: Request) -> "Response":
+    """Export this tenant's knowledge as a conformant OKF **bundle** (`.tar.gz` download)."""
+    from starlette.responses import FileResponse
+
+    authz.require_permission(authz.READ)
+    rep = okf_bundle.export_bundle(fmt="tar")
+    tenant = tenancy.current().tenant_id
+    return FileResponse(rep["path"], media_type="application/gzip",
+                        filename=f"{tenant}-okf-bundle.tar.gz")
+
+
+async def _okf_import(request: Request) -> JSONResponse:
+    """Import an external OKF bundle (multipart `.tar.gz`) **through the governed ingest
+    path** — redaction, routing, and review apply; bundle content is UNTRUSTED data."""
+    import tempfile
+    from pathlib import Path as _Path
+
+    authz.require_permission(authz.WRITE)
+    ctype = request.headers.get("content-type", "")
+    if not ctype.startswith("multipart/form-data"):
+        return _err("invalid_upload", "OKF import requires a multipart 'file' upload (a .tar.gz bundle)", 400)
+    form = await request.form()
+    upload = form.get("file")
+    if upload is None or not hasattr(upload, "read"):
+        return _err("missing_file", "multipart upload requires a 'file' part", 400)
+    data = await upload.read()
+    if len(data) > config.MNESIS_MAX_UPLOAD_BYTES:
+        return _err("payload_too_large", f"bundle is {len(data)} bytes; limit is {config.MNESIS_MAX_UPLOAD_BYTES}", 413)
+    tmp = _Path(tempfile.mkdtemp(prefix="okf-upload-"))
+    try:
+        bundle = tmp / "bundle.tar.gz"
+        bundle.write_bytes(data)
+        try:
+            rep = await run_in_threadpool(okf_bundle.import_bundle, bundle)
+        except ValueError as exc:
+            return _err("invalid_bundle", str(exc), 400)
+        except Exception as exc:  # LLM/extraction failure during governed ingest
+            return _llm_err(exc)
+    finally:
+        import shutil as _shutil
+        _shutil.rmtree(tmp, ignore_errors=True)
+    _refresh_graph()
+    return JSONResponse(rep)
+
+
 async def _config(_request: Request) -> JSONResponse:
     """Non-sensitive runtime config the UI adapts to. Notably the LLM provider,
     so the batch UI can default to sequential processing on a (slow) local model,
@@ -830,6 +908,9 @@ API_ROUTES = [
     Route("/api/reviews", _list_reviews, methods=["GET"]),
     Route("/api/reviews/{review_id}/resolve", _resolve_review, methods=["POST"]),
     Route("/api/admin/credentials", _admin_credentials, methods=["GET"]),
+    Route("/api/okf/concept/{page_id}", _okf_concept, methods=["GET"]),
+    Route("/api/okf/export", _okf_export, methods=["GET"]),
+    Route("/api/okf/import", _okf_import, methods=["POST"]),
 ]
 
 

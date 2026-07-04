@@ -21,9 +21,20 @@ export interface Relation {
   o: string;
 }
 
+export interface OkfCore {
+  concept_id: string; // OKF identity = the bundle path
+  type: string;
+  title: string;
+  description: string;
+  resource: string | null;
+  tags: string[];
+  timestamp: string;
+}
+
 export interface PageDetail {
   id: string;
   frontmatter: Record<string, unknown> & { title: string; tags: string[] };
+  okf?: OkfCore; // OKF6: OKF-core fields (additive)
   body: string;
   raw: string;
   confidence: number;

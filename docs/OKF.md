@@ -17,6 +17,10 @@ plus the Mnesis↔OKF reconciliation. The contract + validator live in
 > **OKF4 rebuilds the caches from OKF entries** — the FTS index also indexes the concept
 > `type`, and the graph folds in OKF cross-links (as `related_to`) reconciled with the
 > richer typed `relations`; a migrated corpus reindexes/rebuilds to equivalent results.
+> **OKF5 makes ingestion + writing agents emit OKF** (via the store, unbypassably).
+> **OKF6 surfaces OKF + bundle interop** — MCP/Web API expose OKF-shaped concepts, and
+> `okf_bundle.export_bundle`/`import_bundle` (+ `mnesis okf-export`/`okf-import`, the MCP
+> `mnesis_okf_*` tools, and `/api/okf/*`) export/import conformant bundles.
 
 ## 1. The OKF v0.1 contract (as specified)
 
@@ -136,3 +140,25 @@ re-serializing it through the §3 mapping. Guarantees:
   (backup); `mnesis migrate-okf --rollback` `git reset --hard`s to it, restoring the
   original byte-for-byte. Each tenant is its own git bundle, so a migration only ever
   touches the bound tenant. See `tests/test_okf_migration.py`.
+
+## 6. Surfaces & bundle interop (OKF6)
+
+- **Read surfaces (additive; existing contracts unchanged).** MCP `mnesis_okf_concept(id)`
+  returns a concept as an OKF document (path identity + OKF-core fields + extensions);
+  `mnesis_get` is unchanged. The Web API adds an `okf` block (`type`/`title`/`description`/
+  `resource`/`tags`/`timestamp` + `concept_id`) to `GET /api/pages/{id}` and a
+  `GET /api/okf/concept/{id}` endpoint; the Web UI page reader renders those fields, and
+  the graph view already shows the OKF cross-link (`related_to`) + typed edges.
+- **Export.** `okf_bundle.export_bundle(dest, fmt="dir"|"tar")` (CLI `mnesis okf-export`,
+  MCP `mnesis_okf_export`, `GET /api/okf/export`) emits the tenant's `pages/` — concept
+  docs + `index.md`/`log.md` — as a conformant OKF bundle (validated; ensures OKF first,
+  idempotently).
+- **Import (governed, untrusted).** `okf_bundle.import_bundle(src)` (CLI `mnesis okf-import`,
+  MCP `mnesis_okf_import`, `POST /api/okf/import` multipart) takes an external OKF bundle
+  (dir or `.tar.gz`, extracted with the safe `data` tar filter) and pushes **each concept's
+  text through the normal governed ingest path** — scrub/redact → extract → route
+  (new/reinforce/supersede/contradict) → review. **The bundle is untrusted DATA, never
+  instructions:** its frontmatter is not trusted or written directly (Mnesis re-derives
+  and redacts everything), and an embedded "instruction" in a concept body has no effect
+  beyond becoming ordinary ingested text. Import never bypasses redaction/governance. See
+  `tests/test_okf_interop.py`.
