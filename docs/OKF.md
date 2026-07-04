@@ -7,9 +7,10 @@ plus the Mnesis↔OKF reconciliation. The contract + validator live in
 [`src/mnesis/okf.py`](../src/mnesis/okf.py); the canonical schema is stated in
 [`CLAUDE.md` §4](../CLAUDE.md).
 
-> **Scope of OKF1 (this step):** the *contract and validator only* — no page is rewritten.
-> The store keeps its current on-disk format until a later migration step flips it to the
-> OKF layout; `okf.to_okf_metadata`/`to_okf_document` already express the target mapping.
+> **Status:** OKF1 defined the *contract + validator*; **OKF2 made the store write path
+> OKF-conformant** — every page is written as an OKF concept document (validated before
+> commit, fail-closed via `store.OKFConformanceError`), the body carries generated OKF
+> cross-links, and the reserved files `index.md`/`log.md` are generated per write.
 
 ## 1. The OKF v0.1 contract (as specified)
 

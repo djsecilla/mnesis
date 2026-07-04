@@ -253,12 +253,71 @@ def validate_bundle(root: str | Path) -> OKFReport:
 
 def _first_sentence(body: str, limit: int = 200) -> str:
     """A one-sentence description from a page body (skips a trailing ``Source:`` line)."""
-    for para in (body or "").split("\n\n"):
+    for para in (strip_generated_links(body) or "").split("\n\n"):
         p = " ".join(para.split())
-        if p and not p.lower().startswith("source:"):
+        if p and not p.lower().startswith("source:") and not p.startswith("#"):
             m = re.match(r"(.+?[.!?])(\s|$)", p)
             return (m.group(1) if m else p)[:limit]
     return ""
+
+
+# --- OKF cross-links in the body (generated from relations + lifecycle) -----
+# The links are marker-fenced so a written body round-trips to the clean prose:
+# strip_generated_links() removes the block, render_okf_body() regenerates it.
+
+_LINKS_BEGIN = "<!-- okf:links -->"
+_LINKS_END = "<!-- /okf:links -->"
+_LINKS_BLOCK = re.compile(r"\n*" + re.escape(_LINKS_BEGIN) + r".*?" + re.escape(_LINKS_END) + r"\n*", re.DOTALL)
+
+
+def strip_generated_links(body: str) -> str:
+    """Recover the clean human prose from a body that may carry a generated OKF
+    cross-links block (idempotent — safe on a body that has none)."""
+    return _LINKS_BLOCK.sub("", body or "").rstrip()
+
+
+def _entity_concept_path(ref: str) -> str:
+    """A bundle-absolute concept path for a ``type:value`` entity ref (`library:redis`
+    → `/library/redis`) or a plain page id (`atlas` → `/atlas`)."""
+    ref = (ref or "").strip()
+    if ":" in ref:
+        t, v = ref.split(":", 1)
+        return f"/{t}/{v}"
+    return f"/{ref}"
+
+
+def cross_link_lines(page) -> list[str]:
+    """OKF cross-link bullets for a page: one per typed relation (linking both
+    endpoints, the predicate carried as prose — OKF conveys the relationship *kind* in
+    prose, not the link) plus the lifecycle links (supersedes / superseded_by /
+    contradicts). Bundle-absolute Markdown links throughout."""
+    lines: list[str] = []
+    seen: set = set()
+    for rel in getattr(page, "relations", None) or []:
+        s, p, o = rel.get("s"), rel.get("p"), rel.get("o")
+        if not (s and p and o) or (s, p, o) in seen:
+            continue
+        seen.add((s, p, o))
+        lines.append(f"- [{s}]({_entity_concept_path(s)}) *{p}* [{o}]({_entity_concept_path(o)})")
+    if getattr(page, "supersedes", None):
+        lines.append(f"- *supersedes* [{page.supersedes}](/{page.supersedes})")
+    if getattr(page, "superseded_by", None):
+        lines.append(f"- *superseded by* [{page.superseded_by}](/{page.superseded_by})")
+    for c in getattr(page, "contradicts", None) or []:
+        lines.append(f"- *contradicts* [{c}](/{c})")
+    return lines
+
+
+def render_okf_body(page) -> str:
+    """The clean page prose plus a generated, marker-fenced **OKF cross-links** section
+    (from the page's relations + lifecycle links). Round-trips: `strip_generated_links`
+    on the result recovers the clean prose."""
+    clean = strip_generated_links((getattr(page, "body", "") or "").strip())
+    lines = cross_link_lines(page)
+    if not lines:
+        return clean
+    block = f"{_LINKS_BEGIN}\n## Related\n\n" + "\n".join(lines) + f"\n{_LINKS_END}"
+    return f"{clean}\n\n{block}" if clean else block
 
 
 #: Mnesis fields that ride along as OKF-tolerated **extension** keys (never OKF-core).
@@ -291,7 +350,8 @@ def to_okf_metadata(page) -> dict:
 
 
 def to_okf_document(page) -> str:
-    """Render a :class:`Page` as an OKF-conformant Markdown document (frontmatter + body).
-    Pure; does not touch disk. (The store keeps its current format until the migration.)"""
-    post = frontmatter.Post((page.body or "").strip(), **to_okf_metadata(page))
-    return frontmatter.dumps(post)
+    """Render a :class:`Page` as an OKF-conformant Markdown document: OKF-core frontmatter
+    (+ Mnesis extensions) and a body carrying generated OKF cross-links. Pure; no disk I/O.
+    Frontmatter key order is preserved (OKF core first) — not alphabetized."""
+    post = frontmatter.Post(render_okf_body(page), **to_okf_metadata(page))
+    return frontmatter.dumps(post, sort_keys=False)

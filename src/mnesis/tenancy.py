@@ -449,5 +449,9 @@ def migrate_legacy_to_default(
             check=True,
         )
 
-    pages = len(list(ctx.pages_dir.glob("*.md"))) if ctx.pages_dir.exists() else 0
+    reserved = {"index.md", "log.md"}  # OKF reserved files are not concept pages
+    pages = (
+        len([p for p in ctx.pages_dir.glob("*.md") if p.name not in reserved])
+        if ctx.pages_dir.exists() else 0
+    )
     return {"migrated": bool(moved), "tenant": config.DEFAULT_TENANT_ID, "moved": moved, "pages": pages}

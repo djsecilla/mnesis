@@ -31,10 +31,13 @@ def limits_for(ctx: TenantContext) -> tuple[int, int]:
 
 
 def usage(ctx: TenantContext) -> tuple[int, int]:
-    """Current ``(page_count, bytes_on_disk)`` for the tenant's canonical pages."""
+    """Current ``(page_count, bytes_on_disk)`` for the tenant's canonical pages. The
+    reserved OKF files (index.md/log.md) are not concepts and are excluded."""
+    from .okf import RESERVED_FILES
+
     if not ctx.pages_dir.exists():
         return 0, 0
-    files = list(ctx.pages_dir.glob("*.md"))
+    files = [p for p in ctx.pages_dir.glob("*.md") if p.name not in RESERVED_FILES]
     total = sum(p.stat().st_size for p in files)
     return len(files), total
 

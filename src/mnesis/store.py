@@ -27,32 +27,22 @@ from pathlib import Path
 
 import frontmatter
 
-from . import tenancy
+from . import okf, tenancy
 from .config import now_iso  # noqa: F401 — re-exported for callers that import from store
 from .tenancy import TenantContext
 
-# Frontmatter keys, in the schema order of CLAUDE.md §4. ``body`` is the post
-# content, not a frontmatter key; ``question`` is emitted for digest pages only.
-_META_KEYS = (
-    "id",
-    "title",
-    "created",
-    "updated",
-    "sources",
-    "source_count",
-    "last_confirmed",
-    "tags",
-    "kind",
-    "status",
-    "owner_principal",
-    "visibility",
-    "supersedes",
-    "superseded_by",
-    "contradicts",
-    "decay_class",
-    "relations",
-    "question",
-)
+#: Reserved OKF filenames that live in the ``pages/`` bundle but are NOT concept pages
+#: (a directory listing + the change log). Page enumeration skips them.
+RESERVED_PAGE_FILES: frozenset[str] = frozenset(okf.RESERVED_FILES)
+
+
+class OKFConformanceError(Exception):
+    """A write produced a non-OKF-conformant document — refused before commit (OKF2)."""
+
+    def __init__(self, name: str, report: "okf.OKFReport") -> None:
+        errs = "; ".join(str(i) for i in report.errors)
+        super().__init__(f"{name} is not OKF-conformant: {errs}")
+        self.report = report
 
 
 @dataclass
@@ -100,20 +90,31 @@ def slugify(title: str) -> str:
 # --- Serialization (pure) --------------------------------------------------
 
 
-def _to_post(page: Page) -> frontmatter.Post:
-    meta: dict = {}
-    for key in _META_KEYS:
-        if key == "question" and page.question is None:
-            continue  # digest-only field; keep fact/note frontmatter clean
-        meta[key] = getattr(page, key)
-    return frontmatter.Post(page.body.strip(), **meta)
+def _to_okf_text(page: Page) -> str:
+    """Serialize a page to an OKF-conformant Markdown document (frontmatter + body with
+    generated OKF cross-links). Delegates to the OKF contract module."""
+    return okf.to_okf_document(page)
 
 
-def _from_post(post: frontmatter.Post) -> Page:
-    meta = post.metadata
+def _from_post(post: frontmatter.Post, *, id_hint: str | None = None) -> Page:
+    """Reconstruct a :class:`Page` from a (possibly OKF-shaped) frontmatter Post.
+
+    Maps the OKF-core fields back to Mnesis fields (``timestamp`` → ``updated``; ``type``
+    → ``kind`` only as a fallback, since ``kind`` is also carried as an extension), takes
+    the concept ``id`` from the file path when given (the canonical OKF identity), and
+    strips the generated OKF cross-links block so ``page.body`` is the clean prose."""
+    meta = post.metadata or {}
     known = {f.name for f in fields(Page)}
     kwargs = {k: v for k, v in meta.items() if k in known}
-    kwargs["body"] = post.content.strip()
+    # OKF core → Mnesis fields.
+    if "timestamp" in meta and "updated" not in meta:
+        kwargs["updated"] = meta["timestamp"]
+    if "kind" not in kwargs and isinstance(meta.get("type"), str):
+        kwargs["kind"] = meta["type"]
+    # Path is the canonical concept identity; the `id` frontmatter key is a mere alias.
+    if id_hint is not None:
+        kwargs["id"] = id_hint
+    kwargs["body"] = okf.strip_generated_links(post.content).strip()
     return Page(**kwargs)
 
 
@@ -185,28 +186,86 @@ class Store:
         self._git("add", "--", *str_paths)
         self._git("commit", "-m", message, "--", *str_paths)
 
-    # -- serialization to disk ---------------------------------------------
+    # -- serialization to disk (OKF-conformant, OKF2) -----------------------
+
+    def _validate_or_raise(self, text: str, name: str) -> None:
+        """OKF conformance gate: refuse a non-conformant document before it is written
+        or committed (fail closed). Warnings are allowed; only errors block."""
+        report = okf.validate_document(text, path=name)
+        if not report.conformant:
+            raise OKFConformanceError(name, report)
 
     def _write_file(self, page: Page) -> Path:
-        """Refresh ``updated`` and persist the page to disk (no git). Returns path."""
+        """Refresh ``updated`` and persist the page as an OKF-conformant document (no
+        git). Validated before it touches disk. Returns the path."""
         self.ctx.pages_dir.mkdir(parents=True, exist_ok=True)
         page.updated = now_iso()
         path = self._page_path(page.id)
-        text = frontmatter.dumps(_to_post(page), sort_keys=False)
+        text = _to_okf_text(page)
+        self._validate_or_raise(text, f"{page.id}.md")
         path.write_text(text + "\n", encoding="utf-8")
         return path
+
+    # -- reserved files (OKF: index.md + log.md) ----------------------------
+
+    def _render_index(self) -> str:
+        """A progressive-disclosure directory listing for the ``pages/`` bundle —
+        bundle-absolute Markdown links to every concept. **No frontmatter** (OKF)."""
+        lines = ["# Index", "", f"{len(self.list_pages())} concepts in this bundle.", ""]
+        for p in self.list_pages():
+            lines.append(f"- [{p.title}](/{p.id})")
+        return "\n".join(lines).rstrip() + "\n"
+
+    def _render_log(self, pending_message: str) -> str:
+        """The bundle change history from git — **ISO 8601 date headings** with prose
+        entries (OKF). Includes the pending (about-to-be-committed) change at the top,
+        since it is not yet in ``git log``."""
+        today = now_iso()[:10]
+        entries: list[tuple[str, str]] = [(today, pending_message)]
+        try:
+            out = self._git("log", "--format=%cs%x09%s", "--max-count=500").stdout
+            for line in out.splitlines():
+                if "\t" in line:
+                    date, subject = line.split("\t", 1)
+                    entries.append((date.strip(), subject.strip()))
+        except subprocess.CalledProcessError:
+            pass  # no history yet (first commit) — the pending entry stands alone
+        lines = ["# Changelog", ""]
+        last_date: str | None = None
+        for date, subject in entries:
+            if date != last_date:
+                lines.append(f"## {date}")
+                lines.append("")
+                last_date = date
+            lines.append(f"- {subject}")
+        return "\n".join(lines).rstrip() + "\n"
+
+    def _write_reserved_files(self, pending_message: str) -> list[Path]:
+        """Regenerate + validate index.md and log.md (never committed on their own — the
+        caller includes them in the page's commit, so commit counts are unchanged)."""
+        self.ctx.pages_dir.mkdir(parents=True, exist_ok=True)
+        written: list[Path] = []
+        for name, text in (("index.md", self._render_index()),
+                           ("log.md", self._render_log(pending_message))):
+            self._validate_or_raise(text, name)
+            path = self.ctx.pages_dir / name
+            path.write_text(text, encoding="utf-8")
+            written.append(path)
+        return written
 
     # -- public API ---------------------------------------------------------
 
     def write_page(self, page: Page, message: str | None = None) -> Path:
-        """Persist ``page`` and commit it. Returns the path.
+        """Persist ``page`` (OKF-conformant) and commit it, regenerating the bundle's
+        reserved files (index.md, log.md) in the **same** commit. Returns the path.
 
-        The commit message defaults to ``mnesis: write <id>``; callers performing a
-        lifecycle update (reinforce, contradiction cross-link) pass their own.
-        ``updated`` is refreshed in place, so the passed object matches disk.
+        The commit message defaults to ``mnesis: write <id>``; lifecycle callers pass
+        their own. ``updated`` is refreshed in place, so the passed object matches disk.
         """
+        msg = message or f"mnesis: write {page.id}"
         path = self._write_file(page)
-        self._commit([path], message or f"mnesis: write {page.id}")
+        reserved = self._write_reserved_files(msg)
+        self._commit([path, *reserved], msg)
         return path
 
     def write_source(self, source_ref: str, text: str) -> Path:
@@ -222,17 +281,25 @@ class Store:
         return path
 
     def read_page(self, page_id: str) -> Page:
-        """Load a page from disk."""
+        """Load a page from disk (by its path-derived concept id)."""
+        if f"{page_id}.md" in RESERVED_PAGE_FILES:
+            raise FileNotFoundError(f"no such page: {page_id}")  # reserved file, not a concept
         path = self._page_path(page_id)
         if not path.exists():
             raise FileNotFoundError(f"no such page: {page_id}")
-        return _from_post(frontmatter.load(str(path)))
+        return _from_post(frontmatter.load(str(path)), id_hint=page_id)
 
     def list_pages(self, status: str | None = None, kind: str | None = None) -> list[Page]:
-        """All pages, optionally filtered by ``status`` and/or ``kind``, by id."""
+        """All concept pages (the reserved index.md/log.md are skipped), optionally
+        filtered by ``status`` and/or ``kind``, ordered by id. The concept id is the
+        file stem (the OKF path identity)."""
         if not self.ctx.pages_dir.exists():
             return []
-        pages = [_from_post(frontmatter.load(str(p))) for p in self.ctx.pages_dir.glob("*.md")]
+        pages = [
+            _from_post(frontmatter.load(str(p)), id_hint=p.stem)
+            for p in self.ctx.pages_dir.glob("*.md")
+            if p.name not in RESERVED_PAGE_FILES
+        ]
         if status is not None:
             pages = [p for p in pages if p.status == status]
         if kind is not None:
@@ -257,9 +324,11 @@ class Store:
         new_page.contradicts = [c for c in new_page.contradicts if c != old_id]
         old.contradicts = [c for c in old.contradicts if c != new_page.id]
 
+        msg = f"mnesis: supersede {old_id} -> {new_page.id}"
         new_path = self._write_file(new_page)
         old_path = self._write_file(old)
-        self._commit([new_path, old_path], f"mnesis: supersede {old_id} -> {new_page.id}")
+        reserved = self._write_reserved_files(msg)
+        self._commit([new_path, old_path, *reserved], msg)
         return new_path
 
 
