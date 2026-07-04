@@ -11,6 +11,9 @@ plus the Mnesis↔OKF reconciliation. The contract + validator live in
 > OKF-conformant** — every page is written as an OKF concept document (validated before
 > commit, fail-closed via `store.OKFConformanceError`), the body carries generated OKF
 > cross-links, and the reserved files `index.md`/`log.md` are generated per write.
+> **OKF3 migrates existing corpora** with `mnesis migrate-okf` — a lossless, idempotent,
+> reversible, per-tenant re-serialization (git-tag backup + `--dry-run`/`--rollback`) that
+> preserves every field/source/relation/supersession link and never refreshes timestamps.
 
 ## 1. The OKF v0.1 contract (as specified)
 
@@ -109,3 +112,24 @@ alternate encodings of relationships; the OKF-native convention is a **Markdown 
 They enforce the strict criteria as errors and surface the reference-parser gaps as
 warnings, honoring OKF's leniency (broken links, unknown keys/types, missing optional
 fields are **not** errors). See `tests/test_okf_validator.py`.
+
+## 5. Migrating existing corpora (OKF3)
+
+`mnesis migrate-okf` converts a tenant's existing `pages/` bundle to OKF form by
+re-reading each page (the reader tolerates **both** the pre- and post-OKF shapes) and
+re-serializing it through the §3 mapping. Guarantees:
+
+- **Lossless.** Every field, `sources` link, `relations` triple, and supersession link
+  (`supersedes`/`superseded_by`/`contradicts`, and `status`) is preserved verbatim; the
+  page round-trips to an identical `store.Page`. References stay resolvable.
+- **No semantic change.** Timestamps are **not** refreshed — `updated`/`timestamp`,
+  `created`, and `last_confirmed` are carried over unchanged, so confidence, decay, and
+  supersession *behaviour* is identical; only the on-disk representation changes.
+- **Validated.** Every migrated entry passes `okf.validate_document` before it is written
+  (fail-closed).
+- **Idempotent.** A page already byte-identical to its OKF target is left untouched;
+  a re-run with nothing to convert makes no commit (`--dry-run` reports without writing).
+- **Reversible + per-tenant.** The pre-migration HEAD is tagged `pre-okf-migration`
+  (backup); `mnesis migrate-okf --rollback` `git reset --hard`s to it, restoring the
+  original byte-for-byte. Each tenant is its own git bundle, so a migration only ever
+  touches the bound tenant. See `tests/test_okf_migration.py`.

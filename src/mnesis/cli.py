@@ -15,7 +15,7 @@ import os
 import sys
 from pathlib import Path
 
-from . import admin, audit, auth, authz, cli_auth, config, identity, mcp_server, providers, tenancy, tokens
+from . import admin, audit, auth, authz, cli_auth, config, identity, mcp_server, providers, store, tenancy, tokens
 
 
 def _read_source(path: str) -> str:
@@ -165,6 +165,15 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("rebuild", help="rebuild the search index from Markdown")
     sub.add_parser("decay", help="recompute confidence and transition active<->stale")
 
+    p_mokf = sub.add_parser(
+        "migrate-okf",
+        help="rewrite this tenant's pages into OKF form (lossless, idempotent, reversible)",
+    )
+    p_mokf.add_argument("--dry-run", action="store_true", dest="dry_run",
+                        help="report what would change; write nothing")
+    p_mokf.add_argument("--rollback", action="store_true",
+                        help="restore the pre-migration state from the backup ref")
+
     p_impact = sub.add_parser("impact", help="what depends on/uses an entity (graph)")
     p_impact.add_argument("entity", help="a type:value entity ref, e.g. library:redis")
     p_impact.add_argument("--depth", type=int, default=3, help="reverse-traversal depth (default 3)")
@@ -209,7 +218,7 @@ _COMMAND_PERMISSION: dict[str, str] = {
     "health": authz.READ, "find-duplicates": authz.READ, "review": authz.READ,
     "ingest": authz.WRITE, "file-back": authz.WRITE,
     "rebuild": authz.MAINTAIN, "decay": authz.MAINTAIN, "graph-lint": authz.MAINTAIN,
-    "resolve": authz.MAINTAIN,
+    "resolve": authz.MAINTAIN, "migrate-okf": authz.MAINTAIN,
 }
 
 
@@ -250,6 +259,23 @@ def _dispatch(args: argparse.Namespace) -> None:
         print(mcp_server.mnesis_review())
     elif args.command == "resolve":
         print(mcp_server.mnesis_resolve(args.review_id, args.keep_id))
+    elif args.command == "migrate-okf":
+        if args.rollback:
+            try:
+                res = store.rollback_okf_migration()
+            except store.MigrationError as exc:
+                print(f"error: {exc}")
+                return
+            print(f"rolled back OKF migration for '{res['tenant']}' to {res['rolled_back_to'][:10]}")
+            return
+        rep = store.migrate_to_okf(dry_run=args.dry_run)
+        verb = "would convert" if args.dry_run else ("converted" if rep["committed"] else "no changes")
+        ids = ", ".join(rep["converted"]) or "(none)"
+        print(f"OKF migration [{rep['tenant']}]: {verb} {len(rep['converted'])} page(s): {ids}")
+        if rep["already_conformant"]:
+            print("  already OKF-conformant — nothing to do")
+        elif rep.get("backup_ref"):
+            print(f"  backup ref: {rep['backup_ref'][:10]} (roll back with `mnesis migrate-okf --rollback`)")
 
 
 def _cmd_login(args: argparse.Namespace) -> int:

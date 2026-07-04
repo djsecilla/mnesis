@@ -35,6 +35,9 @@ from .tenancy import TenantContext
 #: (a directory listing + the change log). Page enumeration skips them.
 RESERVED_PAGE_FILES: frozenset[str] = frozenset(okf.RESERVED_FILES)
 
+#: The git tag recording a tenant's pre-migration HEAD (the OKF3 backup/rollback ref).
+OKF_BACKUP_TAG: str = "pre-okf-migration"
+
 
 class OKFConformanceError(Exception):
     """A write produced a non-OKF-conformant document — refused before commit (OKF2)."""
@@ -43,6 +46,10 @@ class OKFConformanceError(Exception):
         errs = "; ".join(str(i) for i in report.errors)
         super().__init__(f"{name} is not OKF-conformant: {errs}")
         self.report = report
+
+
+class MigrationError(Exception):
+    """An OKF migration / rollback could not proceed."""
 
 
 @dataclass
@@ -91,9 +98,11 @@ def slugify(title: str) -> str:
 
 
 def _to_okf_text(page: Page) -> str:
-    """Serialize a page to an OKF-conformant Markdown document (frontmatter + body with
-    generated OKF cross-links). Delegates to the OKF contract module."""
-    return okf.to_okf_document(page)
+    """The exact on-disk text for a page: an OKF-conformant Markdown document (frontmatter
+    + body with generated OKF cross-links), trailing newline included. **Deterministic and
+    pure** — it does not refresh `updated`, so the migration re-serializes losslessly and
+    idempotently. Delegates to the OKF contract module."""
+    return okf.to_okf_document(page) + "\n"
 
 
 def _from_post(post: frontmatter.Post, *, id_hint: str | None = None) -> Page:
@@ -203,7 +212,7 @@ class Store:
         path = self._page_path(page.id)
         text = _to_okf_text(page)
         self._validate_or_raise(text, f"{page.id}.md")
-        path.write_text(text + "\n", encoding="utf-8")
+        path.write_text(text, encoding="utf-8")
         return path
 
     # -- reserved files (OKF: index.md + log.md) ----------------------------
@@ -331,6 +340,82 @@ class Store:
         self._commit([new_path, old_path, *reserved], msg)
         return new_path
 
+    # -- OKF migration of existing entries (OKF3) ---------------------------
+
+    def _head_sha(self) -> str:
+        try:
+            return self._git("rev-parse", "HEAD").stdout.strip()
+        except subprocess.CalledProcessError:
+            return ""
+
+    def migrate_to_okf(self, *, dry_run: bool = False, message: str | None = None) -> dict:
+        """Rewrite this tenant's bundle into OKF form **losslessly** (per OKF1/OKF2).
+
+        For each concept page it re-reads (tolerating both pre- and post-OKF shapes) and
+        re-serializes to the deterministic OKF document — **preserving every field,
+        timestamp, source, relation, and supersession link** (no `updated` refresh, so
+        confidence/decay/supersession *semantics* are untouched — only the representation
+        changes). It regenerates `index.md`/`log.md`, and commits everything in **one**
+        commit after tagging the pre-migration HEAD as the backup/rollback ref.
+
+        - ``dry_run=True`` → report only, no writes/commit.
+        - **Idempotent:** a page already byte-identical to its OKF target is left alone;
+          if nothing needs converting and the reserved files exist, it is a no-op (no
+          commit). Every target is validated (fail-closed) before it is written.
+        Returns a report dict."""
+        reserved_names = set(RESERVED_PAGE_FILES)
+        self.ctx.pages_dir.mkdir(parents=True, exist_ok=True)
+        files = sorted(p for p in self.ctx.pages_dir.glob("*.md") if p.name not in reserved_names)
+
+        changes: list[tuple[Path, str]] = []
+        converted_ids: list[str] = []
+        for p in files:
+            page = _from_post(frontmatter.load(str(p)), id_hint=p.stem)
+            target = _to_okf_text(page)
+            self._validate_or_raise(target, f"{page.id}.md")  # every migrated entry is conformant
+            if p.read_text(encoding="utf-8") != target:
+                changes.append((p, target))
+                converted_ids.append(page.id)
+
+        reserved_missing = any(not (self.ctx.pages_dir / n).exists() for n in reserved_names)
+        needs = bool(changes) or reserved_missing
+        report = {
+            "tenant": self.ctx.tenant_id,
+            "dry_run": dry_run,
+            "pages": len(files),
+            "converted": converted_ids,
+            "reserved_regenerated": bool(needs),
+            "already_conformant": not needs,
+            "committed": False,
+            "backup_ref": None,
+        }
+        if dry_run or not needs:
+            return report
+
+        msg = message or f"mnesis: migrate {len(changes)} page(s) to OKF"
+        backup = self._head_sha()
+        if backup:
+            self._ensure_identity()
+            self._git("tag", "-f", OKF_BACKUP_TAG, backup)  # backup/rollback ref
+            report["backup_ref"] = backup
+        for path, target in changes:
+            path.write_text(target, encoding="utf-8")
+        reserved = self._write_reserved_files(msg)
+        self._commit([*(p for p, _ in changes), *reserved], msg)
+        report["committed"] = True
+        return report
+
+    def rollback_okf_migration(self) -> dict:
+        """Restore the bundle to its **pre-migration** state (the :data:`OKF_BACKUP_TAG`
+        ref) — byte-exact and reversible. Discards the migration commit."""
+        try:
+            sha = self._git("rev-parse", OKF_BACKUP_TAG).stdout.strip()
+        except subprocess.CalledProcessError as exc:
+            raise MigrationError("no OKF migration backup to roll back to") from exc
+        self._ensure_identity()
+        self._git("reset", "--hard", OKF_BACKUP_TAG)
+        return {"tenant": self.ctx.tenant_id, "rolled_back_to": sha}
+
 
 # --- Module-level delegators (over the ACTIVE tenant; fail-closed) ----------
 # These keep the call sites of ingest/search/cli/etc. tenant-agnostic: they resolve
@@ -370,3 +455,11 @@ def list_pages(status: str | None = None, kind: str | None = None) -> list[Page]
 
 def supersede(old_id: str, new_page: Page) -> Path:
     return active_store().supersede(old_id, new_page)
+
+
+def migrate_to_okf(*, dry_run: bool = False, message: str | None = None) -> dict:
+    return active_store().migrate_to_okf(dry_run=dry_run, message=message)
+
+
+def rollback_okf_migration() -> dict:
+    return active_store().rollback_okf_migration()
