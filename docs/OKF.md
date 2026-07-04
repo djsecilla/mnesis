@@ -14,6 +14,9 @@ plus the Mnesis↔OKF reconciliation. The contract + validator live in
 > **OKF3 migrates existing corpora** with `mnesis migrate-okf` — a lossless, idempotent,
 > reversible, per-tenant re-serialization (git-tag backup + `--dry-run`/`--rollback`) that
 > preserves every field/source/relation/supersession link and never refreshes timestamps.
+> **OKF4 rebuilds the caches from OKF entries** — the FTS index also indexes the concept
+> `type`, and the graph folds in OKF cross-links (as `related_to`) reconciled with the
+> richer typed `relations`; a migrated corpus reindexes/rebuilds to equivalent results.
 
 ## 1. The OKF v0.1 contract (as specified)
 

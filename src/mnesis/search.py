@@ -26,13 +26,16 @@ from .store import Page, Store, now_iso
 from .tenancy import TenantContext
 
 # Indexed text columns, then UNINDEXED cached derived state. body is index 3.
+# ``type`` (the OKF concept type = Mnesis ``kind``) is indexed after ``body`` so a
+# corpus is searchable by concept type; it never contains the knowledge terms, so it
+# does not change ranking for content queries (OKF4).
 _BODY_COL = 3
 
 # How many surfaced hits get their access recorded + confidence reindexed.
 _ACCESS_TOP_N = 3
 
 _SCHEMA = (
-    "fts5(id, title, tags, body, "
+    "fts5(id, title, tags, body, type, "
     "status UNINDEXED, confidence UNINDEXED, computed_at UNINDEXED, "
     "tokenize='porter unicode61')"
 )
@@ -44,11 +47,11 @@ _FTS5_REMEDIATION = (
     "rebuild Python against it). FTS5 is required for keyword search."
 )
 
-_EXPECTED_COLUMNS = ["id", "title", "tags", "body", "status", "confidence", "computed_at"]
+_EXPECTED_COLUMNS = ["id", "title", "tags", "body", "type", "status", "confidence", "computed_at"]
 
 _INSERT_SQL = (
-    "INSERT INTO pages (id, title, tags, body, status, confidence, computed_at) "
-    "VALUES (?, ?, ?, ?, ?, ?, ?)"
+    "INSERT INTO pages (id, title, tags, body, type, status, confidence, computed_at) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
 )
 
 
@@ -114,7 +117,8 @@ class SearchIndex:
             page.id,
             page.title,
             " ".join(page.tags),
-            page.body,
+            page.body,        # clean prose (OKF cross-links stripped on read)
+            page.kind,        # OKF `type` — indexed but never carries the knowledge terms
             page.status,
             self._cached_confidence(page),
             now_iso(),

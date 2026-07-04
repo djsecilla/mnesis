@@ -30,7 +30,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from pathlib import Path
 
-from . import authz, config, confidence, search, state, store, tenancy, vocab
+from . import authz, config, confidence, okf, search, state, store, tenancy, vocab
 from .search import SearchHit
 
 # Page-level structural predicates projected from frontmatter (between page nodes).
@@ -502,8 +502,44 @@ def rebuild_graph(now: datetime | None = None) -> dict:
             backend.add_entity(target, PAGE_NODE_TYPE)
             backend.add_edge(this, "contradicts", target, page.id, conf, active)
 
+        # OKF cross-links reconciled with the typed relations (OKF4). A prose
+        # bundle-absolute Markdown link asserts an (untyped) relationship — the
+        # relationship *kind* is in the prose, so it becomes a symmetric `related_to`
+        # edge from this page's node to the target concept. Links already covered by a
+        # typed relation or a lifecycle link are skipped (typed edges are richer);
+        # Mnesis's own generated cross-links are marker-fenced and stripped on read, so
+        # they add nothing here — only hand-authored / external OKF links do, which is
+        # what guarantees OKF-navigability without changing the Mnesis graph.
+        covered = set(_entity_refs_of(page))
+        covered.update(page_ref(pid) for pid in (page.supersedes, page.superseded_by) if pid)
+        covered.update(page_ref(pid) for pid in page.contradicts)
+        covered.add(this)
+        for target in okf.cross_links(page.body):
+            ref = _cross_link_ref(target)
+            if ref is None or ref in covered:
+                continue
+            etype = PAGE_NODE_TYPE if ref.startswith("page:") else ref.split(":", 1)[0]
+            backend.add_entity(ref, etype)
+            backend.add_edge(this, "related_to", ref, page.id, conf, active)
+            covered.add(ref)  # dedup repeated links within one page
+
     backend.finalize()
     return backend.stats()
+
+
+def _cross_link_ref(target: str) -> str | None:
+    """Map an OKF **bundle-absolute** cross-link target to a graph node ref. `/a/b`
+    (an entity concept path) → ``a:b``; `/a` (a single-segment path) → the page node
+    ``page:a``. Relative/external links are ignored (they are not bundle concepts)."""
+    if not target.startswith("/"):
+        return None
+    seg = target.strip("/").split("#", 1)[0].split("?", 1)[0]
+    if not seg:
+        return None
+    if "/" in seg:
+        t, v = seg.split("/", 1)
+        return f"{t}:{v}"
+    return page_ref(seg)
 
 
 # --- Graph-augmented query & impact ----------------------------------------
