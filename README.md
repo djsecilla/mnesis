@@ -69,6 +69,7 @@ is the intended design.
 | **Self-curating maintenance** | A multi-LLM LangGraph foundation whose scheduled **dream cycle** keeps the KB healthy — auto-applying safe hygiene (decay, graph fixes) and surfacing contradiction/dedup **proposals** for review, all over MCP and governed. |
 | **Source-connector ingestion** | A reusable pipeline turns inbound sources into governed ingestions — the first is a **notes/Markdown inbox** that watches a folder and ingests notes (dedup + retry + dead-letter). A new source = connector + parse skill + one mapping entry. |
 | **Approval-gated actions** | An action agent composes grounded, cited artifacts (e.g. a meeting brief) and **proposes** them; a human approves before anything happens. **Draft-only by default**; email delivery is opt-in (dry-run + egress-gated + recipient-confirmed). Recipients come from policy, never content. |
+| **Open Knowledge Format conformant** | Every entry is an **[OKF v0.1](#29-okf-conformance)** concept document (Google Cloud's portable standard) — validated before commit (fail-closed); each tenant's `pages/` is an OKF **bundle** you can **export** and re-**import** (governed), interoperable with other OKF tools. Mnesis's own fields ride along as tolerated extensions; nothing about search/graph/lifecycle changed. |
 | **Runs offline & on-prem** | A deterministic stub runs with no network; a local-model mode (Ollama) keeps inference and sources entirely on your machine. |
 
 ---
@@ -341,7 +342,21 @@ mnesis graph-stats                        # node/edge counts by type and predica
 mnesis graph-lint --fix                   # consistency check; --fix applies the safe auto-fixes
 ```
 
-### 4.4 Authentication, users & admin
+### 4.4 OKF conformance & interop
+
+Pages are written as [Open Knowledge Format](#29-okf-conformance) documents automatically;
+these verbs migrate an existing corpus and move bundles in and out.
+
+```bash
+mnesis migrate-okf --dry-run              # preview the (lossless) migration of existing pages to OKF
+mnesis migrate-okf                        # rewrite to OKF (idempotent; tags a backup ref)
+mnesis migrate-okf --rollback             # restore the pre-migration state byte-for-byte
+
+mnesis okf-export ./bundle --tar          # emit a conformant OKF bundle (.tar.gz; concepts + index.md/log.md)
+mnesis okf-import ./external-bundle       # import an external bundle THROUGH governance (redaction/routing/review)
+```
+
+### 4.5 Authentication, users & admin
 
 When auth is on, the CLI logs in like any surface and every command is
 authorized by the PDP (see [Authentication & authorization](#78-authentication--authorization)).
@@ -425,7 +440,7 @@ For humans, scripts, and maintenance — the full command set above.
 
 ### 5.2 MCP server (for agents)
 
-mnesis exposes **17 tools** over MCP:
+mnesis exposes **20 tools** over MCP:
 
 - **knowledge** — `mnesis_ingest`, `mnesis_query`, `mnesis_get`,
   `mnesis_file_back`, `mnesis_list`, `mnesis_rebuild`;
@@ -434,7 +449,13 @@ mnesis exposes **17 tools** over MCP:
   `mnesis_impact`, `mnesis_graph_stats`, `mnesis_graph_lint`;
 - **maintenance / curation** (read-only diagnostics) — `mnesis_health_report`
   (a side-effect-free system-health snapshot) and `mnesis_find_duplicates` (a
-  heuristic near-duplicate finder that proposes nothing).
+  heuristic near-duplicate finder that proposes nothing);
+- **OKF interop** — `mnesis_okf_concept` (a concept as an OKF document),
+  `mnesis_okf_export` (a conformant [OKF](#29-okf-conformance) bundle), and
+  `mnesis_okf_import` (an external bundle **through the governed ingest path**).
+
+Every tool is scope-checked against the calling agent key's least-privilege scopes
+(read/write/maintain), and each `mnesis_*` result is an OKF-shaped concept.
 
 These are the same internals the CLI and Web UI use, behind the same authenticated
 endpoint — and the surface the scheduled [maintenance dream
@@ -476,7 +497,7 @@ reverse-proxies the REST + SSE gateway (`/api`) to the core. After
 | URL | View |
 |---|---|
 | `/` → `/graph` | the knowledge graph — hover to highlight a neighbourhood, click a node for a detail panel |
-| `/pages` · `/pages/:id` | page index and reader |
+| `/pages` · `/pages/:id` | page index and reader — the reader shows the [OKF](#29-okf-conformance) concept fields (type/description/path identity/timestamp) |
 | `/chat` | grounded chat — streams a cited answer drawn only from retrieved pages |
 | `/add` · `/add/batch` | **Add to Mnesis** — paste/upload, preview, curate, commit (single or batch) |
 | `/sources` | what you fed in, and the page(s) it became |
@@ -1282,11 +1303,15 @@ a throwaway store.
 `make test` runs the whole suite (600+ tests) with no network — the fastest way to
 confirm a clean checkout is healthy. It exercises the entire system: the compounding
 loop, the confidence/decay lifecycle, the knowledge graph, the agent layer, **multitenant
-isolation** (`test_isolation_drills.py`, `test_surface_isolation.py`), and the **IAM
+isolation** (`test_isolation_drills.py`, `test_surface_isolation.py`), the **IAM
 security drills** — unauthenticated access refused on web/CLI/MCP, scoped credentials
 that can't be exceeded, immediate revocation, tenant-admin confinement, deactivation
 force-revoke, and a secret-free audit (`test_security_drills.py`, plus `test_web_auth.py`
-/ `test_cli_auth.py` / `test_mcp_auth.py`).
+/ `test_cli_auth.py` / `test_mcp_auth.py`) — and the **OKF conformance gate**
+(`test_okf_conformance_gate.py`): a non-conformant write fails closed, every stored entry
+validates, and confidence/decay/supersession are byte-identical before/after migration.
+`make verify-okf` is a documented end-to-end run proving every feature operates unchanged
+on OKF-migrated data.
 
 ### 11.2 The compounding loop (`make demo`)
 
@@ -1365,6 +1390,7 @@ authenticates — see [Authentication & authorization](#78-authentication--autho
 ```
 src/mnesis/          the core: store · filters · ingest · search · graph · confidence ·
                      lifecycle · vocab · maintenance · tenancy · quotas · admin ·
+                     okf (OKF v0.1 contract + validator) · okf_bundle (export/import) ·
                      identity/auth · providers (login) · tokens (sessions/PATs/agent keys) ·
                      authz (the PDP) · webauth · cli_auth · audit ·
                      MCP server · REST/SSE gateway · CLI
@@ -1378,8 +1404,9 @@ ui/                  the React + Vite web UI (served by nginx in Docker)
 wiki/                the data root (all OUTSIDE any tenant root): registry.json ·
                      credentials.json (hashed) · tokens.json + revocations.json ·
                      system_audit.jsonl + auth_audit.jsonl (no secrets) ·
-                     tenants/<id>/{pages, sources (tracked), .cache (gitignored)} + its own git repo
+                     tenants/<id>/{pages (an OKF bundle), sources (tracked), .cache (gitignored)} + its own git repo
 tests/               the full offline test suite
+docs/OKF.md          the OKF v0.1 conformance reference + Mnesis↔OKF mapping + migration runbook
 docs/OPS.md          backup / restore / operations
 CLAUDE.md            the authoritative design contract (read this to extend the system)
 ```
@@ -1404,7 +1431,11 @@ lifecycle + system-admin boundary + per-tenant quotas) · **unified authenticati
 authorization** (one identity model + one PDP across web/CLI/MCP · argon2id passwords ·
 web sessions, CLI login/PATs, per-agent scoped MCP keys · role ∩ scope enforcement ·
 user/credential lifecycle with force-revoke · secret-free auth audit · the injected
-token retired) · Docker deployment with local-first inference.
+token retired) · **Open Knowledge Format v0.1 conformance** (every entry is an OKF
+concept document — validated before commit, fail-closed; per-tenant `pages/` are OKF
+bundles; Mnesis fields are tolerated extensions; lossless/reversible `migrate-okf`;
+governed bundle export/import; caches/search/graph rebuilt from OKF with no regression) ·
+Docker deployment with local-first inference.
 
 **Deferred** (see [`CLAUDE.md` §13](CLAUDE.md) for the full map): session/query
 automation hooks and a general hook framework — *on-source ingestion (the
