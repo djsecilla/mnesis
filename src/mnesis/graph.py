@@ -353,7 +353,7 @@ class SqliteGraphBackend(GraphBackend):
             SELECT node, depth, path, preds FROM walk WHERE depth > 0
             ORDER BY depth, path
         """
-        symset = "|" + "|".join(sorted(vocab.SYMMETRIC_PREDICATES)) + "|"
+        symset = "|" + "|".join(sorted(vocab.active_config().symmetric_predicates)) + "|"
         params = {
             "ref": ref,
             "depth": depth,

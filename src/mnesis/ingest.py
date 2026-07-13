@@ -149,11 +149,16 @@ def _parse_json_object(raw: str) -> dict | None:
 
 
 def _extract(redacted: str, source_ref: str) -> dict | None:
-    """Extract the page dict, retrying once stricter; ``None`` if unparseable."""
+    """Extract the page dict, retrying once stricter; ``None`` if unparseable.
+
+    Uses the **active vault's** schema (V3) — the entity types + predicates the extraction
+    model is told to use are the bound vault's, so extraction/classification and the graph
+    all validate against one per-vault schema."""
+    schema = vocab.active_config()
     system = EXTRACTION_SYSTEM_PROMPT.format(
         source_ref=source_ref,
-        entity_types=", ".join(vocab.ENTITY_TYPES),
-        predicates=", ".join(vocab.PREDICATES),
+        entity_types=", ".join(schema.entity_types),
+        predicates=", ".join(schema.predicates),
     )
     for sys_prompt in (system, system + _STRICTER_SUFFIX):
         data = _parse_json_object(llm.complete(sys_prompt, redacted))

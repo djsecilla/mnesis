@@ -66,6 +66,9 @@ VAULTS_DIRNAME: str = "vaults"
 #: The per-tenant vault registry (metadata) — a small JSON file at the TENANT root,
 #: OUTSIDE any vault root. Records which vaults exist for the tenant.
 VAULT_REGISTRY_FILENAME: str = "vaults.json"
+#: The per-vault knowledge-organization schema/config — a small JSON file at the VAULT
+#: root (entity types + predicates + settings). Default = the global schema (V3).
+VAULT_CONFIG_FILENAME: str = "config.json"
 #: The tenant registry (metadata) — a small JSON file OUTSIDE any tenant root.
 REGISTRY_FILENAME: str = "registry.json"
 #: The default tenant a single-tenant deployment runs as (CLAUDE.md §16).

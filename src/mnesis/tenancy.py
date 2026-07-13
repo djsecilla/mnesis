@@ -39,7 +39,7 @@ from contextvars import ContextVar, Token
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
-from . import config
+from . import config, vocab
 
 #: A tenant id is a conservative slug: lowercase alnum, ``-``/``_`` inside, leading
 #: alphanumeric. This both names a directory and is part of every resolved path, so
@@ -538,6 +538,11 @@ class TenantContext:
         _safe_segment(name, "cache file")
         return self.resolve(".cache", name)
 
+    @property
+    def config_path(self) -> Path:
+        """The per-vault schema/config file (``<vault_root>/config.json``, V3)."""
+        return self.root_path / config.VAULT_CONFIG_FILENAME
+
     def ensure_dirs(self) -> None:
         for d in (self.root_path, self.pages_dir, self.sources_dir, self.cache_dir):
             d.mkdir(parents=True, exist_ok=True)
@@ -654,14 +659,15 @@ def create_vault(
     data_root: Path | str | None = None,
 ) -> VaultContext:
     """Provision an additional vault under an existing tenant idempotently: record it in
-    the tenant's vault registry, create its dirs, and init its own git repo. Returns the
-    vault's :class:`VaultContext`."""
+    the tenant's vault registry, create its dirs + its own git repo, and write its DEFAULT
+    schema config (V3). Returns the vault's :class:`VaultContext`."""
     tctx = tenant_context_for(tenant_id, data_root=data_root)
     ctx = tctx.vault_context(vault_id)
     init_git(ctx)
     tctx.vault_registry().ensure(
         vault_id, tenant_id=tenant_id, name=name, owner_principal=owner_principal
     )
+    vocab.ensure_config(ctx)  # default schema = the current global schema
     return ctx
 
 
@@ -770,6 +776,7 @@ def migrate_tenant_to_default_vault(
     # Provision the vault (idempotent): dirs + its own git repo + registry record.
     init_git(vctx)
     tctx.vault_registry().ensure(config.DEFAULT_VAULT_ID, tenant_id=tenant_id)
+    vocab.ensure_config(vctx)  # migrated/new default vault carries the default schema (V3)
     if moved:
         subprocess.run(["git", "-C", str(vctx.git_root), "add", "-A"], check=True)
         subprocess.run(

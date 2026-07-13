@@ -323,7 +323,7 @@ def _first_paragraph(body: str, limit: int) -> str:
 
 def _is_entity_tag(tag: str) -> bool:
     i = tag.find(":")
-    return i > 0 and tag[:i] in vocab.ENTITY_TYPES
+    return i > 0 and tag[:i] in vocab.active_config().entity_types
 
 
 async def _entity(request: Request) -> JSONResponse:
