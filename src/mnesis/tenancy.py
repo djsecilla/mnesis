@@ -285,46 +285,64 @@ class Vault:
 
 
 class VaultRegistry:
-    """A small JSON registry recording WHICH vaults exist for one tenant, at
-    ``tenants/<tenant_id>/vaults.json`` — at the tenant root, beside (never inside)
-    the vault roots. It holds no vault content."""
+    """A small JSON registry recording, for one tenant, WHICH vaults exist **and who may
+    access them** — at ``tenants/<tenant_id>/vaults.json`` (at the tenant root, beside,
+    never inside, the vault roots). It holds no vault content.
+
+    The document has two parts: ``vaults`` (the :class:`Vault` records) and ``grants``
+    (``{principal_id: {vault_id: role|null}}`` — an explicit access grant per principal
+    per vault, with an optional per-vault role that *narrows/overrides* the principal's
+    tenant role; ``null`` means "use the tenant role"). Access to a vault = **being its
+    owner OR holding an explicit grant** (the transparent ``default`` vault is handled by
+    the resolver, not here). This is the store of record for vault access control (V2)."""
 
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
 
-    def _load(self) -> dict[str, Vault]:
+    # -- unified doc read/write (preserves both `vaults` and `grants`) ---------
+    def _read(self) -> dict:
         if not self.path.is_file():
-            return {}
+            return {"vaults": {}, "grants": {}}
         try:
             data = json.loads(self.path.read_text(encoding="utf-8") or "{}")
         except (ValueError, OSError):
-            return {}
+            return {"vaults": {}, "grants": {}}
+        if not isinstance(data, dict):
+            return {"vaults": {}, "grants": {}}
+        data.setdefault("vaults", {})
+        data.setdefault("grants", {})
+        return data
+
+    def _write(self, doc: dict) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_name(self.path.name + ".tmp")
+        tmp.write_text(json.dumps(doc, indent=2, sort_keys=True), encoding="utf-8")
+        tmp.replace(self.path)
+
+    def _load(self) -> dict[str, Vault]:
         out: dict[str, Vault] = {}
-        for vid, d in (data.get("vaults") or {}).items():
+        for vid, d in (self._read().get("vaults") or {}).items():
             try:
                 out[vid] = Vault.from_dict({"vault_id": vid, **(d or {})})
             except (TenancyError, KeyError):
                 continue
         return out
 
-    def _save(self, vaults: dict[str, Vault]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "vaults": {
-                v.vault_id: {
-                    "tenant_id": v.tenant_id,
-                    "name": v.name,
-                    "owner_principal": v.owner_principal,
-                    "status": v.status,
-                    "created": v.created,
-                }
-                for v in vaults.values()
+    def _save_vaults(self, vaults: dict[str, Vault]) -> None:
+        doc = self._read()
+        doc["vaults"] = {
+            v.vault_id: {
+                "tenant_id": v.tenant_id,
+                "name": v.name,
+                "owner_principal": v.owner_principal,
+                "status": v.status,
+                "created": v.created,
             }
+            for v in vaults.values()
         }
-        tmp = self.path.with_name(self.path.name + ".tmp")
-        tmp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-        tmp.replace(self.path)
+        self._write(doc)
 
+    # -- vaults ----------------------------------------------------------------
     def exists(self, vault_id: str) -> bool:
         return validate_vault_id(vault_id) in self._load()
 
@@ -350,7 +368,7 @@ class VaultRegistry:
             status="active", created=config.now_iso(),
         )
         vaults[vault_id] = vault
-        self._save(vaults)
+        self._save_vaults(vaults)
         return vault
 
     def remove(self, vault_id: str) -> bool:
@@ -359,8 +377,72 @@ class VaultRegistry:
         if vid not in vaults:
             return False
         del vaults[vid]
-        self._save(vaults)
+        self._save_vaults(vaults)
+        # Drop any dangling grants to the removed vault.
+        doc = self._read()
+        grants = doc.get("grants") or {}
+        for pid in list(grants):
+            grants[pid].pop(vid, None)
+            if not grants[pid]:
+                del grants[pid]
+        doc["grants"] = grants
+        self._write(doc)
         return True
+
+    # -- grants (vault access control, V2) -------------------------------------
+    def grant(self, principal_id: str, vault_id: str, role: str | None = None) -> None:
+        """Grant ``principal_id`` access to ``vault_id`` (idempotent; ``role`` optionally
+        narrows/overrides the principal's tenant role for this vault). The vault must
+        exist in this tenant's registry (a grant to an unknown vault is refused)."""
+        vid = validate_vault_id(vault_id)
+        if vid not in self._load():
+            raise TenancyError(f"cannot grant access to unknown vault {vid!r}")
+        doc = self._read()
+        grants = doc.setdefault("grants", {})
+        grants.setdefault(principal_id, {})[vid] = role
+        self._write(doc)
+
+    def revoke_grant(self, principal_id: str, vault_id: str) -> bool:
+        """Revoke ``principal_id``'s explicit grant to ``vault_id`` (ownership is not a
+        grant and is unaffected). Returns whether a grant was removed."""
+        vid = validate_vault_id(vault_id)
+        doc = self._read()
+        grants = doc.get("grants") or {}
+        pg = grants.get(principal_id)
+        if not pg or vid not in pg:
+            return False
+        del pg[vid]
+        if not pg:
+            del grants[principal_id]
+        doc["grants"] = grants
+        self._write(doc)
+        return True
+
+    def grants_for(self, principal_id: str) -> dict[str, str | None]:
+        """The explicit ``{vault_id: role|None}`` grants held by ``principal_id`` (no
+        ownership). A copy — mutating it does not touch the registry."""
+        return dict((self._read().get("grants") or {}).get(principal_id, {}))
+
+    def owned_vaults(self, principal_id: str) -> set[str]:
+        return {v.vault_id for v in self._load().values() if v.owner_principal == principal_id}
+
+    def accessible_vaults(self, principal_id: str) -> set[str]:
+        """Every vault ``principal_id`` may reach here = owned ∪ explicitly granted."""
+        return self.owned_vaults(principal_id) | set(self.grants_for(principal_id))
+
+    def has_access(self, principal_id: str, vault_id: str, *, owner_ok: bool = True) -> bool:
+        """Whether ``principal_id`` owns or is granted ``vault_id`` (does NOT special-case
+        the ``default`` vault — that is the resolver's transparent-single-vault rule)."""
+        vid = validate_vault_id(vault_id)
+        if owner_ok and vid in self.owned_vaults(principal_id):
+            return True
+        return vid in self.grants_for(principal_id)
+
+    def role_for(self, principal_id: str, vault_id: str, default_role: str) -> str:
+        """The principal's effective role *in* ``vault_id``: an explicit per-vault grant
+        role if set, else ``default_role`` (the principal's tenant role)."""
+        role = self.grants_for(principal_id).get(validate_vault_id(vault_id))
+        return role or default_role
 
 
 # --- TenantContext + VaultContext (resolved at boundaries) -----------------

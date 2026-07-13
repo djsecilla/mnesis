@@ -5,11 +5,20 @@ Cross-tenant access is already structurally impossible (§16, T1/T2). This modul
 allow/deny decision. No surface makes ad hoc authz decisions — they all call
 :func:`decide` / :func:`require_permission` / the :func:`enforce` decorator.
 
+This module is also the **vault security core** (V2): :func:`resolve_vault` turns a
+client-*selected* vault id into an *authorized* :class:`~mnesis.tenancy.VaultContext` (or
+denies) **before any store is opened**, and :func:`decide` re-checks vault access on every
+action. The tenant is always credential-derived and never selectable; a vault is
+selectable but always re-authorized server-side against the principal's grants.
+
 A single decision combines, **fail closed** (deny by default):
 
   1. **Tenant match** — the principal's tenant must equal the resource's tenant (the
      bound tenant, or an explicit ``context["tenant_id"]``); system-level actions
      (tenant lifecycle) are tenant-agnostic. Cross-tenant always denies.
+  1.5 **Vault access** — the active vault (``context["vault_id"]`` else the bound
+     ``VaultContext.vault_id``) must be owned or granted to the principal (the ``default``
+     vault is tenant-shared); an ungranted vault denies (``vault_forbidden``).
   2. **Effective permission = role permissions ∩ credential scopes** (least privilege —
      an **intersection**, never a union). A scope entry may be a fine permission
      (``pages:write``) or a coarse class (``write``) that covers its fine permissions;
@@ -198,6 +207,33 @@ def _target_tenant(principal, context) -> str | None:
     return ctx.tenant_id if ctx is not None else None
 
 
+def _target_vault(principal, context) -> str | None:
+    """The vault the action targets: an explicit ``context["vault_id"]`` else the bound
+    :class:`~mnesis.tenancy.VaultContext`'s ``vault_id`` (``None`` when no vault is in
+    play, e.g. a pure-permission decision with nothing bound)."""
+    if context and context.get("vault_id"):
+        return context["vault_id"]
+    ctx = tenancy.current_or_none()
+    return getattr(ctx, "vault_id", None) if ctx is not None else None
+
+
+def _vault_authorized(principal: "auth.Principal", vault_id: str, *, data_root=None) -> bool:
+    """Whether ``principal`` may access ``vault_id`` within **its own** tenant — the
+    server-side re-authorization of a (selectable) vault. The transparent ``default``
+    vault is accessible to every tenant member (single-vault deployments); a named vault
+    must exist in this tenant AND be owned-or-granted. **Fail closed** — any lookup error,
+    an unknown vault, or a missing grant denies."""
+    if vault_id == config.DEFAULT_VAULT_ID:
+        return True
+    try:
+        reg = tenancy.tenant_context_for(principal.tenant_id, data_root=data_root).vault_registry()
+        if not reg.exists(vault_id):
+            return False
+        return reg.has_access(principal.principal_id, vault_id)
+    except Exception:
+        return False
+
+
 def decide(principal: "auth.Principal | None", action: str, resource=None, context: dict | None = None) -> Decision:
     """**The PDP.** Return an allow/deny :class:`Decision`, fail closed.
 
@@ -217,6 +253,14 @@ def decide(principal: "auth.Principal | None", action: str, resource=None, conte
         target = _target_tenant(principal, context)
         if target is not None and principal.tenant_id != target:
             return _deny("cross_tenant", action, principal, tenant_id=target)
+
+    # 1.5) Vault access — the active vault is SELECTABLE but must be authorized against
+    # the principal's grants (V2). Defense in depth alongside `resolve_vault` at the
+    # boundary: even if a store is somehow bound, an action on an ungranted vault denies.
+    if action not in SYSTEM_LEVEL_ACTIONS:
+        vault_id = _target_vault(principal, context)
+        if vault_id is not None and not _vault_authorized(principal, vault_id):
+            return _deny("vault_forbidden", action, principal)
 
     # 2) Effective permission = role ∩ scope.
     rp = role_permissions(principal.roles)
@@ -291,6 +335,106 @@ def enforce(action: str):
         return wrapper
 
     return deco
+
+
+# --- Vault resolution & access control (V2, the security core) -------------
+
+
+def resolve_vault(
+    principal: "auth.Principal | None",
+    requested_vault_id: str | None = None,
+    *,
+    data_root=None,
+) -> "tenancy.VaultContext":
+    """Resolve a client-**selected** vault to an **authorized** :class:`VaultContext`, or
+    raise :class:`identity.Deny` (fail closed).
+
+    The one place vaults differ from tenants: ``requested_vault_id`` MAY come from the
+    client (a selection), but access is re-authorized server-side **before any store is
+    opened** — validated against (1) the vault's tenant matching the principal's
+    credential-derived tenant (a vault from another tenant is always denied), and (2) the
+    principal's grants (ownership or an explicit grant; the transparent ``default`` vault
+    is shared within the tenant). Denies — with no default-to-some-vault fallback — when
+    the principal is unauthenticated, or the vault is malformed, unknown, cross-tenant,
+    inactive, or not granted. The returned context is a pure path handle (no store, no
+    side effects); the caller binds it and opens stores only after this succeeds."""
+    if principal is None or not getattr(principal, "tenant_id", None):
+        raise identity.Deny("no authenticated principal for vault resolution", reason="no_principal")
+    tenant_id = principal.tenant_id
+    vault_id = config.DEFAULT_VAULT_ID if requested_vault_id is None else requested_vault_id
+
+    # A crafted id (traversal / separator / absolute) can never even name a vault.
+    try:
+        tenancy.validate_vault_id(vault_id)
+    except tenancy.InvalidVaultId as exc:
+        raise identity.Deny(f"invalid vault id {vault_id!r}", reason="invalid_vault") from exc
+
+    tctx = tenancy.tenant_context_for(tenant_id, data_root=data_root)
+    reg = tctx.vault_registry()
+
+    if vault_id != config.DEFAULT_VAULT_ID:
+        vault = reg.get(vault_id)
+        if vault is None:
+            # Not in THIS tenant's registry — unknown here (a same-named vault under
+            # another tenant is invisible; tenant is never selectable).
+            raise identity.Deny(f"unknown vault {vault_id!r}", reason="unknown_vault")
+        if vault.tenant_id != tenant_id:  # defensive: the registry is per-tenant already
+            raise identity.Deny("cross-tenant vault access", reason="cross_tenant")
+        if vault.status != "active":
+            raise identity.Deny(f"vault {vault_id!r} is not active", reason="vault_inactive")
+        if not reg.has_access(principal.principal_id, vault_id):
+            raise identity.Deny(
+                f"{principal.principal_id} is not granted vault {vault_id!r}", reason="vault_forbidden"
+            )
+
+    # AUTHORIZED — only now build the (store-less) context handle for the selected vault.
+    return tctx.vault_context(vault_id)
+
+
+def vault_role(
+    principal: "auth.Principal", vault_id: str, *, data_root=None
+) -> str:
+    """The principal's effective role **in** ``vault_id`` — an explicit per-vault grant
+    role if set, else the principal's tenant role (the default). For the ``default`` vault
+    (or any vault with no explicit grant role) this is the tenant role."""
+    default_role = getattr(principal, "role", "readonly")
+    if vault_id == config.DEFAULT_VAULT_ID:
+        return default_role
+    try:
+        reg = tenancy.tenant_context_for(principal.tenant_id, data_root=data_root).vault_registry()
+        return reg.role_for(principal.principal_id, vault_id, default_role)
+    except Exception:
+        return default_role
+
+
+def grant_vault_access(
+    tenant_id: str, principal_id: str, vault_id: str, role: str | None = None, *, data_root=None
+) -> None:
+    """Grant ``principal_id`` access to ``vault_id`` within ``tenant_id`` (idempotent;
+    ``role`` optionally sets a per-vault role). Admin-gated at the surface; the vault must
+    exist in the tenant's registry."""
+    tenancy.tenant_context_for(tenant_id, data_root=data_root).vault_registry().grant(
+        principal_id, vault_id, role
+    )
+
+
+def revoke_vault_access(
+    tenant_id: str, principal_id: str, vault_id: str, *, data_root=None
+) -> bool:
+    """Revoke ``principal_id``'s explicit grant to ``vault_id`` (ownership is unaffected)."""
+    return tenancy.tenant_context_for(tenant_id, data_root=data_root).vault_registry().revoke_grant(
+        principal_id, vault_id
+    )
+
+
+def accessible_vaults(principal: "auth.Principal", *, data_root=None) -> set[str]:
+    """The vault ids ``principal`` may reach in its tenant = owned ∪ granted ∪ the
+    transparent ``default`` vault."""
+    try:
+        reg = tenancy.tenant_context_for(principal.tenant_id, data_root=data_root).vault_registry()
+        return reg.accessible_vaults(principal.principal_id) | {config.DEFAULT_VAULT_ID}
+    except Exception:
+        return {config.DEFAULT_VAULT_ID}
 
 
 def _owns_or_admin(principal: "auth.Principal", page: store.Page) -> bool:
