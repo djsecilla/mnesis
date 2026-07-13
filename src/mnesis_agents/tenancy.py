@@ -115,6 +115,11 @@ class TenantScope:
     notes_inbox: Path
     action_outbox: Path
     egress: EgressSettings
+    #: The vault this agent operates within (V5). The agent presents it to Mnesis over
+    #: MCP (re-authorized server-side against the credential's grants), and all its
+    #: governance state lives under a per-vault state_root — so an agent reaches only its
+    #: one (tenant, vault).
+    vault_id: str = config.DEFAULT_VAULT_ID
 
     # -- per-tenant governance paths (all under state_root) ------------------
 
@@ -172,7 +177,9 @@ class TenantScope:
     def knowledge_source(self):
         from .knowledge import mnesis_mcp_source
 
-        return mnesis_mcp_source(url=self.mcp_url, token=self.credential)
+        # Present this scope's vault to Mnesis; the server re-authorizes it against the
+        # credential's grants, so the agent's tools only ever touch its (tenant, vault).
+        return mnesis_mcp_source(url=self.mcp_url, token=self.credential, vault=self.vault_id)
 
     def audit_log(self):
         from .audit import AgentAuditLog
@@ -254,31 +261,36 @@ def resolve_scope(
     tenant_id: str | None,
     credential: str | None,
     *,
+    vault_id: str | None = None,
     mcp_url: str | None = None,
     state_base: Path | str | None = None,
     notes_inbox: Path | str | None = None,
     action_outbox: Path | str | None = None,
     egress: EgressSettings | dict | None = None,
 ) -> TenantScope:
-    """Resolve a :class:`TenantScope`. **Fail-closed**: a missing tenant id or
-    credential raises :class:`UnresolvedTenant`, so an agent that cannot resolve its
-    tenant credential does not start."""
+    """Resolve a :class:`TenantScope` for one ``(tenant, vault)``. **Fail-closed**: a
+    missing tenant id or credential raises :class:`UnresolvedTenant`, so an agent that
+    cannot resolve its credential does not start. All governance state lives under a
+    **per-vault** ``state_root`` (`.../tenants/<tenant_id>/vaults/<vault_id>/`), and the
+    inbox/outbox are per-vault too — so no state is shared across vaults (V5)."""
     if not tenant_id:
         raise UnresolvedTenant("no tenant id for the agent scope")
     if not credential:
         raise UnresolvedTenant(
             f"tenant {tenant_id!r} has no MCP credential — agents will not start (fail closed)"
         )
+    vid = vault_id or config.DEFAULT_VAULT_ID
     base = Path(state_base).expanduser() if state_base is not None else _state_base()
-    root = base / "tenants" / tenant_id
+    root = base / "tenants" / tenant_id / "vaults" / vid
     eg = egress if isinstance(egress, EgressSettings) else EgressSettings.from_dict(egress)
     return TenantScope(
         tenant_id=tenant_id,
         credential=credential,
+        vault_id=vid,
         mcp_url=mcp_url or config.MNESIS_MCP_URL,
         state_root=root,
-        notes_inbox=Path(notes_inbox).expanduser() if notes_inbox else (config.MNESIS_NOTES_INBOX / tenant_id),
-        action_outbox=Path(action_outbox).expanduser() if action_outbox else (config.MNESIS_ACTION_OUTBOX / tenant_id),
+        notes_inbox=Path(notes_inbox).expanduser() if notes_inbox else (config.MNESIS_NOTES_INBOX / tenant_id / vid),
+        action_outbox=Path(action_outbox).expanduser() if action_outbox else (config.MNESIS_ACTION_OUTBOX / tenant_id / vid),
         egress=eg,
     )
 
@@ -287,8 +299,10 @@ def load_scopes() -> list[TenantScope]:
     """The tenant scopes the runtime hosts. Sources, in order:
 
     1. ``MNESIS_AGENTS_TENANTS_FILE`` — a JSON ``{"tenants": [ {tenant_id, credential,
-       mcp_url?, notes_inbox?, action_outbox?, egress?}, … ]}`` (per-tenant config).
-       A tenant without a credential is **fail-closed** (raises).
+       vault_id?, mcp_url?, notes_inbox?, action_outbox?, egress?}, … ]}`` (per-scope
+       config; one entry per (tenant, vault) an agent runs within — ``vault_id`` defaults
+       to the transparent ``default`` vault). A tenant without a credential is
+       **fail-closed** (raises).
     2. else a single legacy scope from ``MNESIS_MCP_TOKEN`` (tenant id
        ``MNESIS_AGENTS_TENANT_ID``, default ``default``) — the single-tenant path.
     3. else ``[]`` — nothing resolvable; the runner comes up idle.
@@ -301,6 +315,7 @@ def load_scopes() -> list[TenantScope]:
         for entry in entries or []:
             scopes.append(resolve_scope(
                 entry.get("tenant_id"), entry.get("credential"),
+                vault_id=entry.get("vault_id"),
                 mcp_url=entry.get("mcp_url"), notes_inbox=entry.get("notes_inbox"),
                 action_outbox=entry.get("action_outbox"), egress=entry.get("egress"),
             ))

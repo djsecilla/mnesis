@@ -170,6 +170,7 @@ async def _session(request: Request) -> JSONResponse:
     p = auth.current_principal_or_none()
     if p is None:  # pragma: no cover — middleware guarantees a principal here
         return JSONResponse({"error": "unauthenticated"}, status_code=401)
+    active = tenancy.current_or_none()
     return JSONResponse({
         "principal_id": p.principal_id,
         "tenant_id": p.tenant_id,
@@ -177,6 +178,23 @@ async def _session(request: Request) -> JSONResponse:
         "scopes": sorted(p.scopes),
         "kind": p.kind,
         "permissions": sorted(authz.effective_permissions(p)),
+        # The active vault (re-authorized by the middleware for this request) + the vaults
+        # the principal may select (V5). The SPA's vault picker reads these.
+        "active_vault": getattr(active, "vault_id", config.DEFAULT_VAULT_ID),
+        "vaults": sorted(authz.accessible_vaults(p)),
+    })
+
+
+async def _vaults(request: Request) -> JSONResponse:
+    """The vaults the bound principal may select (owned ∪ granted ∪ the transparent
+    ``default``), plus the currently-active vault. Backs the web vault picker (V5)."""
+    p = auth.current_principal_or_none()
+    if p is None:  # pragma: no cover — middleware guarantees a principal here
+        return JSONResponse({"error": "unauthenticated"}, status_code=401)
+    active = tenancy.current_or_none()
+    return JSONResponse({
+        "active_vault": getattr(active, "vault_id", config.DEFAULT_VAULT_ID),
+        "vaults": sorted(authz.accessible_vaults(p)),
     })
 
 
@@ -226,6 +244,7 @@ AUTH_ROUTES = [
     Route("/api/auth/login", _login, methods=["POST"]),
     Route("/api/auth/logout", _logout, methods=["POST"]),
     Route("/api/auth/session", _session, methods=["GET"]),
+    Route("/api/vaults", _vaults, methods=["GET"]),
     Route("/api/auth/reset/request", _reset_request, methods=["POST"]),
     Route("/api/auth/reset/confirm", _reset_confirm, methods=["POST"]),
 ]
@@ -279,7 +298,16 @@ class WebSessionMiddleware:
                 return
 
         principal = principal_auth.to_principal()
-        ctx = tenancy.open_tenant(principal.tenant_id)
+        # Vault SELECTION from the client (header) is re-AUTHORIZED server-side against the
+        # principal's grants before any store is opened (V5). An ungranted/unknown vault
+        # fails closed → 403; the tenant still comes only from the credential.
+        selected_vault = _header_from_scope(scope, config.VAULT_SELECTION_HEADER.encode()) or None
+        try:
+            ctx = authz.open_authorized_vault(principal, selected_vault)
+        except identity.AuthError as exc:
+            reason = getattr(exc, "reason", "vault_forbidden")
+            await _send_json(scope, receive, send, 403, {"error": "vault_forbidden", "reason": reason})
+            return
         with tenancy.use(ctx):
             ptok = auth.bind_principal(principal)
             try:

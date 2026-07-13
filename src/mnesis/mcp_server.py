@@ -668,9 +668,21 @@ class _PrincipalBindingMiddleware:
         presented = headers.get(b"authorization", b"").decode()
         token = presented[7:] if presented.startswith("Bearer ") else ""
         try:
-            ctx, principal = tokens.resolve_bearer(token, cred_store=self.store)
+            _, principal = tokens.resolve_bearer(token, cred_store=self.store)
         except auth.AuthError:
             await JSONResponse({"error": "unauthorized"}, status_code=401)(scope, receive, send)
+            return
+        # Vault SELECTION from the client (header) — re-AUTHORIZED server-side against the
+        # credential's grants before any store opens (V5). The tenant still comes only from
+        # the credential; an ungranted/cross-vault selection fails closed → 403.
+        selected_vault = headers.get(config.VAULT_SELECTION_HEADER.encode(), b"").decode() or None
+        try:
+            ctx = authz.open_authorized_vault(principal, selected_vault)
+        except auth.AuthError as exc:
+            reason = getattr(exc, "reason", "vault_forbidden")
+            await JSONResponse({"error": "vault_forbidden", "reason": reason}, status_code=403)(
+                scope, receive, send
+            )
             return
         with tenancy.use(ctx):
             ptok = auth.bind_principal(principal)
@@ -721,9 +733,15 @@ def serve() -> None:
             build_http_app(), host=config.MNESIS_MCP_HOST, port=config.MNESIS_MCP_PORT
         )
     else:
-        # stdio (local Claude Code): one tenant for the process lifetime. Bind the
-        # default tenant (resolved/migrated on demand) for every tool call.
-        with tenancy.use(tenancy.open_tenant(config.DEFAULT_TENANT_ID)):
+        # stdio (local Claude Code): one (tenant, vault) for the process lifetime — the
+        # default tenant + the `MNESIS_VAULT` selection (default vault when unset). Local
+        # trust, so provision the selected vault directly.
+        vault_id = config.MNESIS_VAULT or config.DEFAULT_VAULT_ID
+        if vault_id == config.DEFAULT_VAULT_ID:
+            ctx = tenancy.open_tenant(config.DEFAULT_TENANT_ID)
+        else:
+            ctx = tenancy.create_vault(config.DEFAULT_TENANT_ID, vault_id)
+        with tenancy.use(ctx):
             mcp.run()
 
 

@@ -75,6 +75,14 @@ REGISTRY_FILENAME: str = "registry.json"
 DEFAULT_TENANT_ID: str = os.environ.get("MNESIS_DEFAULT_TENANT", "default")
 #: The default vault a single-vault deployment runs as transparently (CLAUDE.md §16).
 DEFAULT_VAULT_ID: str = os.environ.get("MNESIS_DEFAULT_VAULT", "default")
+#: The active-vault SELECTION for the CLI / stdio-MCP / agents (a client selection that is
+#: always re-authorized server-side; never a grant). Web + HTTP-MCP carry it in a header
+#: (:data:`VAULT_SELECTION_HEADER`). Unset → the transparent ``default`` vault. (V5)
+MNESIS_VAULT: str | None = os.environ.get("MNESIS_VAULT") or None
+#: The HTTP header a client uses to SELECT the active vault on the web (`/api`) and MCP
+#: (`/mcp`) surfaces. The selection is re-authorized against the principal's grants at the
+#: choke point (`authz.resolve_vault`); a client-supplied vault id is never a grant. (V5)
+VAULT_SELECTION_HEADER: str = "x-mnesis-vault"
 
 
 def tenants_dir() -> Path:

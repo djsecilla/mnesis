@@ -40,6 +40,7 @@ The fine-grained model and the PDP are additive.
 
 from __future__ import annotations
 
+import contextlib
 import functools
 from dataclasses import dataclass
 
@@ -389,6 +390,56 @@ def resolve_vault(
 
     # AUTHORIZED — only now build the (store-less) context handle for the selected vault.
     return tctx.vault_context(vault_id)
+
+
+def open_authorized_vault(
+    principal: "auth.Principal | None",
+    requested_vault_id: str | None = None,
+    *,
+    data_root=None,
+) -> "tenancy.VaultContext":
+    """:func:`resolve_vault` (authorize) **then** ensure the vault is provisioned/usable —
+    the single 'select → authorize → open' step every surface's choke point runs. The
+    ``default`` vault runs the transparent provisioning/migration (`tenancy.open_tenant`);
+    a granted named vault is already provisioned, so its authorized handle is returned as
+    is. Raises :class:`identity.Deny` (fail closed) on any unauthorized selection — no
+    store is opened before authorization succeeds."""
+    ctx = resolve_vault(principal, requested_vault_id, data_root=data_root)
+    if ctx.vault_id == config.DEFAULT_VAULT_ID:
+        return tenancy.open_tenant(ctx.tenant_id, data_root=data_root)
+    return ctx
+
+
+@contextlib.contextmanager
+def use_vault(
+    principal: "auth.Principal | None", requested_vault_id: str | None = None, *, data_root=None
+):
+    """Bind the AUTHORIZED vault for the duration of a block (the surface primitive)."""
+    ctx = open_authorized_vault(principal, requested_vault_id, data_root=data_root)
+    with tenancy.use(ctx):
+        yield ctx
+
+
+@contextlib.contextmanager
+def authenticated_vault(
+    credential: str | None,
+    requested_vault_id: str | None = None,
+    *,
+    cred_store=None,
+    data_root=None,
+):
+    """Resolve ``credential`` → principal, authorize + open the SELECTED vault, and bind
+    BOTH (vault + principal) for the block — exactly what the MCP/CLI choke points do.
+    Fail closed: an unresolved credential or an unauthorized vault raises
+    :class:`identity.Deny`."""
+    _, principal = auth.resolve_principal(credential, store=cred_store, data_root=data_root)
+    ctx = open_authorized_vault(principal, requested_vault_id, data_root=data_root)
+    with tenancy.use(ctx):
+        tok = auth.bind_principal(principal)
+        try:
+            yield ctx, principal
+        finally:
+            auth.unbind_principal(tok)
 
 
 def vault_role(

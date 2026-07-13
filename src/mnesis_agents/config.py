@@ -73,6 +73,13 @@ MNESIS_LLM_TEMPERATURE: float = float(os.environ.get("MNESIS_LLM_TEMPERATURE", "
 MNESIS_MCP_URL: str = os.environ.get("MNESIS_MCP_URL", "http://localhost:8080/mcp")
 MNESIS_MCP_TOKEN: str | None = _opt("MNESIS_MCP_TOKEN")
 
+#: The transparent default vault an agent runs within when its scope names none (V5).
+#: Mirrors ``mnesis.config.DEFAULT_VAULT_ID`` (the agent layer never imports mnesis.*).
+DEFAULT_VAULT_ID: str = os.environ.get("MNESIS_DEFAULT_VAULT", "default")
+#: The header the agent's MCP connection uses to SELECT its vault; re-authorized
+#: server-side. Must match ``mnesis.config.VAULT_SELECTION_HEADER``.
+VAULT_SELECTION_HEADER: str = "x-mnesis-vault"
+
 # ── Agent Skills ─────────────────────────────────────────────────────────────
 
 #: Extra skill directories to scan (os.pathsep-separated), in addition to the

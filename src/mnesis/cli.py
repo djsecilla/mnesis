@@ -35,6 +35,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help=f"tenant to operate on (default: {config.DEFAULT_TENANT_ID})",
     )
     parser.add_argument(
+        "--vault",
+        default=None,
+        help="the vault to operate on within the (credential's) tenant — a SELECTION that "
+             "is re-authorized against your grants (else MNESIS_VAULT; default: the "
+             f"transparent '{config.DEFAULT_VAULT_ID}' vault). An ungranted vault is refused.",
+    )
+    parser.add_argument(
         "--token",
         default=None,
         help="a PAT or session token for headless auth (else MNESIS_TOKEN, else the "
@@ -759,13 +766,27 @@ def _resolve_data_context(args: argparse.Namespace):
         principal (the pre-multitenant convenience path; nothing is narrowed).
     """
     ctx, principal = _resolve_optional(args)
+    requested_vault = getattr(args, "vault", None) or os.environ.get("MNESIS_VAULT")
     if principal is not None:
+        # The vault is a SELECTION (--vault / MNESIS_VAULT), re-authorized against the
+        # principal's grants; an ungranted vault fails closed (V5).
+        try:
+            ctx = authz.open_authorized_vault(principal, requested_vault)
+        except auth.AuthError as exc:
+            reason = getattr(exc, "reason", "vault_forbidden")
+            raise _CliDenied(
+                f"vault {requested_vault or config.DEFAULT_VAULT_ID!r} refused ({reason})"
+            ) from exc
         return ctx, principal
     if config.MNESIS_AUTH_ENABLED:
         raise _CliDenied(
             "not authenticated: no credential provided — run `mnesis login` (or set "
             "MNESIS_TOKEN / MNESIS_CREDENTIAL); the --tenant flag is not trusted"
         )
+    # Legacy single-tenant (auth off): no principal to authorize against — the local
+    # --vault selection just opens that vault directly (nothing to narrow).
+    if requested_vault and requested_vault != config.DEFAULT_VAULT_ID:
+        return tenancy.create_vault(args.tenant, requested_vault), None
     return tenancy.open_tenant(args.tenant), None
 
 

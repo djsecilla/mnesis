@@ -51,18 +51,27 @@ class MnesisConnectionError(RuntimeError):
 # ── Connection config ─────────────────────────────────────────────────────
 
 
-def mnesis_connection(*, url: str | None = None, token: str | None = None) -> dict[str, Any]:
+def mnesis_connection(
+    *, url: str | None = None, token: str | None = None, vault: str | None = None
+) -> dict[str, Any]:
     """A langchain-mcp-adapters streamable-HTTP connection for Mnesis.
 
     Sends the bearer token as an ``Authorization`` header (when set). ``url``/``token``
     default to config, but a **tenant-scoped** credential (T6) is passed explicitly so
-    the connection resolves server-side to that tenant + agent principal (T3/T5).
+    the connection resolves server-side to that tenant + agent principal (T3/T5). ``vault``
+    (V5) is sent as the ``X-Mnesis-Vault`` **selection** header — re-authorized server-side
+    against the credential's grants — so the agent's tools only ever touch that vault.
     """
     url = url or config.MNESIS_MCP_URL
     token = token if token is not None else config.MNESIS_MCP_TOKEN
     conn: dict[str, Any] = {"transport": "streamable_http", "url": url}
+    headers: dict[str, str] = {}
     if token:
-        conn["headers"] = {"Authorization": f"Bearer {token}"}
+        headers["Authorization"] = f"Bearer {token}"
+    if vault:
+        headers[config.VAULT_SELECTION_HEADER] = vault
+    if headers:
+        conn["headers"] = headers
     return conn
 
 
@@ -112,10 +121,15 @@ class MCPToolSource(ToolSource):
             ) from exc
 
 
-def mnesis_mcp_source(*, url: str | None = None, token: str | None = None) -> MCPToolSource:
+def mnesis_mcp_source(
+    *, url: str | None = None, token: str | None = None, vault: str | None = None
+) -> MCPToolSource:
     """The Mnesis MCP tool source. ``url``/``token`` default to config; pass a
-    tenant-scoped credential (T6) to confine the source to that tenant's Mnesis."""
-    return MCPToolSource({"mnesis": mnesis_connection(url=url, token=token)}, namespace="mnesis")
+    tenant-scoped credential (T6) to confine the source to that tenant's Mnesis, and a
+    ``vault`` (V5) to confine it to that vault (re-authorized server-side)."""
+    return MCPToolSource(
+        {"mnesis": mnesis_connection(url=url, token=token, vault=vault)}, namespace="mnesis"
+    )
 
 
 # ── Offline fake source ───────────────────────────────────────────────────
