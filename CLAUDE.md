@@ -24,7 +24,7 @@ These hold across every module and every change. Treat a violation as a defect.
 2. **Filter sensitive data before any write.** Secrets and PII are redacted at the ingestion boundary, *before* a source is persisted or sent to the LLM. A raw secret value must never reach disk, logs, an LLM prompt, or a findings report.
 3. **Confidence is derived, never hand-set.** It is computed (Phase 2, `confidence.py`) from Markdown inputs (`source_count`, `last_confirmed`, `contradicts`, decay class) plus an optional access boost from the durable state store — never written into frontmatter. `status` is changed only through the store (so every transition is committed): by `supersede()` and by the decay/lifecycle job (`lifecycle.recompute_all` / `mnesis decay`).
 4. **The git history is the audit trail.** Every page mutation is a commit. Do not batch unrelated writes into one commit, and do not rewrite history. Each **tenant** has its own git repo under `tenants/<id>/` (§16).
-5. **The store is tenant-scoped by construction.** There is no global/ambient store: every store object (`Store`, `SearchIndex`, `StateStore`, the graph backend) is built from a `TenantContext`, every path is resolved against and guarded within that tenant's root, and the active tenant is resolved at a boundary (`tenancy.current()` fails closed if none is bound). Cross-tenant access is structurally impossible, not merely checked. See §16.
+5. **The store is tenant- *and* vault-scoped by construction.** There is no global/ambient store and no tenant-only store: every store object (`Store`, `SearchIndex`, `StateStore`, the graph backend) is built from a `VaultContext` (a `(tenant, vault)` pair; a bare `TenantContext` is refused), every path is resolved against and guarded within that vault's root, and the active `(tenant, vault)` is resolved at a boundary (`tenancy.current()` fails closed if none is bound). A vault belongs to exactly one tenant, so cross-tenant *and* cross-vault access is structurally impossible, not merely checked. The transparent `default` vault keeps single-vault deployments seamless. See §16 (Vaults).
 6. **Keep this file in sync** (see Prime rule above).
 
 ---
@@ -41,7 +41,7 @@ pyproject.toml            # deps + the `mnesis` and `mnesis-agents` console scri
 .mcp.json                 # MCP registration for Claude Code
 src/mnesis/               # the core (canonical store + tools)
   config.py               # the data root + env config (model, threshold, stub flag)
-  tenancy.py              # the isolation primitive: Tenant, registry, TenantContext (§16)
+  tenancy.py              # the isolation primitive: Tenant/Vault, registries, TenantContext + VaultContext, migrations (§16)
   identity.py             # the unified IAM core (IAM1): principal/role/permission/scope model + hashed credential store (token sha256 / argon2id password) + the single resolve() -> AuthenticatedPrincipal (§16)
   auth.py                 # thin compatibility facade over identity.py — the T3 import surface (Principal/Credential/CredentialStore/resolve_principal/resolve_admin) (§16)
   providers.py            # IAM2 login seam: IdentityProvider ABC + LocalPasswordProvider (argon2id, policy, reset, brute-force throttle+audit) + OIDC stub (§16)
@@ -67,10 +67,12 @@ src/mnesis_llm/           # shared provider-agnostic chat-model factory (core + 
 wiki/                     # the DATA ROOT (MNESIS_ROOT) — holds the tenants + registry, never a store itself
   registry.json           # the tenant registry (metadata) — GITIGNORED, OUTSIDE any tenant root
   credentials.json        # the credential store (HASHED tokens) — GITIGNORED, OUTSIDE any tenant root (§16)
-  tenants/<tenant_id>/    # one tenant's canonical store + its OWN git repo (§16)
-    pages/                #   canonical Markdown pages (tracked)
-    sources/              #   redacted raw sources, for provenance (tracked)
-    .cache/               #   SQLite caches: wiki.db, graph.db, state.db — GITIGNORED (rebuildable)
+  tenants/<tenant_id>/    # one tenant: its vaults + tenant-level metadata (§16)
+    vaults.json           #   the per-tenant vault registry (metadata) — OUTSIDE any vault root
+    vaults/<vault_id>/    #   one VAULT: a canonical store + its OWN git repo (§16 Vaults)
+      pages/              #     canonical Markdown pages (tracked)
+      sources/            #     redacted raw sources, for provenance (tracked)
+      .cache/             #     SQLite caches: wiki.db, graph.db, state.db — GITIGNORED (rebuildable)
 agent_runs/               # agent run audit (JSONL) — GITIGNORED
 tests/
 scripts/demo_end_to_end.py
@@ -82,6 +84,7 @@ scripts/demo_end_to_end.py
 |---|---|---|
 | `MNESIS_ROOT` | `./wiki` | The **multitenant data root** (`config.DATA_ROOT`): holds `tenants/<id>/` and `registry.json`. It is **not** itself a store — there are no global pages/sources/index paths (§16). |
 | `MNESIS_DEFAULT_TENANT` | `default` | The tenant a single-tenant deployment runs as transparently. |
+| `MNESIS_DEFAULT_VAULT` | `default` | The vault a single-vault deployment runs as transparently (the in-tenant isolation unit; §16 Vaults). |
 | `MNESIS_AUTH_ENABLED` | unset | Turns on **multi-tenant** mode: every boundary requires a per-tenant credential (tenant taken only from the credential; unresolved → denied, no default fallback). Off = the single `default` tenant — **still with real auth on every surface** (web login sessions, CLI login/PATs, per-agent MCP keys; §16 IAM5–8), not a shared token. (§16) |
 | `MNESIS_AUTH_PEPPER` | unset | Optional server-side secret mixed into the token hash at rest; never logged. (§16) |
 | `MNESIS_DEFAULT_VISIBILITY` | `shared` | Global fallback for a new page's visibility (`shared`\|`private`) when a tenant has not set its own default. (§16) |
@@ -106,7 +109,7 @@ scripts/demo_end_to_end.py
 | `MNESIS_FILEBACK_THRESHOLD` | `0.7` | Quality gate for filing answers back. |
 | `MNESIS_LLM_STUB` | unset | When `1` (or no API key), the LLM client returns deterministic canned output so tests and the demo run offline. |
 
-Each tenant's `.cache/` is never tracked by git — it is regenerated by `mnesis rebuild` from that tenant's pages (+ its durable `state.db`). **Path references elsewhere in this file written as `wiki/pages/…`, `wiki/sources/…`, or `wiki/.index/…` now resolve per-tenant under `tenants/<tenant_id>/{pages,sources,.cache}` — they are reached only through a `TenantContext` (§16), never a global path.**
+Each vault's `.cache/` is never tracked by git — it is regenerated by `mnesis rebuild` from that vault's pages (+ its durable `state.db`). **Path references elsewhere in this file written as `wiki/pages/…`, `wiki/sources/…`, or `wiki/.index/…`, and even `tenants/<tenant_id>/{pages,sources,.cache}`, now resolve per-*vault* under `tenants/<tenant_id>/vaults/<vault_id>/{pages,sources,.cache}` — they are reached only through a `VaultContext` (§16 Vaults), never a global or tenant-only path.**
 
 ---
 
@@ -389,23 +392,38 @@ mnesis is **multitenant from the data layer up**. The store is tenant-scoped *by
 
 ```
 DATA_ROOT/
-  registry.json                # the tenant registry (metadata) — OUTSIDE any tenant root
-  credentials.json             # the credential store (HASHED tokens) — OUTSIDE any tenant root
-  system_audit.jsonl           # the lifecycle audit (provision/suspend/delete) — OUTSIDE any tenant root
-  tenants/<tenant_id>/         # one tenant's canonical store + its OWN git repo
-    pages/                     #   canonical Markdown (tracked)
-    sources/                   #   redacted sources (tracked)
-    .cache/                    #   rebuildable caches: wiki.db, graph.db, state.db (gitignored)
+  registry.json                        # the tenant registry (metadata) — OUTSIDE any tenant root
+  credentials.json                     # the credential store (HASHED tokens) — OUTSIDE any tenant root
+  system_audit.jsonl                   # the lifecycle audit (provision/suspend/delete) — OUTSIDE any tenant root
+  tenants/<tenant_id>/                 # one tenant: its vaults + tenant-level metadata
+    vaults.json                        #   the per-tenant vault registry — OUTSIDE any vault root
+    vaults/<vault_id>/                 #   one VAULT: a canonical store + its OWN git repo
+      pages/                           #     canonical Markdown (tracked)
+      sources/                         #     redacted sources (tracked)
+      .cache/                          #     rebuildable caches: wiki.db, graph.db, state.db (gitignored)
 ```
 
 **The model (`tenancy.py`).**
 - **`Tenant`** — `tenant_id` (a safe slug: lowercase `[a-z0-9_-]`, leading alphanumeric), `name`, `status` (`active`|`suspended`), `created`.
 - **`TenantRegistry`** — a small JSON metadata store at `DATA_ROOT/registry.json` recording *which* tenants exist; it holds no tenant content. `ensure()` is idempotent.
-- **`TenantContext{tenant_id, root_path}`** — the isolation handle every store is built from. It exposes `pages_dir`/`sources_dir`/`cache_dir`/`git_root` and a **path-resolution guard**: `resolve(*parts)` joins under the root, resolves, and refuses anything that escapes it (traversal `..` or absolute escape) — fail-closed (`PathEscapeError`). `page_path`/`source_path` validate the id segment too.
+- **`Vault`** — the per-user, in-tenant isolation unit: `vault_id` (a safe slug, same rule as a tenant id), `tenant_id`, `name`, `owner_principal`, `status`, `created`. A vault **always belongs to exactly one tenant** — tenant isolation is unchanged and unweakened; a vault is one level down.
+- **`VaultRegistry`** — a small JSON metadata store at `tenants/<tenant_id>/vaults.json` (at the tenant root, **OUTSIDE any vault root**) recording which vaults the tenant has. `ensure()` is idempotent.
+- **`TenantContext{tenant_id, root_path}`** — a **tenant-level** handle (root = `tenants/<id>/`). It owns tenant-level metadata: `vaults_dir`/`vault_registry()` and `vault_context(vault_id)`. It is **not** a store; a store requires a `VaultContext`.
+- **`VaultContext{tenant_id, vault_id, root_path, tenant_root_path}`** (a subclass of `TenantContext`) — the isolation handle **every store is built from**. Its `root_path` is the **vault root**; it exposes `pages_dir`/`sources_dir`/`cache_dir`/`git_root` and a **path-resolution guard**: `resolve(*parts)` joins under the vault root and refuses anything that escapes it (traversal `..` or absolute escape) — fail-closed (`PathEscapeError`), so **a resolved path can never leave the vault** (nor reach a sibling vault). `page_path`/`source_path` validate the id segment too. `tenant_root` reaches the enclosing tenant root (for the vault registry).
 
-**No global store / resolved at boundaries.** There is no module-level store and no function that takes a raw cross-tenant path. Each store class (`store.Store`, `search.SearchIndex`, `state.StateStore`, and `graph.get_graph_backend(ctx)`) is **constructed from a `TenantContext`** — passing anything else is a `TypeError`. The module-level convenience functions (`store.write_page`, `search.search`, …) delegate to a store over the **active** context, which is bound explicitly at a boundary via `tenancy.use(ctx)`; `tenancy.current()` raises `NoTenantContextError` when none is bound. Boundaries that bind it: the **CLI** (`--tenant`, default `default`, per invocation), the **MCP server** (stdio binds once; HTTP binds per request via `_TenantBindingMiddleware`), and the **web API** (per request). Each tenant root is its own git repo, so every page mutation is one commit *in that tenant's history*.
+**No vault-less store / resolved at boundaries.** There is no module-level store, no tenant-only store, and no function that takes a raw cross-vault path. Each store class (`store.Store`, `search.SearchIndex`, `state.StateStore`, and `graph.get_graph_backend(ctx)`) is **constructed only from a `VaultContext`** — passing anything else, *including a bare `TenantContext`*, is a `TypeError`. The module-level convenience functions (`store.write_page`, `search.search`, …) delegate to a store over the **active** context, which is bound explicitly at a boundary via `tenancy.use(ctx)`; `tenancy.current()` raises `NoTenantContextError` when none is bound. Boundaries resolve a `(tenant, vault)` and bind its `VaultContext`; the transparent `default` vault keeps single-vault deployments running with no vault argument. Each vault root is its own git repo, so every page mutation is one commit *in that vault's history*.
 
-**Migration (transparent single-tenant).** `tenancy.migrate_legacy_to_default()` (CLI `mnesis migrate-tenants`) moves an existing single-store layout (`DATA_ROOT/{pages,sources}`) into `tenants/default/` and gives it its own git repo. It is **non-destructive** (content is moved, never dropped; the legacy `.git`/`.index` are left in place) and **idempotent** (a re-run, once `tenants/default/` exists, is a no-op). `tenancy.open_tenant("default")` runs it on first use, so a single-tenant deployment reaches its data as `default` with no manual step.
+**Migration (transparent single-tenant / single-vault).** Two idempotent, non-destructive steps converge existing data on the `default` vault: `tenancy.migrate_tenant_to_default_vault(tenant_id)` moves a **pre-vault** per-tenant store (`tenants/<id>/{pages,sources}`) into `tenants/<id>/vaults/default/` and gives the vault its own git repo; `tenancy.migrate_legacy_to_default()` (CLI `mnesis migrate-tenants`) stages an even older single-store layout (`DATA_ROOT/{pages,sources}`) at the tenant root and then defers to the tenant→vault step. Both are **non-destructive** (content is moved, never dropped; the old `.git`/`.index` are left in place) and **idempotent** (a re-run, once the default vault exists, is a no-op — no move, no commit). `tenancy.open_tenant("default")` runs them on first use, so a single-tenant/single-vault deployment reaches its data as `default`/`default` with no manual step.
+
+### Vaults: the per-user, in-tenant isolation unit (`tenancy.py`, V1)
+
+A **vault** extends the tenant isolation primitive **one level down**: within a tenant, a vault is a full canonical store (its own `pages/`/`sources/`/`.cache/` + git repo) scoped to a user (or a workspace). The store is **vault-scoped by construction**, mirroring the tenant approach — a store is reached only through a `VaultContext`, never a tenant-only or global handle.
+
+- **Structure.** A vault always belongs to **exactly one tenant** (`Vault.tenant_id`); the vault root is `tenants/<tenant_id>/vaults/<vault_id>/`. Tenant isolation is **unchanged and unweakened** — vaults nest *inside* a tenant, so a same-named vault under two tenants occupies two disjoint roots. The per-tenant `VaultRegistry` (`tenants/<id>/vaults.json`) records which vaults exist, **outside every vault root**.
+- **By construction, not by check.** `store.Store`/`search.SearchIndex`/`state.StateStore`/`graph.get_graph_backend` each require a `VaultContext` and `TypeError` on anything else (including a bare `TenantContext`). `VaultContext.resolve` guards every path within the **vault** root, so a crafted id/path can never escape the vault or reach a sibling vault (`PathEscapeError`, fail-closed). Two vaults never share a file; caches/index/graph/state are all per-vault.
+- **Transparent default vault.** `MNESIS_DEFAULT_VAULT` (default `default`) is the vault a single-vault deployment runs as with no vault argument — `context_for(tenant_id)` and `open_tenant(tenant_id)` resolve the `default` vault. So single-tenant/single-vault deployments are seamless.
+- **Provisioning + factories.** `tenancy.create_tenant(id)` provisions the tenant **and** its default vault, returning the default `VaultContext`; `tenancy.create_vault(tenant_id, vault_id, …)` adds a further vault (dirs + own git + registry record); `tenancy.list_vaults(tenant_id)` enumerates them; `tenancy.tenant_context_for(id)` yields the bare tenant handle for tenant-level ops.
+- **Migration.** Existing per-tenant data converges on the default vault non-destructively and idempotently (`migrate_tenant_to_default_vault`, and `migrate_legacy_to_default` for the older single-store layout) — see "Migration" above. *(Boundary/credential resolution of a specific vault, per-vault authorization/visibility, and the agent layer's vault scoping land in later vault prompts; V1 delivers the model, the context, per-vault stores, and migration.)*
 
 ### Identity core: principals, credentials, roles & scopes (`identity.py`, IAM1)
 

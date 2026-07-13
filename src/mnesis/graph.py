@@ -435,15 +435,19 @@ class SqliteGraphBackend(GraphBackend):
 # --- Factory ---------------------------------------------------------------
 
 
-def get_graph_backend(ctx: "tenancy.TenantContext | None" = None) -> GraphBackend:
-    """Return the configured GraphBackend (``config.GRAPH_BACKEND``) for a tenant.
+def get_graph_backend(ctx: "tenancy.VaultContext | None" = None) -> GraphBackend:
+    """Return the configured GraphBackend (``config.GRAPH_BACKEND``) for a vault.
 
-    The graph is a rebuildable cache living in the tenant's own ``.cache/graph.db``;
-    ``ctx`` defaults to the active tenant (fail-closed). This is the one place
-    engines are chosen — adding a Tier-B backend means implementing
-    :class:`GraphBackend` and registering it here, with nothing else changing.
+    The graph is a rebuildable cache living in the vault's own ``.cache/graph.db``;
+    ``ctx`` defaults to the active vault (fail-closed). Like the other store objects the
+    backend is **vault-scoped by construction** — it requires a
+    :class:`~mnesis.tenancy.VaultContext`. This is the one place engines are chosen —
+    adding a Tier-B backend means implementing :class:`GraphBackend` and registering it
+    here, with nothing else changing.
     """
     ctx = ctx if ctx is not None else tenancy.current()
+    if not isinstance(ctx, tenancy.VaultContext):
+        raise TypeError(f"get_graph_backend requires a VaultContext; got {type(ctx).__name__}")
     backend = config.GRAPH_BACKEND
     if backend == "sqlite":
         return SqliteGraphBackend(ctx.cache_path("graph.db"))

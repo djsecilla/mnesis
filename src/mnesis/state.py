@@ -25,15 +25,15 @@ from pathlib import Path
 
 from . import tenancy
 from .store import now_iso
-from .tenancy import TenantContext
+from .tenancy import VaultContext
 
 
 class StateStore:
-    """The durable access + review-queue store for ONE tenant."""
+    """The durable access + review-queue store for ONE vault."""
 
-    def __init__(self, ctx: TenantContext) -> None:
-        if not isinstance(ctx, TenantContext):
-            raise TypeError(f"StateStore requires a TenantContext; got {type(ctx).__name__}")
+    def __init__(self, ctx: VaultContext) -> None:
+        if not isinstance(ctx, VaultContext):
+            raise TypeError(f"StateStore requires a VaultContext; got {type(ctx).__name__}")
         self.ctx = ctx
 
     def _db_path(self) -> Path:

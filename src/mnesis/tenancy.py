@@ -46,6 +46,10 @@ from . import config
 #: it must never contain a separator or traversal token.
 _TENANT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
+#: A vault id follows exactly the same safe-slug rule as a tenant id (it, too, names a
+#: directory segment inside a resolved path).
+_VAULT_ID_RE = _TENANT_ID_RE
+
 
 class TenancyError(Exception):
     """Base class for tenancy faults."""
@@ -53,6 +57,10 @@ class TenancyError(Exception):
 
 class InvalidTenantId(TenancyError, ValueError):
     """A tenant id is malformed (not a safe slug)."""
+
+
+class InvalidVaultId(TenancyError, ValueError):
+    """A vault id is malformed (not a safe slug)."""
 
 
 class PathEscapeError(TenancyError, ValueError):
@@ -70,6 +78,15 @@ def validate_tenant_id(tenant_id: str) -> str:
             f"invalid tenant id {tenant_id!r}: use lowercase [a-z0-9_-] with a leading alphanumeric"
         )
     return tenant_id
+
+
+def validate_vault_id(vault_id: str) -> str:
+    """Return ``vault_id`` if it is a safe slug, else raise :class:`InvalidVaultId`."""
+    if not isinstance(vault_id, str) or vault_id in {".", ".."} or not _VAULT_ID_RE.match(vault_id):
+        raise InvalidVaultId(
+            f"invalid vault id {vault_id!r}: use lowercase [a-z0-9_-] with a leading alphanumeric"
+        )
+    return vault_id
 
 
 def _safe_segment(value: str, label: str) -> str:
@@ -229,14 +246,137 @@ class TenantRegistry:
         return True
 
 
-# --- TenantContext (resolved at boundaries) --------------------------------
+# --- Vault model (a per-user, in-tenant isolation unit) --------------------
+
+
+@dataclass(frozen=True)
+class Vault:
+    """A vault record (metadata only — its content lives under its own vault root).
+
+    A vault is the per-user, in-tenant isolation unit: a full canonical store (its own
+    ``pages/``/``sources/``/``.cache/`` + git repo) nested under one tenant. A vault
+    always belongs to exactly one tenant; tenant isolation is unchanged and unweakened.
+    """
+
+    vault_id: str
+    tenant_id: str
+    name: str = ""
+    owner_principal: str | None = None
+    status: str = "active"  # active | suspended
+    created: str = ""
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Vault":
+        vid = validate_vault_id(d["vault_id"])
+        return cls(
+            vault_id=vid,
+            tenant_id=validate_tenant_id(d["tenant_id"]),
+            name=d.get("name") or vid,
+            owner_principal=d.get("owner_principal"),
+            status=d.get("status", "active"),
+            created=d.get("created", ""),
+        )
+
+
+# --- Vault registry (per-tenant metadata, OUTSIDE any vault root) ----------
+
+
+class VaultRegistry:
+    """A small JSON registry recording WHICH vaults exist for one tenant, at
+    ``tenants/<tenant_id>/vaults.json`` — at the tenant root, beside (never inside)
+    the vault roots. It holds no vault content."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = Path(path)
+
+    def _load(self) -> dict[str, Vault]:
+        if not self.path.is_file():
+            return {}
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8") or "{}")
+        except (ValueError, OSError):
+            return {}
+        out: dict[str, Vault] = {}
+        for vid, d in (data.get("vaults") or {}).items():
+            try:
+                out[vid] = Vault.from_dict({"vault_id": vid, **(d or {})})
+            except (TenancyError, KeyError):
+                continue
+        return out
+
+    def _save(self, vaults: dict[str, Vault]) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "vaults": {
+                v.vault_id: {
+                    "tenant_id": v.tenant_id,
+                    "name": v.name,
+                    "owner_principal": v.owner_principal,
+                    "status": v.status,
+                    "created": v.created,
+                }
+                for v in vaults.values()
+            }
+        }
+        tmp = self.path.with_name(self.path.name + ".tmp")
+        tmp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        tmp.replace(self.path)
+
+    def exists(self, vault_id: str) -> bool:
+        return validate_vault_id(vault_id) in self._load()
+
+    def get(self, vault_id: str) -> Vault | None:
+        return self._load().get(validate_vault_id(vault_id))
+
+    def list(self) -> list[Vault]:
+        return sorted(self._load().values(), key=lambda v: v.vault_id)
+
+    def ensure(
+        self, vault_id: str, *, tenant_id: str, name: str | None = None,
+        owner_principal: str | None = None,
+    ) -> Vault:
+        """Idempotently record a vault; return the existing or newly-created one."""
+        validate_vault_id(vault_id)
+        vaults = self._load()
+        existing = vaults.get(vault_id)
+        if existing is not None:
+            return existing
+        vault = Vault(
+            vault_id=vault_id, tenant_id=validate_tenant_id(tenant_id),
+            name=name or vault_id, owner_principal=owner_principal,
+            status="active", created=config.now_iso(),
+        )
+        vaults[vault_id] = vault
+        self._save(vaults)
+        return vault
+
+    def remove(self, vault_id: str) -> bool:
+        vid = validate_vault_id(vault_id)
+        vaults = self._load()
+        if vid not in vaults:
+            return False
+        del vaults[vid]
+        self._save(vaults)
+        return True
+
+
+# --- TenantContext + VaultContext (resolved at boundaries) -----------------
 
 
 @dataclass(frozen=True)
 class TenantContext:
-    """The isolation handle: a tenant id + its absolute physical root. Every store
-    object is constructed from one of these, and every path is resolved against
-    ``root_path`` with a containment guard."""
+    """A **tenant-level** handle: a tenant id + its absolute tenant root
+    (``tenants/<tenant_id>/``). It is **not** a store — a store is reached only through
+    a :class:`VaultContext` (below). This handle owns tenant-level metadata: the vault
+    registry and the enumeration/opening of the tenant's vaults.
+
+    The path helpers (``pages_dir``/``resolve``/…) operate on ``root_path`` and are the
+    shared implementation :class:`VaultContext` reuses (there ``root_path`` is the vault
+    root); on a bare tenant handle they describe the tenant root and are not used as a
+    store (:class:`~mnesis.store.Store` rejects anything that is not a VaultContext)."""
 
     tenant_id: str
     root_path: Path
@@ -244,6 +384,35 @@ class TenantContext:
     def __post_init__(self) -> None:
         validate_tenant_id(self.tenant_id)
         object.__setattr__(self, "root_path", Path(self.root_path).resolve())
+
+    # -- tenant-level: the vaults live under the TENANT root --------------------
+    @property
+    def tenant_root(self) -> Path:
+        """The tenant root (``tenants/<tenant_id>/``) — where vaults + the vault
+        registry live. For a bare TenantContext this is ``root_path``; a VaultContext
+        overrides it (its ``root_path`` is the vault root)."""
+        return self.root_path
+
+    @property
+    def vaults_dir(self) -> Path:
+        return self.tenant_root / config.VAULTS_DIRNAME
+
+    @property
+    def vault_registry_path(self) -> Path:
+        return self.tenant_root / config.VAULT_REGISTRY_FILENAME
+
+    def vault_registry(self) -> "VaultRegistry":
+        return VaultRegistry(self.vault_registry_path)
+
+    def vault_context(self, vault_id: str) -> "VaultContext":
+        """The :class:`VaultContext` for ``vault_id`` under this tenant (no side effects)."""
+        validate_vault_id(vault_id)
+        return VaultContext(
+            tenant_id=self.tenant_id,
+            root_path=self.vaults_dir / vault_id,
+            vault_id=vault_id,
+            tenant_root_path=self.tenant_root,
+        )
 
     # canonical (tracked)
     @property
@@ -254,7 +423,7 @@ class TenantContext:
     def sources_dir(self) -> Path:
         return self.root_path / "sources"
 
-    # rebuildable caches (gitignored); each tenant root is its own git repo
+    # rebuildable caches (gitignored); each vault root is its own git repo
     @property
     def cache_dir(self) -> Path:
         return self.root_path / ".cache"
@@ -264,12 +433,14 @@ class TenantContext:
         return self.root_path
 
     def resolve(self, *parts: str) -> Path:
-        """Join ``parts`` under the tenant root and GUARD the result: it must stay
-        inside the root. Traversal (``..``) and absolute escapes are refused."""
+        """Join ``parts`` under ``root_path`` and GUARD the result: it must stay inside
+        the root. Traversal (``..``) and absolute escapes are refused. For a
+        :class:`VaultContext` the root is the vault root, so a resolved path can never
+        escape the vault."""
         candidate = (self.root_path / Path(*parts)).resolve()
         if candidate != self.root_path and not candidate.is_relative_to(self.root_path):
             raise PathEscapeError(
-                f"path escapes tenant {self.tenant_id!r} root ({self.root_path}): {candidate}"
+                f"path escapes {self.root_path}: {candidate}"
             )
         return candidate
 
@@ -290,19 +461,58 @@ class TenantContext:
             d.mkdir(parents=True, exist_ok=True)
 
 
+@dataclass(frozen=True)
+class VaultContext(TenantContext):
+    """The isolation handle a **store** is constructed from: a (tenant, vault) pair and
+    the absolute **vault root** (``tenants/<tenant_id>/vaults/<vault_id>/``). Every store
+    object (:class:`~mnesis.store.Store`, the search index, the state store, the graph
+    backend) is built from one of these, and every path is resolved against the vault
+    root with a containment guard — so a resolved path can never escape the vault, and a
+    store cannot be reached without a VaultContext.
+
+    ``root_path`` is the vault root (the inherited store path helpers use it);
+    ``tenant_root_path`` is the enclosing tenant root, where the vault registry lives."""
+
+    vault_id: str = config.DEFAULT_VAULT_ID
+    tenant_root_path: Path | None = None
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        validate_vault_id(self.vault_id)
+        troot = self.tenant_root_path if self.tenant_root_path is not None else self.root_path.parent.parent
+        object.__setattr__(self, "tenant_root_path", Path(troot).resolve())
+
+    @property
+    def tenant_root(self) -> Path:  # override: root_path is the vault root, not the tenant root
+        return self.tenant_root_path
+
+
 # --- Factories -------------------------------------------------------------
 
 
-def context_for(tenant_id: str, *, data_root: Path | str | None = None) -> TenantContext:
-    """Resolve a TenantContext for ``tenant_id`` (no side effects). ``data_root``
-    overrides ``config.DATA_ROOT`` (used by tests)."""
+def tenant_context_for(tenant_id: str, *, data_root: Path | str | None = None) -> TenantContext:
+    """Resolve a **tenant-level** :class:`TenantContext` (root = ``tenants/<id>/``) with
+    no side effects. Used for tenant-level ops (vault registry, lifecycle); a store needs
+    a :class:`VaultContext` from :func:`context_for`."""
     validate_tenant_id(tenant_id)
     base = Path(data_root) / config.TENANTS_DIRNAME if data_root is not None else config.tenants_dir()
     return TenantContext(tenant_id=tenant_id, root_path=base / tenant_id)
 
 
-def default_context(*, data_root: Path | str | None = None) -> TenantContext:
-    """The single-tenant deployment's ``default`` tenant context."""
+def context_for(
+    tenant_id: str, vault_id: str | None = None, *, data_root: Path | str | None = None
+) -> VaultContext:
+    """Resolve a :class:`VaultContext` for ``tenant_id``/``vault_id`` (no side effects).
+
+    ``vault_id`` defaults to the transparent ``default`` vault when omitted (``None``),
+    so a single-vault deployment reaches its data with no vault argument; an explicit
+    (even empty) vault id is validated. ``data_root`` overrides ``config.DATA_ROOT``."""
+    vid = config.DEFAULT_VAULT_ID if vault_id is None else vault_id
+    return tenant_context_for(tenant_id, data_root=data_root).vault_context(vid)
+
+
+def default_context(*, data_root: Path | str | None = None) -> VaultContext:
+    """The single-tenant/single-vault deployment's ``default`` tenant + ``default`` vault."""
     return context_for(config.DEFAULT_TENANT_ID, data_root=data_root)
 
 
@@ -341,21 +551,51 @@ def create_tenant(
     *,
     registry: TenantRegistry | None = None,
     data_root: Path | str | None = None,
-) -> TenantContext:
-    """Provision a tenant idempotently: record it in the registry, create its dirs,
-    and init its own git repo. Returns its TenantContext. Safe to call repeatedly."""
+) -> VaultContext:
+    """Provision a tenant idempotently and return its **default vault**'s
+    :class:`VaultContext`. Records the tenant in the registry, migrates any pre-vault
+    tenant-root store into the default vault, provisions the vault (dirs + its own git
+    repo) and records it in the tenant's vault registry. Safe to call repeatedly."""
     (registry or TenantRegistry()).ensure(tenant_id, name)
-    ctx = context_for(tenant_id, data_root=data_root)
+    # A pre-vault tenant store (tenants/<id>/{pages,sources}) is moved into the default
+    # vault before the vault dirs are provisioned, so no data is stranded.
+    migrate_tenant_to_default_vault(tenant_id, data_root=data_root)
+    return context_for(tenant_id, config.DEFAULT_VAULT_ID, data_root=data_root)
+
+
+def create_vault(
+    tenant_id: str,
+    vault_id: str,
+    *,
+    name: str | None = None,
+    owner_principal: str | None = None,
+    data_root: Path | str | None = None,
+) -> VaultContext:
+    """Provision an additional vault under an existing tenant idempotently: record it in
+    the tenant's vault registry, create its dirs, and init its own git repo. Returns the
+    vault's :class:`VaultContext`."""
+    tctx = tenant_context_for(tenant_id, data_root=data_root)
+    ctx = tctx.vault_context(vault_id)
     init_git(ctx)
+    tctx.vault_registry().ensure(
+        vault_id, tenant_id=tenant_id, name=name, owner_principal=owner_principal
+    )
     return ctx
 
 
-def open_tenant(tenant_id: str, *, data_root: Path | str | None = None) -> TenantContext:
-    """Resolve and provision a tenant for use at a boundary (CLI/HTTP/MCP).
+def list_vaults(tenant_id: str, *, data_root: Path | str | None = None) -> list[Vault]:
+    """The vaults recorded for ``tenant_id`` (metadata only)."""
+    return tenant_context_for(tenant_id, data_root=data_root).vault_registry().list()
+
+
+def open_tenant(tenant_id: str, *, data_root: Path | str | None = None) -> VaultContext:
+    """Resolve and provision a tenant for use at a boundary (CLI/HTTP/MCP), returning its
+    **default vault**'s :class:`VaultContext`.
 
     For the ``default`` tenant this also runs the idempotent legacy migration, so a
-    single-tenant deployment is transparent — existing data is moved into
-    ``tenants/default/`` on first use and run as the one default tenant thereafter.
+    single-tenant/single-vault deployment is transparent — existing data is moved into
+    ``tenants/default/vaults/default/`` on first use and run as the one default vault
+    thereafter.
     """
     if tenant_id == config.DEFAULT_TENANT_ID:
         migrate_legacy_to_default(data_root=data_root)
@@ -407,8 +647,58 @@ def use(ctx: TenantContext):
 # --- Migration: legacy single-store layout -> tenants/default/ -------------
 
 
+_RESERVED_PAGE_FILES = {"index.md", "log.md"}  # OKF reserved files are not concept pages
+
+
 def _legacy_layout_present(data_root: Path) -> bool:
     return (data_root / "pages").is_dir() or (data_root / "sources").is_dir()
+
+
+def _count_pages(ctx: "TenantContext") -> int:
+    if not ctx.pages_dir.exists():
+        return 0
+    return len([p for p in ctx.pages_dir.glob("*.md") if p.name not in _RESERVED_PAGE_FILES])
+
+
+def migrate_tenant_to_default_vault(
+    tenant_id: str, *, data_root: Path | str | None = None
+) -> dict:
+    """Move a **pre-vault** per-tenant store (``tenants/<id>/{pages,sources}``) into that
+    tenant's ``default`` vault (``tenants/<id>/vaults/default/``) and give the vault its
+    own git repo. **Non-destructive** (content is moved, never dropped; the tenant root's
+    old ``.git``/``.index`` are left in place) and **idempotent** (once the default vault
+    is populated a re-run is a no-op — no move, no commit). Always provisions the vault
+    (dirs + git) and records it in the tenant's vault registry.
+
+    Returns ``{"migrated": bool, "tenant": id, "vault": "default", "moved": [...], "pages": N}``.
+    """
+    tctx = tenant_context_for(tenant_id, data_root=data_root)
+    vctx = tctx.vault_context(config.DEFAULT_VAULT_ID)
+
+    vault_populated = vctx.pages_dir.exists() or vctx.sources_dir.exists()
+    moved: list[str] = []
+    if not vault_populated:
+        for sub in ("pages", "sources"):
+            src = tctx.root_path / sub
+            if src.is_dir():
+                vctx.root_path.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(src), str(vctx.root_path / sub))
+                moved.append(sub)
+
+    # Provision the vault (idempotent): dirs + its own git repo + registry record.
+    init_git(vctx)
+    tctx.vault_registry().ensure(config.DEFAULT_VAULT_ID, tenant_id=tenant_id)
+    if moved:
+        subprocess.run(["git", "-C", str(vctx.git_root), "add", "-A"], check=True)
+        subprocess.run(
+            ["git", "-C", str(vctx.git_root), "commit", "-q", "--allow-empty",
+             "-m", "mnesis: migrate existing data into the default vault"],
+            check=True,
+        )
+    return {
+        "migrated": bool(moved), "tenant": tenant_id, "vault": config.DEFAULT_VAULT_ID,
+        "moved": moved, "pages": _count_pages(vctx),
+    }
 
 
 def migrate_legacy_to_default(
@@ -416,42 +706,43 @@ def migrate_legacy_to_default(
     data_root: Path | str | None = None,
     registry: TenantRegistry | None = None,
 ) -> dict:
-    """Move an existing single-store layout (``DATA_ROOT/{pages,sources}``) into
-    ``tenants/default/`` and give it its own git repo. **Non-destructive** (content
-    is moved, never dropped; the legacy ``.git``/``.index`` are left in place) and
-    **idempotent** (a re-run, once ``tenants/default/`` exists, is a no-op).
+    """Move an existing single-store layout (``DATA_ROOT/{pages,sources}``) into the
+    ``default`` tenant's ``default`` vault (``tenants/default/vaults/default/``) and give
+    the vault its own git repo. **Non-destructive** (content is moved, never dropped; the
+    legacy ``.git``/``.index`` are left in place) and **idempotent** (a re-run, once the
+    default vault exists, is a no-op).
 
-    Returns ``{"migrated": bool, "tenant": "default", "moved": [...], "pages": N}``.
+    Legacy content is first staged at the tenant root, then handed to
+    :func:`migrate_tenant_to_default_vault`, so both the pre-tenant (``DATA_ROOT/…``) and
+    pre-vault (``tenants/default/…``) layouts converge on the default vault.
+
+    Returns ``{"migrated": bool, "tenant": "default", "vault": "default", "moved": [...], "pages": N}``.
     """
     root = Path(data_root).resolve() if data_root is not None else config.DATA_ROOT
     reg = registry or TenantRegistry(root / config.REGISTRY_FILENAME)
-    ctx = context_for(config.DEFAULT_TENANT_ID, data_root=root)
+    tctx = tenant_context_for(config.DEFAULT_TENANT_ID, data_root=root)
+    vctx = tctx.vault_context(config.DEFAULT_VAULT_ID)
 
-    already = ctx.pages_dir.exists() or ctx.sources_dir.exists()
+    vault_populated = vctx.pages_dir.exists() or vctx.sources_dir.exists()
+    tenant_store_present = (tctx.root_path / "pages").is_dir() or (tctx.root_path / "sources").is_dir()
     moved: list[str] = []
-    if not already and _legacy_layout_present(root):
-        ctx.root_path.mkdir(parents=True, exist_ok=True)
+    # Step 1: legacy single-store DATA_ROOT/{pages,sources} -> tenant root (staging).
+    if not vault_populated and not tenant_store_present and _legacy_layout_present(root):
+        tctx.root_path.mkdir(parents=True, exist_ok=True)
         for sub in ("pages", "sources"):
             src = root / sub
             if src.is_dir():
-                shutil.move(str(src), str(ctx.root_path / sub))
+                shutil.move(str(src), str(tctx.root_path / sub))
                 moved.append(sub)
 
-    # Provision (idempotent): registry record + dirs + own git repo, then commit
-    # any migrated canonical content as the tenant's first commit.
     reg.ensure(config.DEFAULT_TENANT_ID)
-    init_git(ctx)
-    if moved:
-        subprocess.run(["git", "-C", str(ctx.git_root), "add", "-A"], check=True)
-        subprocess.run(
-            ["git", "-C", str(ctx.git_root), "commit", "-q", "--allow-empty",
-             "-m", "mnesis: migrate existing data into the default tenant"],
-            check=True,
-        )
+    # Step 2: tenant-root store -> the default vault (+ its own git repo, first commit).
+    vmig = migrate_tenant_to_default_vault(config.DEFAULT_TENANT_ID, data_root=root)
 
-    reserved = {"index.md", "log.md"}  # OKF reserved files are not concept pages
-    pages = (
-        len([p for p in ctx.pages_dir.glob("*.md") if p.name not in reserved])
-        if ctx.pages_dir.exists() else 0
-    )
-    return {"migrated": bool(moved), "tenant": config.DEFAULT_TENANT_ID, "moved": moved, "pages": pages}
+    return {
+        "migrated": bool(moved or vmig["moved"]),
+        "tenant": config.DEFAULT_TENANT_ID,
+        "vault": config.DEFAULT_VAULT_ID,
+        "moved": moved,
+        "pages": vmig["pages"],
+    }

@@ -23,7 +23,7 @@ from pathlib import Path
 from . import authz, confidence, tenancy
 from .state import StateStore
 from .store import Page, Store, now_iso
-from .tenancy import TenantContext
+from .tenancy import VaultContext
 
 # Indexed text columns, then UNINDEXED cached derived state. body is index 3.
 # ``type`` (the OKF concept type = Mnesis ``kind``) is indexed after ``body`` so a
@@ -77,11 +77,11 @@ def _assert_fts5(conn: sqlite3.Connection) -> None:
 
 
 class SearchIndex:
-    """The FTS5 search index for ONE tenant (its own ``.cache/wiki.db``)."""
+    """The FTS5 search index for ONE vault (its own ``.cache/wiki.db``)."""
 
-    def __init__(self, ctx: TenantContext) -> None:
-        if not isinstance(ctx, TenantContext):
-            raise TypeError(f"SearchIndex requires a TenantContext; got {type(ctx).__name__}")
+    def __init__(self, ctx: VaultContext) -> None:
+        if not isinstance(ctx, VaultContext):
+            raise TypeError(f"SearchIndex requires a VaultContext; got {type(ctx).__name__}")
         self.ctx = ctx
         self._store = Store(ctx)
         self._state = StateStore(ctx)

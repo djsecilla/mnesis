@@ -155,9 +155,9 @@ def provision_tenant(
     raw, cred = store.issue(tenant_id, admin_principal, "admin", name=f"{tenant_id}-initial-admin")
     (audit or SystemAuditLog()).record(
         "provision", tenant_id=tenant_id, actor=admin.principal_id,
-        credential_id=cred.id, root=str(ctx.root_path),
+        credential_id=cred.id, root=str(ctx.tenant_root),
     )
-    return {"tenant_id": tenant_id, "credential_id": cred.id, "token": raw, "root": str(ctx.root_path)}
+    return {"tenant_id": tenant_id, "credential_id": cred.id, "token": raw, "root": str(ctx.tenant_root)}
 
 
 def list_tenants(
@@ -229,10 +229,12 @@ def delete_tenant(
             f"delete refused: confirm must equal the tenant id {tenant_id!r} (guard against accidental loss)"
         )
     reg = registry or _registry(data_root)
-    ctx = tenancy.context_for(tenant_id, data_root=data_root)
+    # Remove the whole TENANT root (all its vaults + caches + git + vault registry),
+    # not just one vault.
+    tenant_root = tenancy.tenant_context_for(tenant_id, data_root=data_root).root_path
     removed_root = False
-    if ctx.root_path.exists():
-        shutil.rmtree(ctx.root_path)
+    if tenant_root.exists():
+        shutil.rmtree(tenant_root)
         removed_root = True
     store = cred_store or CredentialStore(
         (Path(data_root) / config.CREDENTIALS_FILENAME) if data_root else None

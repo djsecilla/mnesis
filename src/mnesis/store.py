@@ -29,7 +29,7 @@ import frontmatter
 
 from . import okf, tenancy
 from .config import now_iso  # noqa: F401 — re-exported for callers that import from store
-from .tenancy import TenantContext
+from .tenancy import VaultContext
 
 #: Reserved OKF filenames that live in the ``pages/`` bundle but are NOT concept pages
 #: (a directory listing + the change log). Page enumeration skips them.
@@ -131,18 +131,19 @@ def _from_post(post: frontmatter.Post, *, id_hint: str | None = None) -> Page:
 
 
 class Store:
-    """The canonical Markdown + git store for ONE tenant.
+    """The canonical Markdown + git store for ONE vault (of one tenant).
 
-    Constructed from a :class:`~mnesis.tenancy.TenantContext`; every path it touches
-    is resolved against (and guarded within) that tenant's root, and every commit
-    lands in that tenant's own git repo. There is no way to build a ``Store`` that
-    spans tenants.
+    Constructed from a :class:`~mnesis.tenancy.VaultContext`; every path it touches is
+    resolved against (and guarded within) that vault's root, and every commit lands in
+    that vault's own git repo. There is no way to build a ``Store`` that spans vaults or
+    tenants, and it cannot be built from a bare tenant handle — a store requires a
+    VaultContext by construction.
     """
 
-    def __init__(self, ctx: TenantContext) -> None:
-        if not isinstance(ctx, TenantContext):
+    def __init__(self, ctx: VaultContext) -> None:
+        if not isinstance(ctx, VaultContext):
             raise TypeError(
-                "Store requires a TenantContext (the store is tenant-scoped by "
+                "Store requires a VaultContext (the store is vault-scoped by "
                 f"construction); got {type(ctx).__name__}"
             )
         self.ctx = ctx

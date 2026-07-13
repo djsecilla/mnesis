@@ -58,12 +58,20 @@ def _resolve_root(value: str | None) -> Path:
 DATA_ROOT: Path = _resolve_root(os.environ.get("MNESIS_ROOT"))
 MNESIS_ROOT: Path = DATA_ROOT  # backward-compatible alias (the data root)
 
-#: Where each tenant's canonical store + caches live: ``tenants/<tenant_id>/``.
+#: Where each tenant's vaults + tenant-level metadata live: ``tenants/<tenant_id>/``.
 TENANTS_DIRNAME: str = "tenants"
+#: Where a tenant's vaults live: ``tenants/<tenant_id>/vaults/<vault_id>/`` — each
+#: vault is a canonical store (pages/sources/.cache) with its OWN git repo.
+VAULTS_DIRNAME: str = "vaults"
+#: The per-tenant vault registry (metadata) — a small JSON file at the TENANT root,
+#: OUTSIDE any vault root. Records which vaults exist for the tenant.
+VAULT_REGISTRY_FILENAME: str = "vaults.json"
 #: The tenant registry (metadata) — a small JSON file OUTSIDE any tenant root.
 REGISTRY_FILENAME: str = "registry.json"
 #: The default tenant a single-tenant deployment runs as (CLAUDE.md §16).
 DEFAULT_TENANT_ID: str = os.environ.get("MNESIS_DEFAULT_TENANT", "default")
+#: The default vault a single-vault deployment runs as transparently (CLAUDE.md §16).
+DEFAULT_VAULT_ID: str = os.environ.get("MNESIS_DEFAULT_VAULT", "default")
 
 
 def tenants_dir() -> Path:
