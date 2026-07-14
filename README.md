@@ -64,12 +64,13 @@ is the intended design.
 | **Typed knowledge graph** | Entities and typed relations are extracted into a graph you can traverse and run **impact analysis** over ("what breaks if I change Redis?"). |
 | **Three surfaces, one core** | The same core is reached by a **CLI** (humans/scripts), an **MCP server** (agents), and a **web UI** (browser) — none has private state. |
 | **Multitenant, isolated by construction** | Each tenant's store is a **physically separate directory + git repo**; a request's tenant derives **only from its verified credential**; cross-tenant access is *structurally impossible*. Within a tenant, pages are `private`/`shared`. A system-admin manages tenant lifecycle + quotas. Single-tenant runs transparently as `default`. |
-| **Unified authentication & authorization** | One identity model across **web** (login + session cookies), **CLI** (`mnesis login` + PATs), and **MCP** (per-agent scoped keys); a **single policy decision point** enforces `role ∩ scope ∩ tenant ∩ visibility`, deny-by-default. Real login everywhere (the injected token is retired), argon2id passwords, immediate revocation, and a secret-free auth audit. |
-| **A multi-LLM agent layer** | A separately-deployable LangGraph agent runtime that uses mnesis as memory — reaching it **only over MCP**, governed, per-tenant, with on-prem inference. |
+| **Vaults — per-user, in-tenant isolation** | Within a tenant a principal may hold multiple **fully-isolated vaults**, each a complete knowledge base with **its own schema**. The store/index/graph/state are **per-vault**; the active vault is a client **selection that is always re-authorized server-side** (never a grant). Own/grant/rename/delete with an owner-or-admin boundary + quotas + audit. Single-vault runs transparently as `default`. |
+| **Unified authentication & authorization** | One identity model across **web** (login + session cookies), **CLI** (`mnesis login` + PATs), and **MCP** (per-agent scoped keys); a **single policy decision point** enforces `role ∩ scope ∩ tenant ∩ vault ∩ visibility`, deny-by-default. Real login everywhere (the injected token is retired), argon2id passwords, immediate revocation, and a secret-free auth audit. |
+| **A multi-LLM agent layer** | A separately-deployable LangGraph agent runtime that uses mnesis as memory — reaching it **only over MCP**, governed, per-(tenant, vault), with on-prem inference. |
 | **Self-curating maintenance** | A multi-LLM LangGraph foundation whose scheduled **dream cycle** keeps the KB healthy — auto-applying safe hygiene (decay, graph fixes) and surfacing contradiction/dedup **proposals** for review, all over MCP and governed. |
 | **Source-connector ingestion** | A reusable pipeline turns inbound sources into governed ingestions — the first is a **notes/Markdown inbox** that watches a folder and ingests notes (dedup + retry + dead-letter). A new source = connector + parse skill + one mapping entry. |
 | **Approval-gated actions** | An action agent composes grounded, cited artifacts (e.g. a meeting brief) and **proposes** them; a human approves before anything happens. **Draft-only by default**; email delivery is opt-in (dry-run + egress-gated + recipient-confirmed). Recipients come from policy, never content. |
-| **Open Knowledge Format conformant** | Every entry is an **[OKF v0.1](#29-okf-conformance)** concept document (Google Cloud's portable standard) — validated before commit (fail-closed); each tenant's `pages/` is an OKF **bundle** you can **export** and re-**import** (governed), interoperable with other OKF tools. Mnesis's own fields ride along as tolerated extensions; nothing about search/graph/lifecycle changed. |
+| **Open Knowledge Format conformant** | Every entry is an **[OKF v0.1](#29-okf-conformance)** concept document (Google Cloud's portable standard) — validated before commit (fail-closed); each vault's `pages/` is an OKF **bundle** you can **export** and re-**import** (governed), interoperable with other OKF tools. Mnesis's own fields ride along as tolerated extensions; nothing about search/graph/lifecycle changed. |
 | **Runs offline & on-prem** | A deterministic stub runs with no network; a local-model mode (Ollama) keeps inference and sources entirely on your machine. |
 
 ---
@@ -80,12 +81,14 @@ This section is the mental model. If you read one thing, read this.
 
 ### 2.1 Markdown is the source of truth; everything else is a cache
 
-The canonical knowledge is a directory of Markdown pages (each tenant's `pages/`),
+The canonical knowledge is a directory of Markdown pages (each vault's `pages/`),
 each a YAML-frontmatter document tracked in git. The SQLite **search index** and the
-**knowledge graph** under that tenant's `.cache/` are *rebuildable caches* — pure
+**knowledge graph** under that vault's `.cache/` are *rebuildable caches* — pure
 projections of the Markdown that `mnesis rebuild` can reconstruct at any time.
-Delete them and rebuild; you lose nothing canonical. (Every tenant has its own
-`pages/`, git repo, and `.cache/` — see [Multitenancy](#7-multitenancy).)
+Delete them and rebuild; you lose nothing canonical. (The store is **per-vault**:
+every vault has its own `pages/`, git repo, and `.cache/`, and each tenant has a
+transparent `default` vault — see [Multitenancy](#7-multitenancy) and
+[Vaults](#79-vaults--a-per-user-in-tenant-isolation-unit).)
 
 The one deliberate exception is the **state store** (`.cache/state.db`):
 access history (how often/recently a page was read) and the contradiction review
@@ -193,7 +196,7 @@ as a page now does.
 
 ### 2.9 OKF conformance
 
-Mnesis's Markdown is **[Open Knowledge Format v0.1](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf)** — Google Cloud's portable standard for knowledge bundles. Each tenant's `pages/` directory **is an OKF bundle** (its own git repo). The full reference + validator live in [`docs/OKF.md`](docs/OKF.md) and [`src/mnesis/okf.py`](src/mnesis/okf.py); this is the summary.
+Mnesis's Markdown is **[Open Knowledge Format v0.1](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf)** — Google Cloud's portable standard for knowledge bundles. Each **vault's** `pages/` directory **is an OKF bundle** (its own git repo). The full reference + validator live in [`docs/OKF.md`](docs/OKF.md) and [`src/mnesis/okf.py`](src/mnesis/okf.py); this is the summary.
 
 **The Mnesis ↔ OKF mapping.** Mnesis is a *strict superset* of the OKF core — it fills OKF's fields and carries the rest as tolerated extensions:
 
@@ -212,7 +215,7 @@ Mnesis's Markdown is **[Open Knowledge Format v0.1](https://github.com/GoogleClo
 
 **Enforced, everywhere.** Every write is serialized as OKF and **validated before commit** (`store.OKFConformanceError`, fail-closed) — a non-conformant write cannot land. Ingestion and the writing agents inherit this through the store; a conformance gate (`tests/test_okf_conformance_gate.py`) locks it in. OKF is **representation only**: confidence/decay/supersession/governance semantics are unchanged (proven byte-for-byte across migration).
 
-**Interop (import/export).** Export a tenant as a conformant bundle and import external OKF bundles:
+**Interop (import/export).** Export the active vault (its `pages/` bundle) as a conformant bundle and import external OKF bundles:
 
 ```bash
 mnesis okf-export ./atlas-bundle --tar     # a validator-clean .tar.gz (concepts + index.md/log.md)
@@ -301,6 +304,11 @@ For a fully on-prem run (no external calls), set `MNESIS_LLM_PROVIDER=local`
 
 The `mnesis` command (installed by `make setup`; prefix with `uv run` if the venv
 isn't active) is the full-power surface for humans, scripts, and maintenance.
+
+Every data command runs within one authorized `(tenant, vault)`: the tenant comes from
+your credential, and the vault is the global **`--vault`** flag (or `MNESIS_VAULT`),
+re-authorized against your grants — omit it and you get the transparent `default` vault.
+See [Vaults](#79-vaults--a-per-user-in-tenant-isolation-unit) for `mnesis vault …`.
 
 ### 4.1 Core verbs
 
@@ -417,22 +425,24 @@ flowchart TB
     CLI --> BND
     UI --> BND
     MCP --> BND
-    BND["boundary: resolve + bind<br/>(TenantContext, Principal)"] --> CORE
+    BND["boundary: resolve + bind<br/>(tenant from credential,<br/>vault re-authorized) → VaultContext + Principal"] --> CORE
 
     subgraph CORE["one core — mnesis.* (no surface has private state)"]
         direction LR
         ING["ingest"] --- SRCH["search"] --- GR["graph"] --- LC["lifecycle"]
     end
 
-    CORE --> STORE[("the tenant's store<br/>Markdown + git (canonical)<br/>+ rebuildable caches")]
+    CORE --> STORE[("the active vault's store<br/>Markdown + git (canonical)<br/>+ rebuildable caches")]
     linkStyle 6 stroke:#2563eb,stroke-width:2px
 ```
 
 The surfaces don't *stack logic* — they're three thin doorways onto **one** core and
-**one** store, behind a single auth/tenant **boundary** (blue). So a write through the
-CLI is instantly visible to the Web UI and to agents; the only difference between
-surfaces is who calls and how. The agent layer is a **client** of the MCP surface, not
-a fourth surface.
+**one** store, behind a single auth **boundary** (blue) that binds the credential's tenant
+and the **re-authorized active vault**. So a write through the CLI is instantly visible to
+the Web UI and to agents (within the same vault); the only difference between surfaces is
+who calls and how, and how each names the active vault (CLI `--vault`, web/MCP the
+`X-Mnesis-Vault` header — always a selection, always re-authorized). The agent layer is a
+**client** of the MCP surface, not a fourth surface.
 
 ### 5.1 CLI
 
@@ -471,15 +481,18 @@ claude mcp add mnesis -- uv run python -m mnesis.mcp_server
 ```
 
 stdio means a local subprocess — no port, no token (local trust). Set
-`ANTHROPIC_API_KEY` for real extraction, or `MNESIS_LLM_STUB=1` for offline.
+`ANTHROPIC_API_KEY` for real extraction, or `MNESIS_LLM_STUB=1` for offline. The vault
+comes from `MNESIS_VAULT` (default `default`).
 
 **Networked (HTTP).** Set `MNESIS_MCP_TRANSPORT=http`; the server serves streamable
 HTTP at `/mcp` on `MNESIS_MCP_HOST:MNESIS_MCP_PORT` (default `0.0.0.0:8080`) plus an
 open `GET /health`. Every `/mcp` call authenticates with a **per-tenant, per-principal
 agent key** (`Authorization: Bearer <agent-key>`) that resolves to a tenant + principal
 + scopes, and every tool enforces those scopes through the PDP (a `read`-scoped key can
-query but not ingest). The **single global `MNESIS_MCP_TOKEN` is retired** — there is no
-shared-token or unauthenticated path. Mint keys per agent (least privilege) and
+query but not ingest). The active **vault** is selected with an `X-Mnesis-Vault` header,
+re-authorized server-side against the key's grants (omit it → the `default` vault; an
+ungranted vault → `403`). The **single global `MNESIS_MCP_TOKEN` is retired** — there is
+no shared-token or unauthenticated path. Mint keys per agent (least privilege) and
 distribute them; when clients reach the server by a name other than localhost (e.g.
 behind Docker), list it in `MNESIS_MCP_ALLOWED_HOSTS`.
 
@@ -509,7 +522,10 @@ Canonical page **editing is intentionally not offered** on any surface — knowl
 changes only by ingesting sources and resolving contradictions, so the audit trail
 stays a coherent record of *why* each change happened. Access is a **real login** — a
 secure/httpOnly/SameSite session cookie with CSRF on writes, resolved server-side and
-PDP-checked on every request (the old server-injected bearer token is retired).
+PDP-checked on every request (the old server-injected bearer token is retired). A **vault
+picker** selects the active vault (from those you may access, `GET /api/vaults`); the SPA
+sends it as the `X-Mnesis-Vault` header and it is re-authorized on every request, so every
+screen — graph, reader, chat, add, sources, review — scopes cleanly to that vault.
 
 ---
 
@@ -550,7 +566,7 @@ flowchart LR
     MA --> MCP
     WA --> MCP
     AA --> MCP
-    MCP["MCP client<br/>(per-tenant credential)"] --> MN[("Mnesis<br/>reached ONLY over MCP")]
+    MCP["MCP client<br/>(per-(tenant, vault) credential + selection)"] --> MN[("Mnesis<br/>reached ONLY over MCP")]
 
     AA --> GATE["approval gate<br/>+ egress control"]
     GATE --> CH["channels<br/>draft outbox · email (opt-in)"]
@@ -855,11 +871,11 @@ flowchart TB
 
     subgraph DR["DATA_ROOT (MNESIS_ROOT)"]
         META["registry.json · credentials.json (hashed) · system_audit.jsonl<br/>shared metadata — OUTSIDE every tenant root"]
-        subgraph TA["tenants/acme/ — its own git repo"]
-            TA1["pages/ · sources/ · .cache/"]
+        subgraph TA["tenants/acme/ (vaults.json — registry + grants)"]
+            TA1["vaults/&lt;id&gt;/ — its own git repo<br/>config.json · pages/ · sources/ · .cache/"]
         end
-        subgraph TB["tenants/globex/ — its own git repo"]
-            TB1["pages/ · sources/ · .cache/"]
+        subgraph TB["tenants/globex/ (vaults.json — registry + grants)"]
+            TB1["vaults/&lt;id&gt;/ — its own git repo<br/>config.json · pages/ · sources/ · .cache/"]
         end
     end
 
@@ -868,31 +884,38 @@ flowchart TB
     style TB fill:#f0fdf4,stroke:#16a34a
 ```
 
-Each credential resolves to exactly **one** tenant, and the bound `TenantContext` can
-touch only that tenant's **physically separate** root (its own pages, git repo, and
-caches). There is no shared store to leak through, so A's credential can never reach
-B's data. Only metadata (which tenants exist, hashed credentials, the lifecycle audit)
-sits at the data root, managed by a system-admin who is not a member of any tenant.
+Each credential resolves to exactly **one** tenant; the store itself is opened one level
+down, per **vault**, from a `VaultContext` bound to that vault's **physically separate**
+root (its own pages, git repo, and caches — see [Vaults](#79-vaults--a-per-user-in-tenant-isolation-unit)).
+There is no shared store to leak through, so A's credential can never reach B's data, and
+one vault can never reach another's. Only metadata (which tenants exist, hashed
+credentials, the lifecycle audit) sits at the data root, managed by a system-admin who is
+not a member of any tenant.
 
 ### 7.1 Isolation by construction
 
-Each tenant's canonical store is a **physically separate directory with its own git
+Each **vault's** canonical store is a **physically separate directory with its own git
 repo**, and its rebuildable caches (search index, graph, state) are separate DB
-files:
+files. A vault nests under its tenant; the tenant root holds only per-tenant metadata:
 
 ```
-DATA_ROOT/                       # MNESIS_ROOT — the data root, never itself a store
-  registry.json                 # which tenants exist (metadata, outside any tenant)
-  credentials.json              # credential store — only HASHED tokens
-  system_audit.jsonl            # lifecycle audit (provision/suspend/delete)
-  tenants/<tenant_id>/          # ONE tenant's store + its own git repo
-    pages/  sources/  .cache/   #   canonical Markdown + redacted sources + caches
+DATA_ROOT/                          # MNESIS_ROOT — the data root, never itself a store
+  registry.json                     # which tenants exist (metadata, outside any tenant)
+  credentials.json                  # credential store — only HASHED tokens
+  system_audit.jsonl                # tenant lifecycle audit (provision/suspend/delete)
+  vault_audit.jsonl                 # vault lifecycle audit (create/delete/grant/…)
+  tenants/<tenant_id>/              # ONE tenant — its vaults + tenant metadata
+    vaults.json                     #   vault registry + access grants (outside every vault)
+    vaults/<vault_id>/              #   ONE vault's store + its own git repo
+      config.json                   #     the vault's schema (entity types/predicates/settings)
+      pages/  sources/  .cache/     #     canonical Markdown + redacted sources + caches
 ```
 
-There is **no global store** and no code path that takes a cross-tenant path — every
-path is resolved from a `TenantContext` and guarded to stay inside that tenant's
-root. So search, graph traversal, impact, and rebuild for tenant A simply cannot
-reach B's pages, entities, or edges: cross-tenant access is *structurally
+There is **no global store**, no tenant-only store, and no code path that takes a
+cross-vault path — every path is resolved from a `VaultContext` and guarded to stay
+inside that vault's root. So search, graph traversal, impact, and rebuild for tenant A
+(and for vault A within a tenant) simply cannot reach another's pages, entities, or
+edges: cross-tenant *and* cross-vault access is *structurally
 impossible*, proven end-to-end across the CLI, MCP, Web UI, and the agents.
 
 ### 7.2 Tenant from the credential only
@@ -941,22 +964,26 @@ Per-tenant `max_pages` / `max_bytes` (config defaults `MNESIS_TENANT_MAX_*`, or 
 per-tenant override) are enforced **fail-closed at ingest**: an over-quota write is
 refused with a clear `not ingested: page quota exceeded …` rather than silently
 dropped. Quotas bound a tenant only within its own root, so one tenant can never
-exhaust another's capacity.
+exhaust another's capacity. A vault may set its own tighter `max_pages`/`max_bytes`
+**within** the tenant's quota, and `MNESIS_TENANT_MAX_VAULTS` caps how many vaults a
+tenant may create (see [Vaults](#79-vaults--a-per-user-in-tenant-isolation-unit)).
 
-### 7.6 Per-tenant agents
+### 7.6 Per-tenant, per-vault agents
 
 The agent layer is multitenant too: with `MNESIS_AGENTS_TENANTS_FILE` set (a JSON
-list of `{tenant_id, credential, …}`), the runner hosts **one set of agents per
-tenant** — each reaches only its tenant's Mnesis (via its credential) and keeps all
-its governance state (run audit, proposals, dead-letter, egress allowlist/quotas/
-send-audit) under its own directory. A tenant without a resolvable credential won't
-start (fail closed).
+list of `{tenant_id, credential, vault_id?, …}`), the runner hosts **one set of agents
+per `(tenant, vault)`** — each reaches only its vault's Mnesis (via its credential + the
+`X-Mnesis-Vault` selection, re-authorized server-side) and keeps all its governance state
+(run audit, proposals, dead-letter, egress allowlist/quotas/send-audit) under its own
+per-vault directory. A scope without a resolvable credential won't start (fail closed).
 
 ### 7.7 Migration & deployment
 
-An existing single-store layout migrates into `tenants/default/` automatically on
-first use (or `mnesis migrate-tenants`) — non-destructive and idempotent, preserving
-prior behaviour. `docker compose up` runs **single-tenant** (the `default` tenant) with
+An existing single-store layout migrates into the `default` tenant's `default` vault
+automatically on first use (or `mnesis migrate-tenants`; a pre-vault per-tenant store
+converges on its `default` vault via `mnesis migrate-vaults`) — non-destructive,
+idempotent, and lossless, preserving prior single-tenant/single-vault behaviour.
+`docker compose up` runs **single-tenant** (the `default` tenant) with
 a **real web login** — set `MNESIS_WEB_ADMIN_PASSWORD` (+ `MNESIS_AUTH_PEPPER`) so the
 first admin is bootstrapped on first run (see [Authentication &
 authorization](#78-authentication--authorization)); set `MNESIS_AUTH_ENABLED=1` (+
@@ -975,9 +1002,11 @@ anywhere anymore.
 **The principal model.** A request resolves to an `AuthenticatedPrincipal` — a
 `principal_id` in a `tenant_id`, with `roles` and `scopes`. Roles map to permissions
 (`pages:read/write/delete`, `graph:maintain`, `agents:run`, `users:manage`,
-`credentials:issue`, `egress:configure`, `tenants:manage`); scopes **narrow** a
-credential to a subset. **Effective permission = role ∩ scope**, and the PDP then also
-checks **tenant match** and **within-tenant visibility** (private/shared pages).
+`credentials:issue`, `egress:configure`, `vaults:create`, `tenants:manage`); scopes
+**narrow** a credential to a subset. **Effective permission = role ∩ scope**, and the PDP
+then also checks **tenant match**, **vault access** (the re-authorized active vault), and
+**within-tenant visibility** (private/shared pages) — i.e. `role ∩ scope ∩ tenant ∩ vault
+∩ visibility`.
 
 **Credential types** (all opaque, hashed at rest, shown once, revocable — revocation is
 immediate):
@@ -996,9 +1025,10 @@ immediate):
 - **CLI** — `mnesis login` stores a session token in a local `0600` file; `mnesis pat`
   mints scoped PATs for headless use (`--token`/`MNESIS_TOKEN`); every command is
   PDP-checked. `mnesis logout` revokes immediately.
-- **MCP** — each agent presents a per-tenant, per-principal **agent key**; every
-  `mnesis_*` tool enforces the key's scopes (a `read` key can query but not ingest).
-  Retired: the single global `MNESIS_MCP_TOKEN`.
+- **MCP** — each agent presents a per-tenant, per-principal **agent key** plus an
+  `X-Mnesis-Vault` selection (re-authorized server-side); every `mnesis_*` tool enforces
+  the key's scopes (a `read` key can query but not ingest). Retired: the single global
+  `MNESIS_MCP_TOKEN`.
 
 **Least privilege for agents.** Writing agents get an `ingest` (write) key, action
 agents a `read` key (sending/egress is separately controlled), maintenance agents a
@@ -1298,8 +1328,11 @@ credential. See [Authentication & authorization](#78-authentication--authorizati
 | `MNESIS_CREDENTIAL` | unset | Legacy CLI tenant credential (still accepted; superseded by `mnesis login` / `MNESIS_TOKEN`). |
 | `MNESIS_ADMIN_CREDENTIAL` | unset | The **system-admin** token for `mnesis admin …` lifecycle ops (a tenant credential is refused). |
 | `MNESIS_DEFAULT_TENANT` | `default` | The tenant a single-tenant deployment runs as transparently. |
+| `MNESIS_DEFAULT_VAULT` | `default` | The vault a single-vault deployment runs as transparently ([Vaults](#79-vaults--a-per-user-in-tenant-isolation-unit)). |
+| `MNESIS_VAULT` | unset | The active-vault **selection** for the CLI / stdio-MCP / agents (re-authorized server-side; never a grant). Web + HTTP-MCP use the `X-Mnesis-Vault` header. Unset → the `default` vault. |
 | `MNESIS_DEFAULT_VISIBILITY` | `shared` | New-page visibility within a tenant (`shared`\|`private`); per-tenant override set by the admin. |
-| `MNESIS_TENANT_MAX_PAGES` / `…_MAX_BYTES` | `0` | Per-tenant resource quotas (0 = unlimited); fail-closed at ingest. Per-tenant override on the Tenant record. |
+| `MNESIS_TENANT_MAX_PAGES` / `…_MAX_BYTES` | `0` | Per-tenant resource quotas (0 = unlimited); fail-closed at ingest. Per-tenant override on the Tenant record. A vault may set a tighter per-vault limit within these. |
+| `MNESIS_TENANT_MAX_VAULTS` | `0` | Max vaults a tenant may create beyond the baseline `default` (0 = unlimited); fail-closed at vault creation. |
 
 ### 10.4 Agent layer (`mnesis-agents`)
 
@@ -1319,7 +1352,7 @@ scopes), read from `MNESIS_MCP_TOKEN` (single-tenant) or the per-tenant `credent
 | `MNESIS_AGENTS_CRYSTALLIZE` | unset | `1` files a concise digest of each dream cycle back into Mnesis (meta-memory). Off by default. |
 | `MNESIS_AGENTS_PROPOSALS_DIR` | = audit dir | Where the proposals queue + persisted reports live (gitignored). |
 | `MNESIS_AGENTS_AUDIT_DIR` | `./mnesis_agents_runs` | Append-only JSONL run audit (names/statuses/ids only). |
-| `MNESIS_AGENTS_TENANTS_FILE` | unset | A JSON list of `{tenant_id, credential, …}` — the runner then hosts **one set of agents per tenant**, each confined to its tenant ([Multitenancy](#7-multitenancy)). Unset = single-tenant from `MNESIS_MCP_TOKEN`. |
+| `MNESIS_AGENTS_TENANTS_FILE` | unset | A JSON list of `{tenant_id, credential, vault_id?, …}` — the runner then hosts **one set of agents per `(tenant, vault)`**, each confined to its vault ([Multitenancy](#7-multitenancy) · [Vaults](#79-vaults--a-per-user-in-tenant-isolation-unit)). Unset = single-tenant from `MNESIS_MCP_TOKEN`. |
 | `MNESIS_AGENTS_STATE_BASE` | = audit dir | Base for per-tenant agent governance state (`<base>/tenants/<id>/`). |
 | `MNESIS_AGENTS_CHECKPOINT_BACKEND` / `…_DB` | `sqlite` / `./mnesis_agents.checkpoints.db` | LangGraph checkpointer (resumable threads). |
 | `MNESIS_AGENTS_MAX_TOOL_CALLS` / `…_WALLCLOCK_SECONDS` | `50` / `300` | Default per-run governance budgets. |
