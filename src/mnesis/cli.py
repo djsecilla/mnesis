@@ -88,6 +88,33 @@ def _build_parser() -> argparse.ArgumentParser:
         "migrate-tenants",
         help="move an existing single-store layout into tenants/default/ (idempotent)",
     )
+    sub.add_parser(
+        "migrate-vaults",
+        help="move a pre-vault tenant store into its default vault (idempotent, lossless)",
+    )
+
+    # Vault lifecycle & sharing (V6): within your own tenant; owner/tenant-admin gated.
+    p_vault = sub.add_parser("vault", help="manage vaults (create/list/rename/delete/grant/revoke)")
+    vsub = p_vault.add_subparsers(dest="vault_cmd", required=True)
+    v_create = vsub.add_parser("create", help="create a vault you own (respects the tenant vault quota)")
+    v_create.add_argument("vault_id", help="the new vault id (a safe slug)")
+    v_create.add_argument("--name", default=None, help="optional display name")
+    v_create.add_argument("--max-pages", type=int, default=0, dest="max_pages", help="per-vault page quota")
+    v_create.add_argument("--max-bytes", type=int, default=0, dest="max_bytes", help="per-vault byte quota")
+    vsub.add_parser("list", help="list the vaults you may access")
+    v_rename = vsub.add_parser("rename", help="rename a vault (owner/admin)")
+    v_rename.add_argument("vault_id")
+    v_rename.add_argument("name")
+    v_delete = vsub.add_parser("delete", help="delete a vault and ALL its data (owner/admin, guarded)")
+    v_delete.add_argument("vault_id")
+    v_delete.add_argument("--confirm", required=True, help="must equal the vault id")
+    v_grant = vsub.add_parser("grant", help="grant a principal access to a vault (owner/admin)")
+    v_grant.add_argument("vault_id")
+    v_grant.add_argument("principal", help="the principal to grant")
+    v_grant.add_argument("--role", default=None, help="optional per-vault role")
+    v_revoke = vsub.add_parser("revoke", help="revoke a principal's access to a vault (owner/admin)")
+    v_revoke.add_argument("vault_id")
+    v_revoke.add_argument("principal", help="the principal to revoke")
 
     # First-run deploy bootstrap (IAM8): create the first tenant-admin web user so a
     # fresh deployment has a real login. Guarded/idempotent; no default password.
@@ -618,6 +645,53 @@ def _cmd_admin(args: argparse.Namespace) -> int:
     return 2
 
 
+def _cmd_vault(args: argparse.Namespace) -> int:
+    """Vault lifecycle & sharing (V6) — within the caller's tenant; owner/admin gated."""
+    from . import vaults
+
+    try:
+        _, principal = _resolve_optional(args)
+    except _CliDenied as exc:
+        print(f"error: {exc}")
+        return 2
+    if principal is None:
+        if config.MNESIS_AUTH_ENABLED:
+            print("error: not authenticated — run `mnesis login` (or set MNESIS_TOKEN)")
+            return 2
+        # Legacy single-tenant (auth off): act as the tenant's admin (nothing to narrow).
+        principal = identity.Principal(principal_id="cli", tenant_id=args.tenant, role="admin")
+
+    cmd = args.vault_cmd
+    try:
+        if cmd == "create":
+            v = vaults.create_vault(
+                principal, args.vault_id, name=args.name,
+                max_pages=args.max_pages, max_bytes=args.max_bytes,
+            )
+            print(f"created vault '{v.vault_id}' (owner {principal.principal_id})")
+        elif cmd == "list":
+            for v in vaults.list_vaults(principal):
+                print(f"{v.vault_id}\t{v.name}\towner={v.owner_principal or '-'}")
+        elif cmd == "rename":
+            vaults.rename_vault(principal, args.vault_id, args.name)
+            print(f"renamed vault '{args.vault_id}' -> {args.name}")
+        elif cmd == "delete":
+            res = vaults.delete_vault(principal, args.vault_id, confirm=args.confirm)
+            print(f"deleted vault '{args.vault_id}' (removed_root={res['removed_root']})")
+        elif cmd == "grant":
+            vaults.grant_access(principal, args.principal, args.vault_id, role=args.role)
+            print(f"granted {args.principal} access to vault '{args.vault_id}'")
+        elif cmd == "revoke":
+            removed = vaults.revoke_access(principal, args.principal, args.vault_id)
+            print(f"revoked {args.principal} from vault '{args.vault_id}' ({'ok' if removed else 'no grant'})")
+        else:
+            return 2
+    except (vaults.VaultManagementError, identity.AuthError, authz.AuthorizationError) as exc:
+        print(f"error: {exc}")
+        return 3
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     # Audit PDP denials for the duration of the command (never leak the global sink —
@@ -640,6 +714,21 @@ def _run(args: argparse.Namespace) -> int:
             f"{result['pages']} pages)"
         )
         return 0
+
+    # `migrate-vaults` moves a pre-vault tenant store into its default vault (V6).
+    if args.command == "migrate-vaults":
+        result = tenancy.migrate_tenant_to_default_vault(args.tenant)
+        moved = ", ".join(result["moved"]) or "nothing to move"
+        print(
+            f"migrate-vaults: tenant '{result['tenant']}' vault '{result['vault']}' "
+            f"({'migrated' if result['migrated'] else 'already current'}; {moved}; "
+            f"{result['pages']} pages)"
+        )
+        return 0
+
+    # Vault lifecycle & sharing (V6) — within the caller's tenant; owner/admin gated.
+    if args.command == "vault":
+        return _cmd_vault(args)
 
     # First-run deploy bootstrap (IAM8) — guarded/idempotent; no tenant binding.
     if args.command == "init-admin":

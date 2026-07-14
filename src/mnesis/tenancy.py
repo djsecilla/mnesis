@@ -264,6 +264,9 @@ class Vault:
     owner_principal: str | None = None
     status: str = "active"  # active | suspended
     created: str = ""
+    #: Optional per-vault resource quotas (V6); 0 = use the tenant limit / unlimited.
+    max_pages: int = 0
+    max_bytes: int = 0
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -278,6 +281,8 @@ class Vault:
             owner_principal=d.get("owner_principal"),
             status=d.get("status", "active"),
             created=d.get("created", ""),
+            max_pages=int(d.get("max_pages", 0) or 0),
+            max_bytes=int(d.get("max_bytes", 0) or 0),
         )
 
 
@@ -337,6 +342,8 @@ class VaultRegistry:
                 "owner_principal": v.owner_principal,
                 "status": v.status,
                 "created": v.created,
+                "max_pages": v.max_pages,
+                "max_bytes": v.max_bytes,
             }
             for v in vaults.values()
         }
@@ -388,6 +395,33 @@ class VaultRegistry:
         doc["grants"] = grants
         self._write(doc)
         return True
+
+    def rename(self, vault_id: str, name: str) -> Vault:
+        """Set a vault's human-readable ``name`` (the vault_id/path never changes)."""
+        vid = validate_vault_id(vault_id)
+        vaults = self._load()
+        if vid not in vaults:
+            raise TenancyError(f"unknown vault: {vid}")
+        vaults[vid] = replace(vaults[vid], name=name or vid)
+        self._save_vaults(vaults)
+        return vaults[vid]
+
+    def set_quota(
+        self, vault_id: str, *, max_pages: int | None = None, max_bytes: int | None = None
+    ) -> Vault:
+        """Set a vault's per-vault resource quotas (0 = use the tenant limit) — V6."""
+        vid = validate_vault_id(vault_id)
+        vaults = self._load()
+        if vid not in vaults:
+            raise TenancyError(f"unknown vault: {vid}")
+        v = vaults[vid]
+        vaults[vid] = replace(
+            v,
+            max_pages=int(max_pages) if max_pages is not None else v.max_pages,
+            max_bytes=int(max_bytes) if max_bytes is not None else v.max_bytes,
+        )
+        self._save_vaults(vaults)
+        return vaults[vid]
 
     # -- grants (vault access control, V2) -------------------------------------
     def grant(self, principal_id: str, vault_id: str, role: str | None = None) -> None:

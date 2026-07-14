@@ -66,6 +66,7 @@ AGENTS_RUN = "agents:run"  # drive the agent runtime / maintenance passes
 USERS_MANAGE = "users:manage"  # manage principals within a tenant
 CREDENTIALS_ISSUE = "credentials:issue"  # mint PATs / agent keys / credentials
 EGRESS_CONFIGURE = "egress:configure"  # configure the outbound egress plane
+VAULTS_CREATE = "vaults:create"  # create a new vault within one's tenant (V6)
 TENANTS_MANAGE = "tenants:manage"  # provision/suspend/delete tenants (SYSTEM level)
 
 #: Each fine permission belongs to one coarse class (used for scope-family expansion
@@ -80,6 +81,7 @@ PERMISSION_CLASS: dict[str, str] = {
     USERS_MANAGE: ADMIN,
     CREDENTIALS_ISSUE: ADMIN,
     EGRESS_CONFIGURE: ADMIN,
+    VAULTS_CREATE: WRITE,  # a member may create their own vaults (they become the owner)
     TENANTS_MANAGE: ADMIN,
 }
 PERMISSIONS: frozenset[str] = frozenset(PERMISSION_CLASS)
@@ -101,9 +103,9 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
     identity.SYSTEM_ROLE: frozenset(PERMISSIONS),
     "admin": frozenset({
         PAGES_READ, PAGES_WRITE, PAGES_DELETE, GRAPH_MAINTAIN, AGENTS_RUN,
-        USERS_MANAGE, CREDENTIALS_ISSUE, EGRESS_CONFIGURE,
+        USERS_MANAGE, CREDENTIALS_ISSUE, EGRESS_CONFIGURE, VAULTS_CREATE,
     }),
-    "member": frozenset({PAGES_READ, PAGES_WRITE, PAGES_DELETE, GRAPH_MAINTAIN}),
+    "member": frozenset({PAGES_READ, PAGES_WRITE, PAGES_DELETE, GRAPH_MAINTAIN, VAULTS_CREATE}),
     "agent": frozenset({PAGES_READ, PAGES_WRITE, PAGES_DELETE, GRAPH_MAINTAIN, AGENTS_RUN}),
     "readonly": frozenset({PAGES_READ}),
 }

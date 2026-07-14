@@ -14,19 +14,33 @@ own root, so one tenant can never exhaust another's capacity.
 from __future__ import annotations
 
 from . import config, tenancy
-from .tenancy import TenantContext
+from .tenancy import TenantContext, VaultContext
 
 
 class QuotaExceeded(Exception):
-    """A write would exceed the tenant's resource quota (fail closed)."""
+    """A write would exceed the tenant's/vault's resource quota (fail closed)."""
+
+
+def _tighter(a: int, b: int) -> int:
+    """The binding limit of two caps where ``0`` = unlimited: the smaller non-zero one
+    (0 only when both are unlimited)."""
+    caps = [c for c in (a, b) if c]
+    return min(caps) if caps else 0
 
 
 def limits_for(ctx: TenantContext) -> tuple[int, int]:
-    """``(max_pages, max_bytes)`` for the tenant — its registry override else the
-    config default. ``0`` = unlimited."""
+    """The **effective** ``(max_pages, max_bytes)`` for the bound context — the tenant
+    limit (registry override else config default) **intersected with** the vault's own
+    optional per-vault limit (V6). ``0`` = unlimited; a per-vault cap only ever *tightens*
+    the tenant cap (a vault stays within its tenant's quota)."""
     tenant = tenancy.TenantRegistry().get(ctx.tenant_id)
     max_pages = (tenant.max_pages if tenant and tenant.max_pages else 0) or config.MNESIS_TENANT_MAX_PAGES
     max_bytes = (tenant.max_bytes if tenant and tenant.max_bytes else 0) or config.MNESIS_TENANT_MAX_BYTES
+    if isinstance(ctx, VaultContext):
+        vault = ctx.vault_registry().get(ctx.vault_id)
+        if vault is not None:
+            max_pages = _tighter(max_pages, vault.max_pages)
+            max_bytes = _tighter(max_bytes, vault.max_bytes)
     return max_pages, max_bytes
 
 
@@ -49,14 +63,17 @@ def require_capacity(ctx: TenantContext, *, adding_pages: int = 1) -> None:
     max_pages, max_bytes = limits_for(ctx)
     if not (max_pages or max_bytes):
         return
+    where = f"tenant {ctx.tenant_id!r}"
+    if isinstance(ctx, VaultContext):
+        where += f" vault {ctx.vault_id!r}"
     pages, used = usage(ctx)
     if max_pages and pages + adding_pages > max_pages:
         raise QuotaExceeded(
-            f"page quota exceeded for tenant {ctx.tenant_id!r}: "
+            f"page quota exceeded for {where}: "
             f"{pages} page(s) at limit {max_pages} (cannot add {adding_pages})"
         )
     if max_bytes and used >= max_bytes:
         raise QuotaExceeded(
-            f"storage quota exceeded for tenant {ctx.tenant_id!r}: "
+            f"storage quota exceeded for {where}: "
             f"{used} bytes at limit {max_bytes}"
         )

@@ -44,7 +44,7 @@ is the intended design.
 4. [Using the CLI](#4-using-the-cli)
 5. [The three surfaces](#5-the-three-surfaces) — CLI · MCP · Web UI
 6. [The agent layer](#6-the-langgraph-agent-foundation) — multi-LLM agents: the maintenance **dream cycle**, the notes-inbox **writing agent**, and the approval-gated **action agent**
-7. [Multitenancy](#7-multitenancy) — isolation by construction, the admin boundary, quotas, [authentication & authorization](#78-authentication--authorization)
+7. [Multitenancy](#7-multitenancy) — isolation by construction, the admin boundary, quotas, [authentication & authorization](#78-authentication--authorization), [vaults](#79-vaults--a-per-user-in-tenant-isolation-unit)
 8. [Running with Docker](#8-running-with-docker)
 9. [Making the most of mnesis](#9-making-the-most-of-mnesis) — best practices
 10. [Configuration reference](#10-configuration-reference)
@@ -1019,6 +1019,66 @@ never silently reset an existing admin. Secrets (the hashing pepper, bootstrap
 passwords, SMTP) come from `.env` / a secret store and are **never baked into the image
 or logged**. `docker compose up` brings up a working stack with a **real login**. The
 end-to-end **security drills** live in `tests/test_security_drills.py`.
+
+### 7.9 Vaults — a per-user, in-tenant isolation unit
+
+A **vault** extends isolation **one level down**: within a tenant, a principal may hold
+several **fully-isolated vaults** (e.g. *work* vs *home*, or one per project), each a
+complete knowledge base with **its own schema**. Single-vault use is transparent — every
+tenant has a baseline `default` vault, and if you never create another you never see the
+concept.
+
+```
+DATA_ROOT/tenants/<tenant_id>/          # a tenant
+  vaults.json                           #   vault registry + access grants (outside every vault)
+  vaults/<vault_id>/                    #   ONE vault — its own store + git + caches + schema
+    config.json  pages/  sources/  .cache/{wiki,graph,state}.db
+```
+
+**The model: tenant → vault → knowledge.** A vault always belongs to exactly one tenant
+(tenant isolation is unchanged); the store is built **per-vault** from a `VaultContext`, so
+two vaults never share a page, index, graph, or state file. A principal may own and/or be
+granted a set of vaults within its tenant.
+
+**Selectable, but always re-authorized.** This is the one place vaults differ from tenants
+(which are never selectable): the active vault is a **client selection** — the web/MCP
+`X-Mnesis-Vault` header, the CLI `--vault` / `MNESIS_VAULT` — but it is **re-authorized
+server-side against the principal's grants before any store opens** (`authz.resolve_vault`).
+Fail closed: an ungranted, unknown, cross-tenant, or malformed selection is denied on
+*every* surface, with no default-to-some-vault fallback. The tenant still comes only from
+the credential and is never selectable.
+
+**Per-vault config.** Each vault carries its own schema at `config.json` — entity types,
+predicates, the symmetric set, default visibility, and a `settings` extension point. The
+whole pipeline (extraction, classification, relation/tag validation, the graph) validates
+against the **active vault's** schema; editing vault A's schema never touches B. New and
+migrated vaults get the current global schema as their default.
+
+**Isolation guarantees.** Search/query/graph/traverse/impact, decay, and the review queue
+for vault A can never surface B's data; access counts and review queues are per-vault;
+`mnesis rebuild` reconstructs only the bound vault's caches from its Markdown under its
+config, never crossing roots. Each agent runs within one `(tenant, vault)` — it presents
+its vault over MCP (re-authorized) and keeps **all** its governance state (schedules,
+queues, egress config, audit) per-vault.
+
+**Lifecycle & the management boundary.** Creating a vault needs the `vaults:create`
+permission (admin + member — the creator becomes the owner) and respects the tenant's
+vault quota; managing an existing vault (rename / delete / set-quota / grant / revoke) is
+limited to the **vault owner or a tenant-admin**. Deletion removes **all** of a vault's
+data (store, caches, state, config, git) behind a guarded confirm, and every lifecycle op
+is written to `vault_audit.jsonl`. The `default` vault is protected from deletion.
+
+```bash
+mnesis vault create research --name "Research"      # you own it; respects the tenant quota
+mnesis vault list                                   # the vaults you may access
+mnesis vault grant research bob --role readonly     # share it (owner/admin)
+mnesis --vault research query "redis"               # a selection, re-authorized server-side
+mnesis vault delete research --confirm research     # removes ALL its data; audited
+mnesis migrate-vaults                               # move a pre-vault tenant store into its default vault
+```
+
+The end-to-end isolation **drills** live in `tests/test_vault_drills.py` (and the
+per-surface checks in `tests/test_vault_surfaces.py`).
 
 ---
 

@@ -383,6 +383,10 @@ MNESIS_DEFAULT_VISIBILITY: str = os.environ.get("MNESIS_DEFAULT_VISIBILITY", "sh
 MNESIS_TENANT_MAX_PAGES: int = _env_int("MNESIS_TENANT_MAX_PAGES", 0)
 MNESIS_TENANT_MAX_BYTES: int = _env_int("MNESIS_TENANT_MAX_BYTES", 0)
 
+#: Max number of vaults a tenant may create (beyond the baseline ``default`` vault); 0 =
+#: unlimited. Enforced fail-closed at vault creation (`vaults.create_vault`, V6).
+MNESIS_TENANT_MAX_VAULTS: int = _env_int("MNESIS_TENANT_MAX_VAULTS", 0)
+
 #: The credential the **admin CLI** resolves to a SYSTEM-ADMIN principal for tenant
 #: lifecycle ops (provision/list/suspend/delete). Distinct from any tenant
 #: credential; tenant principals can never manage tenants. (admin.py / auth.py)
@@ -395,6 +399,14 @@ SYSTEM_AUDIT_FILENAME: str = "system_audit.jsonl"
 
 def system_audit_path() -> Path:
     return DATA_ROOT / SYSTEM_AUDIT_FILENAME
+
+#: The vault-lifecycle audit log (create/rename/delete/grant/revoke) — append-only JSONL
+#: beside the registry, OUTSIDE every vault root. Gitignored. (V6)
+VAULT_AUDIT_FILENAME: str = "vault_audit.jsonl"
+
+
+def vault_audit_path() -> Path:
+    return DATA_ROOT / VAULT_AUDIT_FILENAME
 
 #: Host-header allowlist for the HTTP MCP endpoint's DNS-rebinding protection
 #: (comma-separated; each entry an exact ``host:port`` or a ``host:*`` wildcard).
