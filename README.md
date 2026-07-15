@@ -45,7 +45,7 @@ is the intended design.
 5. [The three surfaces](#5-the-three-surfaces) — CLI · MCP · Web UI
 6. [The agent layer](#6-the-langgraph-agent-foundation) — multi-LLM agents: the maintenance **dream cycle**, the notes-inbox **writing agent**, and the approval-gated **action agent**
 7. [Multitenancy](#7-multitenancy) — isolation by construction, the admin boundary, quotas, [authentication & authorization](#78-authentication--authorization), [vaults](#79-vaults--a-per-user-in-tenant-isolation-unit)
-8. [Running with Docker](#8-running-with-docker)
+8. [Running with Docker](#8-running-with-docker) — [startup modes at a glance](#81-startup-modes-at-a-glance): [default](#82-default--core--web-ui-offline-single-tenant) · [real login](#83-with-a-real-web-login-bootstrap-the-first-admin) · [multi-tenant](#84-multi-tenant-credential-scoped-tenants--vaults) · [agents](#85-the-agent-runtime---profile-agents) · [local-first](#86-local-first-inference-nothing-leaves-the-box) · [Anthropic](#87-real-anthropic-inference) · [email](#88-external-send-email--opt-in-staged-egress-gated) · [managing](#89-managing-the-stack)
 9. [Making the most of mnesis](#9-making-the-most-of-mnesis) — best practices
 10. [Configuration reference](#10-configuration-reference)
 11. [Verify it works](#11-verify-it-works) — the test suite, guided demos, agent smoke tests & security drills
@@ -1114,37 +1114,161 @@ per-surface checks in `tests/test_vault_surfaces.py`).
 
 ## 8. Running with Docker
 
-A containerized stack — no Python/uv needed on the host. See
-[`docs/OPS.md`](docs/OPS.md) for backup/restore and operations.
+A containerized stack — no Python/uv needed on the host. One image
+(`mnesis:latest`) carries the core + the agent layer; `docker-compose.yml` wires
+three services and a data volume. See [`docs/OPS.md`](docs/OPS.md) for
+backup/restore and operations.
+
+| Service | Started by | Role |
+|---|---|---|
+| **`mnesis`** | a plain `up` | the core — MCP `/mcp` (agents) + REST/SSE `/api` (the UI) + open `/health`, over the `mnesis-data` volume |
+| **`mnesis-ui`** | a plain `up` | a static nginx SPA that reverse-proxies `/api` to `mnesis` (stateless, no volume) — **http://localhost:3000** |
+| **`mnesis-agents-runtime`** | `--profile agents` | the LangGraph agent runtime (dream cycle + notes inbox + action agent), an MCP-only client |
+
+**First, always:**
 
 ```bash
-cp .env.example .env          # then edit: MNESIS_WEB_ADMIN_PASSWORD (first login), MNESIS_AUTH_PEPPER, keys
-make docker-build             # build the image
-make docker-up                # start mnesis + the web UI; wait for healthy
-make docker-seed              # ingest bundled sample sources (offline, idempotent)
-
-make docker-cli ARGS='query "redis"'          # query the seeded wiki
-make docker-cli ARGS='impact library:redis'   # graph impact
+cp .env.example .env          # every knob has a safe default; edit as each mode below needs
+make docker-build             # build both images (or: docker compose build)
 ```
 
-The data (pages, sources, `.git`, `state.db`) lives on the `mnesis-data` volume
-and survives `docker compose down`; only `down -v` wipes it. The web UI is on
-**http://localhost:3000** (`MNESIS_UI_PORT`).
+`.env` is gitignored and optional (the compose defaults bring the stack up
+without it), but it is where **secrets and mode switches** live. The startup modes
+below are **composable** — e.g. multi-tenant + agents + local inference is just
+their `.env` lines together.
 
-### 8.1 Optional profiles (not started by a plain `up`)
+### 8.1 Startup modes at a glance
+
+| Mode | What you get | Switch (in `.env`) | Bring up |
+|---|---|---|---|
+| **Default** (§8.2) | core + Web UI, single `default` tenant, offline stub | *(none)* | `make docker-up` |
+| **Real login** (§8.3) | a real first-run web/admin login | `MNESIS_WEB_ADMIN_PASSWORD`, `MNESIS_AUTH_PEPPER` | `make docker-up` |
+| **Multi-tenant** (§8.4) | credential-scoped tenants + vaults | `MNESIS_AUTH_ENABLED=1` (+ provision) | `make docker-up` |
+| **Agents** (§8.5) | dream cycle + notes inbox + action agent | *(profile)* | `docker compose --profile agents up -d` |
+| **Local-first** (§8.6) | on-prem inference, nothing leaves the box | `MNESIS_LLM_PROVIDER=local` | `make docker-up` |
+| **Real inference** (§8.7) | Anthropic extraction | `ANTHROPIC_API_KEY` | `make docker-up` |
+| **Email send** (§8.8) | opt-in external delivery (staged) | `MNESIS_EMAIL_ENABLED=1` + egress | `--profile agents` |
+
+### 8.2 Default — core + Web UI (offline, single-tenant)
+
+The zero-config path. A plain `up` starts `mnesis` + `mnesis-ui` as the single
+`default` tenant; with no API key it runs the deterministic **offline stub**, so
+you get a working stack with no external calls.
 
 ```bash
-docker compose --profile agents up -d         # the agent runtime: dream cycle + notes inbox + action agent
+make docker-up                                 # start mnesis + the web UI; waits for healthy
+make docker-seed                               # ingest bundled sample sources (offline, idempotent)
+
+make docker-cli ARGS='query "redis"'           # query the seeded wiki
+make docker-cli ARGS='impact library:redis'    # graph impact
+make docker-cli ARGS='list'                    # every page with status + confidence
+make docker-demo                               # run the end-to-end demo inside the container
 ```
 
-The agent runtime (`--profile agents`) is covered in
-[The LangGraph agent foundation](#6-the-langgraph-agent-foundation) — drop a note in
-`./notes_inbox` to ingest it, run a dream cycle, or propose/approve an action.
+Open the Web UI at **http://localhost:3000** (`MNESIS_UI_PORT`). The MCP endpoint
+is published at **http://localhost:8080/mcp** (`MNESIS_MCP_PORT`) for host-side
+agents; `GET /health` is open. `make docker-cli ARGS='…'` runs any
+[CLI verb](#4-using-the-cli) inside the running container.
+
+### 8.3 With a real web login (bootstrap the first admin)
+
+Even single-tenant, the Web UI uses a **real login** (no shared token). Set an
+operator password (and a hashing pepper) and the entrypoint bootstraps the first
+admin on first `serve` — guarded and idempotent, so restarts are safe.
+
+```bash
+# .env
+MNESIS_AUTH_PEPPER=<a long random string>      # mixed into credential hashes at rest
+MNESIS_WEB_ADMIN_USER=admin                    # the first web login (default tenant)
+MNESIS_WEB_ADMIN_PASSWORD=<a strong password>  # NO default — required for a real login
+# Optional: also bootstrap the system-admin (tenant lifecycle root of trust):
+# MNESIS_BOOTSTRAP_PASSWORD=<a strong password>
+```
+
+```bash
+make docker-up                                 # entrypoint bootstraps the admin(s) on first run
+# → open http://localhost:3000 and log in as `admin`.
+```
+
+Secrets come from `.env` / your secret store and are **never baked into the image
+or logged**. See [Authentication & authorization](#78-authentication--authorization).
+
+### 8.4 Multi-tenant (credential-scoped tenants + vaults)
+
+Turn on multi-tenant mode; every boundary then requires a per-tenant credential
+(the tenant derives **only** from the credential — see [Multitenancy](#7-multitenancy)).
+
+```bash
+# .env
+MNESIS_AUTH_ENABLED=1
+MNESIS_AUTH_PEPPER=<a long random string>
+```
+
+```bash
+make docker-up
+
+# 1. Mint the system-admin TOKEN (the tenant-lifecycle root of trust; shown ONCE):
+docker compose exec mnesis mnesis admin bootstrap        # prints: token (set MNESIS_ADMIN_CREDENTIAL to it)
+
+# 2. Provision a tenant with that token → prints the tenant's initial admin token ONCE:
+docker compose exec -e MNESIS_ADMIN_CREDENTIAL=<system-admin-token> \
+  mnesis mnesis admin provision acme --name "Acme"
+
+# 3. Use the tenant credential; the vault is a SELECTION, re-authorized server-side:
+docker compose exec -e MNESIS_TOKEN=<acme-admin-token> \
+  mnesis mnesis vault create research --name "Research"   # create a vault you own
+docker compose exec -e MNESIS_TOKEN=<acme-admin-token> \
+  mnesis mnesis --vault research query "redis"            # scope a command to that vault
+```
+
+A single stack thus serves many isolated tenants, each with its own
+[vaults](#79-vaults--a-per-user-in-tenant-isolation-unit); the web/MCP surfaces
+pick the active vault with the `X-Mnesis-Vault` header (re-authorized per request).
+For **web** logins in a tenant, also set `MNESIS_WEB_ADMIN_PASSWORD` (§8.3) or
+provision users with `mnesis user provision`.
+
+### 8.5 The agent runtime (`--profile agents`)
+
+Not started by a plain `up`. This adds `mnesis-agents-runtime` — the
+[LangGraph agent foundation](#6-the-langgraph-agent-foundation): the scheduled
+**dream-cycle** maintenance agent, the **notes-inbox** writing agent, and the
+approval-gated **action** agent. It reaches `mnesis` only over MCP.
+
+```bash
+make agents-up                                 # docker compose --profile agents up -d
+# …or start everything together from scratch:
+docker compose --profile agents up -d
+
+# Notes inbox: drop a .md/.txt note on the host, it is ingested (Mnesis redacts + routes).
+echo "Atlas uses Redis for caching." > ./notes_inbox/atlas.md   # ${MNESIS_NOTES_INBOX_DIR}
+make ingest-note NOTE=/data/notes_inbox         # or just wait for the poll (5s default)
+
+# Dream cycle (maintenance) on demand + its report:
+make dream-now
+make dream-report
+
+# Action agent — approval-gated, DRAFT-ONLY by default (nothing leaves the box):
+make action-brief CONTEXT='{"topic":"Atlas caching","attendees":["sarah"]}'
+make actions                                    # list pending proposals
+make action-approve ID=<id>                     # writes the draft to ./action_outbox
+make action-reject  ID=<id>                     # delivers nothing
+
+make agents-logs                                # tail the runtime
+make agents-down                                # stop just the agents (mnesis stays up)
+```
+
+Bind mounts: notes come from `${MNESIS_NOTES_INBOX_DIR:-./notes_inbox}` (read-only)
+and approved drafts land in `${MNESIS_ACTION_OUTBOX_DIR:-./action_outbox}`. Durable
+agent state (checkpoints, run audit, proposals, dead-letter) lives on its own
+volumes. For **per-(tenant, vault)** agents, set `MNESIS_AGENTS_TENANTS_FILE` to a
+JSON list of `{tenant_id, credential, vault_id?}` (see [§7.6](#76-per-tenant-per-vault-agents)).
 
 > The old `--profile maintenance` upkeep sidecar is **retired** — periodic decay /
-> graph-lint is now owned solely by the dream-cycle agent (`--profile agents`).
+> graph-lint is now owned solely by the dream-cycle agent (`--profile agents`), so
+> there is exactly one scheduler. `docker compose run --rm mnesis cli decay` remains
+> a manual one-off.
 
-### 8.2 Local-first inference (nothing leaves the box)
+### 8.6 Local-first inference (nothing leaves the box)
 
 For a fully on-prem deployment — **no external inference calls** — point both
 mnesis and the agent at a local model you run on the host (your own Ollama or any
@@ -1163,8 +1287,63 @@ MNESIS_LLM_STUB=0
 MNESIS_LLM_BASE_URL=http://host.docker.internal:11434   # the default
 
 # 3. Bring it up — sources, the KB, and inference all stay inside one trust boundary.
-docker compose --profile agents up -d
+make docker-up                        # core only …
+docker compose --profile agents up -d # … or with the agents (they make no model calls themselves)
 ```
+
+The **same** `MNESIS_LLM_*` vars drive both mnesis and the agent layer, so one
+switch keeps the whole stack on-prem. The agents themselves make no model calls
+(the dream cycle is deterministic; the writing agent only calls `mnesis_ingest`;
+the action agent only reads) — Mnesis runs extraction/composition on the local model.
+
+### 8.7 Real (Anthropic) inference
+
+For real extraction instead of the stub, provide an API key (the default provider
+is `anthropic`).
+
+```bash
+# .env
+ANTHROPIC_API_KEY=sk-ant-…             # real extraction; the stub auto-disables when a key is present
+# MNESIS_LLM_MODEL=claude-sonnet-4-6   # optional override (this is the default)
+```
+
+```bash
+make docker-up
+```
+
+### 8.8 External send (email) — opt-in, staged, egress-gated
+
+The action agent's email delivery is **off by default** and, even enabled,
+**dry-run + egress-gated + recipient-confirmed** — there is no egress out of the
+box. Turning on a real send is an explicit, staged change (dry-run → self-send →
+add recipients one at a time) behind a default-deny egress plane
+(allowlist + endpoint + quotas + kill-switch), with SMTP credentials supplied only
+via `.env`. Follow the **staged rollout** in
+[`docs/OPS.md` → External send (email)](docs/OPS.md) rather than enabling it
+blind; the relevant `.env` keys are `MNESIS_EMAIL_ENABLED`, `MNESIS_EMAIL_DRYRUN`,
+`MNESIS_EGRESS_ENABLED`, `MNESIS_EGRESS_RECIPIENT_ALLOWLIST`,
+`MNESIS_EGRESS_ENDPOINT_ALLOWLIST`, and `MNESIS_SMTP_*`.
+
+### 8.9 Managing the stack
+
+```bash
+make docker-logs               # tail mnesis + mnesis-ui
+make docker-down               # stop the stack — the data volume is KEPT
+docker compose down -v         # stop AND wipe the mnesis-data volume (destroys the KB)
+docker compose ps              # what's running + health
+```
+
+**Persistence.** The canonical data (pages, sources, `.git`, and the durable
+`state.db`) lives on the **`mnesis-data`** volume and survives `docker compose
+down`; only `down -v` removes it. `mnesis-ui` is stateless. Back up the git
+history + `state.db`; everything else under `.cache/` is a regenerable projection
+(`mnesis rebuild`). See [`docs/OPS.md`](docs/OPS.md).
+
+**Ports.** Web UI `MNESIS_UI_PORT` (default `3000`); MCP `MNESIS_MCP_PORT`
+(default `8080`, published for host-side agents — drop the mapping if none
+connect). When a client reaches the server by a name other than localhost (e.g. an
+in-network agent at `mnesis:8080`), that name must be in `MNESIS_MCP_ALLOWED_HOSTS`
+(the compose default already lists `mnesis:*,localhost:*,127.0.0.1:*`).
 
 ---
 
