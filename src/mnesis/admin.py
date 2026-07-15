@@ -409,6 +409,91 @@ def list_users(
     return (cred_store or CredentialStore()).principals_for_tenant(tenant_id)
 
 
+class BootstrapError(Exception):
+    """The initial-admin bootstrap could not proceed (e.g. no credential supplied).
+    Carries a machine ``reason``; the message is safe to show the operator."""
+
+    def __init__(self, message: str, *, reason: str = "bootstrap_failed") -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
+def bootstrap_initial_admin(
+    *,
+    username: str | None = None,
+    password: str | None = None,
+    tenant_id: str | None = None,
+    vault_id: str | None = None,
+    cred_store: CredentialStore | None = None,
+    provider: "providers.LocalPasswordProvider | None" = None,
+    audit: SystemAuditLog | None = None,
+    data_root: Path | str | None = None,
+) -> dict:
+    """Provision the **one initial admin** from configuration (R2): the admin principal
+    (``role=admin``), its **tenant**, and a **default vault**, in the
+    ``must_change_password`` state — so the bootstrap password is single-use in effect
+    (it can do nothing but set a new one, R3).
+
+    Inputs come from configuration/secret store (or the explicit args, which the CLI/
+    entrypoint fills from ``MNESIS_ADMIN_USERNAME`` / ``MNESIS_ADMIN_PASSWORD`` /
+    ``MNESIS_ADMIN_TENANT``). There is **no default password anywhere** — an absent or
+    weak credential **fails** (`BootstrapError` / password policy), never defaults.
+
+    **Idempotent + non-destructive:** if the target tenant already has an active admin
+    this is a **NO-OP** — it never resets, re-enables, or changes an existing admin's
+    password or role; the no-op is recorded in the system audit log. Both outcomes are
+    audited (never the credential). Returns a dict describing what happened."""
+    username = username or config.MNESIS_ADMIN_USERNAME
+    tenant_id = tenant_id or config.MNESIS_ADMIN_TENANT
+    vault_id = vault_id or config.DEFAULT_VAULT_ID
+    # The credential comes from configuration/secret store when not passed explicitly
+    # (an explicit empty/blank value is preserved so it fails the guard below, not defaults).
+    if password is None:
+        password = config.MNESIS_ADMIN_PASSWORD
+    aud = audit or (SystemAuditLog((Path(data_root) / config.SYSTEM_AUDIT_FILENAME)) if data_root else SystemAuditLog())
+    store = cred_store or CredentialStore(
+        (Path(data_root) / config.CREDENTIALS_FILENAME) if data_root else None
+    )
+
+    # No-clobber: an existing active admin in the tenant → NO-OP (log clearly, change nothing).
+    existing = _active_admin_ids(store, tenant_id)
+    if existing:
+        aud.record(
+            "bootstrap_initial_admin_noop", tenant_id=tenant_id, actor=None,
+            reason="admin_exists", existing_admins=sorted(existing),
+        )
+        return {
+            "created": False, "reason": "admin_exists", "tenant_id": tenant_id,
+            "existing_admins": sorted(existing),
+        }
+
+    # Refuse a weak/absent credential — no default exists anywhere (fail closed).
+    if not password or not password.strip():
+        raise BootstrapError(
+            "no initial-admin password supplied: set MNESIS_ADMIN_PASSWORD (or pass "
+            "--password) — there is NO default password. Bootstrap refused.",
+            reason="no_credential",
+        )
+    providers.check_password_policy(password)  # raises PasswordPolicyError on a weak one
+
+    # Provision the tenant + its default vault, then the admin — must_change_password.
+    tenancy.create_tenant(tenant_id, data_root=data_root)
+    if vault_id != config.DEFAULT_VAULT_ID:
+        tenancy.create_vault(tenant_id, vault_id, owner_principal=username, data_root=data_root)
+    prov = provider or providers.LocalPasswordProvider(store=store)
+    rec = prov.register(tenant_id, username, "admin", password, must_change_password=True)
+    aud.record(
+        "bootstrap_initial_admin", tenant_id=tenant_id, actor=username,
+        principal_id=username, credential_id=rec.id, role="admin", vault_id=vault_id,
+        must_change_password=True,
+    )
+    return {
+        "created": True, "tenant_id": tenant_id, "principal_id": username,
+        "vault_id": vault_id, "credential_id": rec.id, "role": "admin",
+        "must_change_password": True,
+    }
+
+
 def bootstrap_tenant_admin(
     tenant_id: str,
     principal_id: str,
@@ -418,26 +503,13 @@ def bootstrap_tenant_admin(
     provider: "providers.LocalPasswordProvider | None" = None,
     data_root: Path | str | None = None,
 ) -> dict:
-    """First-run deploy bootstrap: create ``tenant_id`` and its **first tenant-admin
-    web user** from an operator-supplied password (no default). **Guarded + idempotent**:
-    if the tenant already has an active admin user this is a no-op — it can never reset an
-    existing admin. Local operator action (like ``admin bootstrap``); audited."""
-    tenancy.create_tenant(tenant_id, data_root=data_root)
-    store = cred_store or CredentialStore(
-        (Path(data_root) / config.CREDENTIALS_FILENAME) if data_root else None
+    """Backward-compatible shim over :func:`bootstrap_initial_admin` (R2): create
+    ``tenant_id`` + its default vault and the first admin from an operator-supplied
+    password, in the ``must_change_password`` state. Guarded/idempotent/no-clobber."""
+    return bootstrap_initial_admin(
+        username=principal_id, password=password, tenant_id=tenant_id,
+        cred_store=cred_store, provider=provider, data_root=data_root,
     )
-    for u in store.principals_for_tenant(tenant_id):
-        if "admin" in u["roles"] and u["active"]:
-            return {"created": False, "reason": "a tenant-admin already exists", "tenant_id": tenant_id}
-    providers.check_password_policy(password)
-    rec = (provider or providers.LocalPasswordProvider(store=store)).register(
-        tenant_id, principal_id, "admin", password
-    )
-    _authaudit.record(
-        "tenant_admin_bootstrapped", tenant_id=tenant_id, principal_id=principal_id,
-        credential_id=rec.id, action="bootstrap", result="ok",
-    )
-    return {"created": True, "credential_id": rec.id, "tenant_id": tenant_id}
 
 
 def create_system_admin(

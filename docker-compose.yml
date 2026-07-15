@@ -45,10 +45,17 @@ services:
       # SECRETS — supplied via .env / a secret store, NEVER baked into the image:
       #  - MNESIS_AUTH_PEPPER: server-side pepper mixed into credential hashes at rest.
       #  - MNESIS_BOOTSTRAP_PASSWORD: first-run system-admin password (guarded/idempotent).
-      #  - MNESIS_WEB_ADMIN_USER/PASSWORD: first-run tenant-admin web login (guarded).
+      #  - MNESIS_ADMIN_USERNAME/PASSWORD/TENANT (R2): the first-run INITIAL ADMIN
+      #    (role=admin) + its tenant + a default vault, bootstrapped in the
+      #    must_change_password state. Guarded/idempotent/NO-CLOBBER; NO default password
+      #    (absent ⇒ the bootstrap is skipped/fails clearly). Legacy MNESIS_WEB_ADMIN_*
+      #    are still accepted as fallbacks.
       # The entrypoint bootstraps the admins on first `serve` from these (no defaults).
       MNESIS_AUTH_PEPPER: ${MNESIS_AUTH_PEPPER:-}
       MNESIS_BOOTSTRAP_PASSWORD: ${MNESIS_BOOTSTRAP_PASSWORD:-}
+      MNESIS_ADMIN_USERNAME: ${MNESIS_ADMIN_USERNAME:-${MNESIS_WEB_ADMIN_USER:-admin}}
+      MNESIS_ADMIN_PASSWORD: ${MNESIS_ADMIN_PASSWORD:-${MNESIS_WEB_ADMIN_PASSWORD:-}}
+      MNESIS_ADMIN_TENANT: ${MNESIS_ADMIN_TENANT:-default}
       MNESIS_WEB_ADMIN_USER: ${MNESIS_WEB_ADMIN_USER:-admin}
       MNESIS_WEB_ADMIN_PASSWORD: ${MNESIS_WEB_ADMIN_PASSWORD:-}
       # Default new-page visibility within a tenant (shared|private); per-tenant

@@ -42,10 +42,14 @@ if [ "$CMD" = "serve" ]; then
     if [ -n "${MNESIS_BOOTSTRAP_PASSWORD:-}" ]; then
         mnesis admin bootstrap --password "$MNESIS_BOOTSTRAP_PASSWORD" >/dev/null 2>&1 || true
     fi
-    if [ -n "${MNESIS_WEB_ADMIN_PASSWORD:-}" ]; then
-        mnesis --tenant "${MNESIS_WEB_ADMIN_TENANT:-default}" init-admin \
-            --principal "${MNESIS_WEB_ADMIN_USER:-admin}" \
-            --password "$MNESIS_WEB_ADMIN_PASSWORD" || true
+    # Initial admin (R2): role=admin + its tenant + a default vault, in the
+    # must_change_password state. Config-driven (MNESIS_ADMIN_* preferred; the legacy
+    # MNESIS_WEB_ADMIN_* still work). Guarded/idempotent/no-clobber; no default password.
+    ADMIN_PW="${MNESIS_ADMIN_PASSWORD:-${MNESIS_WEB_ADMIN_PASSWORD:-}}"
+    if [ -n "$ADMIN_PW" ]; then
+        mnesis --tenant "${MNESIS_ADMIN_TENANT:-${MNESIS_WEB_ADMIN_TENANT:-default}}" init-admin \
+            --principal "${MNESIS_ADMIN_USERNAME:-${MNESIS_WEB_ADMIN_USER:-admin}}" \
+            --password "$ADMIN_PW" || true
     fi
 fi
 

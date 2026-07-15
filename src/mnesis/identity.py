@@ -388,6 +388,9 @@ class CredentialRecord:
     expires_at: float | None = None  # epoch seconds; None = no expiry
     revoked_at: str | None = None  # ISO timestamp when revoked; None = active
     name: str | None = None  # optional human label (e.g. "ci-bot")
+    #: R2/R3: a password credential the principal MUST rotate before it grants anything
+    #: beyond a password change (set on the bootstrapped initial admin; cleared on reset).
+    must_change_password: bool = False
 
     # -- backward-compatible scalar views (T3 shape) --------------------------
     @property
@@ -446,6 +449,7 @@ class CredentialRecord:
             "revoked": self.revoked,
             "revoked_at": self.revoked_at,
             "name": self.name,
+            "must_change_password": self.must_change_password,
         }
 
     def to_dict(self) -> dict:
@@ -491,6 +495,7 @@ class CredentialRecord:
             expires_at=d.get("expires_at"),
             revoked_at=revoked_at,
             name=d.get("name"),
+            must_change_password=bool(d.get("must_change_password", False)),
         )
 
 
@@ -586,10 +591,13 @@ class IdentityStore:
         name: str | None = None,
         scopes: tuple[str, ...] | list[str] | None = None,
         kind: str | None = None,
+        must_change_password: bool = False,
     ) -> CredentialRecord:
         """Mint a **password** credential (hashed with argon2id at rest). Unlike a token
         there is no returned secret — the caller supplied it. Verify a login with
-        :meth:`verify_login`."""
+        :meth:`verify_login`. ``must_change_password`` marks a credential (e.g. the
+        bootstrapped initial admin) that the principal must rotate before it grants
+        anything beyond a password change (R2/R3)."""
         validate_tenant_id(tenant_id)
         validate_role(role)
         self._validate_principal_id(principal_id)
@@ -606,6 +614,7 @@ class IdentityStore:
             created=_now_iso(),
             expires_at=expires_at,
             name=name,
+            must_change_password=must_change_password,
         )
         records = self._load()
         records[rec.id] = rec
@@ -715,6 +724,20 @@ class IdentityStore:
         if rec is None:
             raise AuthError(f"no credential {credential_id!r} to update")
         updated = replace(rec, roles=roles_t)
+        records[credential_id] = updated
+        self._save(records)
+        return updated
+
+    def set_must_change_password(self, credential_id: str, value: bool) -> CredentialRecord:
+        """Set/clear a credential's ``must_change_password`` flag (R2 sets it on the
+        bootstrapped admin; R3 clears it on a successful password change)."""
+        from dataclasses import replace
+
+        records = self._load()
+        rec = records.get(credential_id)
+        if rec is None:
+            raise AuthError(f"no credential {credential_id!r} to update")
+        updated = replace(rec, must_change_password=bool(value))
         records[credential_id] = updated
         self._save(records)
         return updated

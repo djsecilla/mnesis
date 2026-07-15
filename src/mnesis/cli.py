@@ -730,21 +730,29 @@ def _run(args: argparse.Namespace) -> int:
     if args.command == "vault":
         return _cmd_vault(args)
 
-    # First-run deploy bootstrap (IAM8) — guarded/idempotent; no tenant binding.
+    # First-run deploy bootstrap of the INITIAL ADMIN from configuration (R2) —
+    # guarded/idempotent/no-clobber; must_change_password on the new admin. No tenant
+    # binding. Password from --password else MNESIS_ADMIN_PASSWORD (or the legacy
+    # MNESIS_WEB_ADMIN_PASSWORD); username/tenant default to config. NO default password.
     if args.command == "init-admin":
-        password = args.password or os.environ.get("MNESIS_WEB_ADMIN_PASSWORD")
-        if not password:
-            print("error: a password is required (--password or MNESIS_WEB_ADMIN_PASSWORD); no default")
-            return 2
+        password = args.password or config.MNESIS_ADMIN_PASSWORD
+        username = args.principal if args.principal != "admin" else config.MNESIS_ADMIN_USERNAME
         try:
-            res = admin.bootstrap_tenant_admin(args.tenant, args.principal, password)
+            res = admin.bootstrap_initial_admin(
+                username=username, password=password, tenant_id=args.tenant,
+            )
+        except admin.BootstrapError as exc:
+            print(f"error: {exc}")
+            return 2
         except auth.AuthError as exc:  # password policy
             print(f"error: {exc}")
             return 2
         if res["created"]:
-            print(f"created tenant-admin '{args.principal}' in tenant '{args.tenant}' — log in via the web UI")
+            print(f"created initial admin '{res['principal_id']}' in tenant '{res['tenant_id']}' "
+                  f"(vault '{res['vault_id']}') — must change password on first login; log in via the web UI")
         else:
-            print(f"tenant-admin already exists in '{args.tenant}' ({res['reason']}); nothing to do")
+            print(f"admin already exists in '{res['tenant_id']}' ({res['reason']}); "
+                  "nothing to do (bootstrap is a no-op — no reset)")
         return 0
 
     # Interactive auth (IAM6): login/logout/whoami/pat operate on the credential

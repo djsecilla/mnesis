@@ -1173,25 +1173,31 @@ agents; `GET /health` is open. `make docker-cli ARGS='…'` runs any
 ### 8.3 With a real web login (bootstrap the first admin)
 
 Even single-tenant, the Web UI uses a **real login** (no shared token). Set an
-operator password (and a hashing pepper) and the entrypoint bootstraps the first
-admin on first `serve` — guarded and idempotent, so restarts are safe.
+operator password (and a hashing pepper) and the entrypoint bootstraps the **initial
+admin** (role=admin) + its tenant + a default vault on first `serve` — guarded,
+idempotent, and **no-clobber** (it never resets an existing admin). The initial admin
+starts in the **must-change-password** state, so that first password can do nothing but
+set a new one.
 
 ```bash
 # .env
 MNESIS_AUTH_PEPPER=<a long random string>      # mixed into credential hashes at rest
-MNESIS_WEB_ADMIN_USER=admin                    # the first web login (default tenant)
-MNESIS_WEB_ADMIN_PASSWORD=<a strong password>  # NO default — required for a real login
+MNESIS_ADMIN_USERNAME=admin                    # the first login (default tenant)
+MNESIS_ADMIN_PASSWORD=<a strong password>      # NO default — required for a real login
+# (legacy MNESIS_WEB_ADMIN_USER / MNESIS_WEB_ADMIN_PASSWORD are still accepted)
 # Optional: also bootstrap the system-admin (tenant lifecycle root of trust):
 # MNESIS_BOOTSTRAP_PASSWORD=<a strong password>
 ```
 
 ```bash
-make docker-up                                 # entrypoint bootstraps the admin(s) on first run
-# → open http://localhost:3000 and log in as `admin`.
+make docker-up                                 # entrypoint bootstraps the admin on first run
+# → open http://localhost:3000 and log in as `admin` (you'll be required to set a new password).
 ```
 
-Secrets come from `.env` / your secret store and are **never baked into the image
-or logged**. See [Authentication & authorization](#78-authentication--authorization).
+There is **no default password anywhere** — omit it and the bootstrap fails clearly
+rather than defaulting. Secrets come from `.env` / your secret store and are **never
+baked into the image or logged**. See
+[Authentication & authorization](#78-authentication--authorization).
 
 ### 8.4 Multi-tenant (credential-scoped tenants + vaults)
 

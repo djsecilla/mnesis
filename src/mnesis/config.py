@@ -310,6 +310,26 @@ MNESIS_RESET_TOKEN_TTL: int = _env_int("MNESIS_RESET_TOKEN_TTL", 3600)
 #: (this env var or the CLI --password flag / prompt). Never logged.
 MNESIS_BOOTSTRAP_PASSWORD: str | None = os.environ.get("MNESIS_BOOTSTRAP_PASSWORD") or None
 
+# --- R2: initial-admin bootstrap (from configuration / secret store) ---------
+# The startup bootstrap provisions exactly ONE usable admin (role=admin) + its tenant
+# + a default vault, in the must_change_password state, from these inputs. There is
+# **no default password anywhere** — if none is supplied the bootstrap fails clearly.
+
+#: The initial admin's username/principal id (a username may default; the PASSWORD may not).
+MNESIS_ADMIN_USERNAME: str = os.environ.get("MNESIS_ADMIN_USERNAME") or os.environ.get(
+    "MNESIS_WEB_ADMIN_USER", "admin"
+)
+#: The initial admin's password — operator-supplied via config/secret store. NO default;
+#: absent ⇒ the bootstrap refuses (fail closed). Falls back to the legacy
+#: MNESIS_WEB_ADMIN_PASSWORD for backward compatibility. Never logged.
+MNESIS_ADMIN_PASSWORD: str | None = (
+    os.environ.get("MNESIS_ADMIN_PASSWORD") or os.environ.get("MNESIS_WEB_ADMIN_PASSWORD") or None
+)
+#: The tenant the initial admin is provisioned in (defaults to the single default tenant).
+MNESIS_ADMIN_TENANT: str = os.environ.get("MNESIS_ADMIN_TENANT") or os.environ.get(
+    "MNESIS_WEB_ADMIN_TENANT", DEFAULT_TENANT_ID
+)
+
 #: Auxiliary auth state — all OUTSIDE any tenant root, beside the credential store,
 #: and gitignored. Not derivable from Markdown (like the credential store itself).
 THROTTLE_FILENAME: str = "auth_throttle.json"

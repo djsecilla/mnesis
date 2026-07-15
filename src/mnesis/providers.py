@@ -380,12 +380,16 @@ class LocalPasswordProvider(IdentityProvider):
         *,
         name: str | None = None,
         scopes=None,
+        must_change_password: bool = False,
     ) -> identity.CredentialRecord:
-        """Create a password credential (policy-checked, argon2id at rest)."""
+        """Create a password credential (policy-checked, argon2id at rest).
+        ``must_change_password`` flags a credential that must be rotated on first use
+        (the bootstrapped initial admin; R2/R3)."""
         validate_role(role)
         check_password_policy(password)
         return self.store.issue_password(
-            tenant_id, principal_id, role, password, name=name, scopes=scopes
+            tenant_id, principal_id, role, password, name=name, scopes=scopes,
+            must_change_password=must_change_password,
         )
 
     # -- authentication -----------------------------------------------------
