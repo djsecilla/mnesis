@@ -24,7 +24,7 @@ import shutil
 from pathlib import Path
 
 from . import audit as _authaudit
-from . import auth, authz, config, providers, tenancy, tokens
+from . import auth, authz, config, identity, providers, tenancy, tokens
 from .auth import CredentialStore, Principal, is_system_admin
 from .config import now_iso as _now_iso  # local alias keeps call sites unchanged
 
@@ -281,6 +281,37 @@ def _require_tenant_admin(actor: Principal | None, tenant_id: str) -> None:
         )
 
 
+def _require_role_assign(actor: Principal | None, tenant_id: str) -> None:
+    """Only an ``admin`` may assign/change a role (R1). Flows through the SAME PDP —
+    the ``roles:assign`` permission (admin-only) + tenant match; no parallel authz."""
+    if not authz.authorize(actor, authz.ROLES_ASSIGN, context={"tenant_id": tenant_id}):
+        who = getattr(actor, "principal_id", "?")
+        raise UserManagementError(
+            f"{who!r} may not assign roles in tenant {tenant_id!r} (admin only)"
+        )
+
+
+def _active_admin_ids(store: CredentialStore, tenant_id: str) -> set[str]:
+    """The principal ids in ``tenant_id`` that are **active admins** (canonical role
+    ``admin`` on at least one active credential)."""
+    out: set[str] = set()
+    for u in store.principals_for_tenant(tenant_id):
+        if u["active"] and any(identity.canonical_role(r) == identity.ADMIN_ROLE for r in u["roles"]):
+            out.add(u["principal_id"])
+    return out
+
+
+def _refuse_last_admin_lockout(store: CredentialStore, tenant_id: str, principal_id: str, op: str) -> None:
+    """Refuse an op that would remove the **last active admin** of a tenant (no lockout):
+    demote / deactivate / delete. A no-op if the target is not the sole active admin."""
+    admins = _active_admin_ids(store, tenant_id)
+    if admins == {principal_id}:
+        raise UserManagementError(
+            f"refusing to {op} {principal_id!r}: it is the last active admin of tenant "
+            f"{tenant_id!r} (no-lockout rule)"
+        )
+
+
 def provision_user(
     tenant_id: str,
     principal_id: str,
@@ -294,6 +325,7 @@ def provision_user(
     """Provision a user in ``tenant_id`` with ``role`` and a password (argon2id). The
     ``actor`` must be a tenant-admin of that tenant. Audited (no secret)."""
     _require_tenant_admin(actor, tenant_id)
+    role = identity.canonical_role(role)  # store the canonical two-role vocabulary (member→user)
     prov = provider or providers.LocalPasswordProvider(store=cred_store or CredentialStore())
     rec = prov.register(tenant_id, principal_id, role, password)
     _authaudit.record(
@@ -313,9 +345,11 @@ def deactivate_user(
     token_service: "tokens.TokenService | None" = None,
 ) -> dict:
     """Deactivate a user: **force-revoke** every credential AND runtime token they hold
-    (immediate everywhere). Tenant-admin only, audited."""
+    (immediate everywhere). Tenant-admin only, audited. The **last active admin** cannot
+    be deactivated (no-lockout, R1)."""
     _require_tenant_admin(actor, tenant_id)
     store = cred_store or CredentialStore()
+    _refuse_last_admin_lockout(store, tenant_id, principal_id, "deactivate")
     n_creds = store.revoke_for_principal(tenant_id, principal_id)
     n_tokens = (token_service or tokens.TokenService()).revoke_all_for_principal(tenant_id, principal_id)
     _authaudit.record(
@@ -334,18 +368,34 @@ def set_user_role(
     actor: Principal,
     cred_store: CredentialStore | None = None,
 ) -> int:
-    """Assign ``role`` to a user (updates all their credentials). Tenant-admin only,
-    audited. Returns the number of credentials updated."""
-    _require_tenant_admin(actor, tenant_id)
+    """Assign ``role`` to a user (updates all their credentials), normalised to the
+    canonical two-role vocabulary (``member`` → ``user``). **Admin only** (`roles:assign`
+    via the PDP). Enforces the R1 rules, fail-closed: a principal can **never** change its
+    own role (no self-escalation), and the **last active admin** cannot be demoted
+    (no-lockout). Audited. Returns the number of credentials updated."""
+    _require_role_assign(actor, tenant_id)
+    new_role = identity.canonical_role(role)
+    identity.validate_role(new_role)  # reject unknown roles (e.g. "superuser")
+
+    # No self-role-change: a principal can never escalate (or alter) its own role.
+    if actor is not None and actor.principal_id == principal_id:
+        raise UserManagementError(
+            f"{actor.principal_id!r} may not change its own role (no self-escalation)"
+        )
+
     store = cred_store or CredentialStore()
+    # No-lockout: refuse demoting the last active admin away from `admin`.
+    if new_role != identity.ADMIN_ROLE and principal_id in _active_admin_ids(store, tenant_id):
+        _refuse_last_admin_lockout(store, tenant_id, principal_id, "demote")
+
     updated = 0
     for rec in store.list_for_tenant(tenant_id):
         if rec.principal_id == principal_id:
-            store.set_roles(rec.id, (role,))
+            store.set_roles(rec.id, (new_role,))
             updated += 1
     _authaudit.record(
         "user_role_assigned", tenant_id=tenant_id, principal_id=principal_id,
-        action="users:manage", result="ok", actor=actor.principal_id, role=role,
+        action="roles:assign", result="ok", actor=actor.principal_id, role=new_role,
     )
     return updated
 

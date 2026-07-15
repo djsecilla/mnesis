@@ -74,14 +74,44 @@ class Role:
         return permission in self.permissions
 
 
-#: The tenant roles. ``agent`` is a non-human principal scoped to read/write/maintain
-#: but never tenant/credential administration.
+#: The **two canonical account roles** (R1) a human principal holds within a tenant:
+#:   - ``admin`` — account management (manage users, assign roles, issue/revoke
+#:     credentials) **plus** everything a ``user`` may do in the admin's OWN
+#:     tenant/vaults. It is a *user-management* role, **not** a data-access grant:
+#:     an admin gains no read/write access to another principal's tenant or vault
+#:     data — tenant/vault isolation is enforced by the PDP exactly as for a user.
+#:   - ``user`` — its own vaults/knowledge (read/write) and its own password only.
+#: ``member`` is a retained **alias of ``user``** (same permission set) so pre-R1
+#: principals and callers keep working; ``agent`` (non-human machine principals) and
+#: ``readonly`` are retained specialised roles. Role→permission for the PDP lives in
+#: :mod:`mnesis.authz`; these coarse sets back :func:`permissions_for`.
+ADMIN_ROLE: str = "admin"
+USER_ROLE: str = "user"
+
 BUILTIN_ROLES: dict[str, Role] = {
     "admin": Role("admin", frozenset({READ, WRITE, MAINTAIN, ADMIN})),
-    "member": Role("member", frozenset({READ, WRITE, MAINTAIN})),
+    "user": Role("user", frozenset({READ, WRITE, MAINTAIN})),
+    "member": Role("member", frozenset({READ, WRITE, MAINTAIN})),  # alias of `user`
     "agent": Role("agent", frozenset({READ, WRITE, MAINTAIN})),
     "readonly": Role("readonly", frozenset({READ})),
 }
+
+#: Legacy role names → their canonical two-role equivalent (lossless migration): a
+#: stored/`member` principal *is* a `user`. Names not listed pass through unchanged
+#: (``admin``/``user`` are already canonical; ``agent``/``readonly`` are retained).
+ROLE_ALIASES: dict[str, str] = {"member": USER_ROLE}
+
+#: The two canonical account roles (R1). Used for display/normalisation; the store
+#: still accepts every name in :data:`ROLES` (so no principal is ever locked out by
+#: the migration).
+CANONICAL_ROLES: frozenset[str] = frozenset({ADMIN_ROLE, USER_ROLE})
+
+
+def canonical_role(name: str) -> str:
+    """Map a (possibly legacy) role name to its canonical two-role equivalent
+    (``member`` → ``user``); other names pass through. Lossless + idempotent."""
+    return ROLE_ALIASES.get(name, name)
+
 
 #: The role *names* a tenant principal may hold (backward-compatible with T3's ``ROLES``).
 ROLES: frozenset[str] = frozenset(BUILTIN_ROLES)
@@ -95,7 +125,7 @@ _SYSTEM_ROLE_DEF: Role = Role(SYSTEM_ROLE, frozenset({ADMIN}))
 
 #: Priority order used to pick a single "primary" role for backward-compatible callers
 #: that still read a scalar ``.role`` (authz.py, the CLI, admin.py).
-_ROLE_PRIORITY: tuple[str, ...] = ("admin", "member", "agent", "readonly", SYSTEM_ROLE)
+_ROLE_PRIORITY: tuple[str, ...] = ("admin", "user", "member", "agent", "readonly", SYSTEM_ROLE)
 
 #: Principal kind — a human operator or a non-human agent identity.
 HUMAN: str = "human"

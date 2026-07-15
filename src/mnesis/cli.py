@@ -63,13 +63,13 @@ def _build_parser() -> argparse.ArgumentParser:
     usub = p_user.add_subparsers(dest="user_cmd", required=True)
     u_prov = usub.add_parser("provision", help="create a user with a role + password")
     u_prov.add_argument("principal", help="the user's principal id")
-    u_prov.add_argument("--role", default="member", help="admin|member|readonly|agent")
+    u_prov.add_argument("--role", default="user", help="admin|user (member is a retained alias of user)")
     u_prov.add_argument("--password", default=None, help="password (else MNESIS_NEW_USER_PASSWORD/prompt)")
     u_deact = usub.add_parser("deactivate", help="force-revoke all a user's credentials + tokens")
     u_deact.add_argument("principal", help="the user's principal id")
     u_role = usub.add_parser("set-role", help="assign a role to a user")
     u_role.add_argument("principal", help="the user's principal id")
-    u_role.add_argument("role", help="admin|member|readonly|agent")
+    u_role.add_argument("role", help="admin|user (member is a retained alias of user)")
     usub.add_parser("list", help="list the tenant's users (no secrets)")
 
     # Personal Access Tokens (IAM6/IAM3): headless automation credentials.
@@ -127,7 +127,7 @@ def _build_parser() -> argparse.ArgumentParser:
     asub = p_auth.add_subparsers(dest="auth_cmd", required=True)
     a_issue = asub.add_parser("issue", help="mint a credential (prints the token ONCE)")
     a_issue.add_argument("--principal", required=True, help="principal id (the actor)")
-    a_issue.add_argument("--role", default="member", help="admin|member|readonly|agent")
+    a_issue.add_argument("--role", default="user", help="admin|user|agent|readonly (member is an alias of user)")
     a_issue.add_argument("--name", default=None, help="optional human label")
     a_issue.add_argument("--expires-seconds", type=int, default=None, dest="expires_seconds",
                          help="optional lifetime in seconds (default: no expiry)")

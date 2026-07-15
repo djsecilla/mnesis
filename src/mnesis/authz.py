@@ -63,7 +63,8 @@ PAGES_WRITE = "pages:write"
 PAGES_DELETE = "pages:delete"  # supersede/retire a page (§12: reversible, not hard-delete)
 GRAPH_MAINTAIN = "graph:maintain"  # decay / rebuild / graph-lint
 AGENTS_RUN = "agents:run"  # drive the agent runtime / maintenance passes
-USERS_MANAGE = "users:manage"  # manage principals within a tenant
+USERS_MANAGE = "users:manage"  # manage principals within a tenant (create / deactivate / reset)
+ROLES_ASSIGN = "roles:assign"  # assign/change another principal's role (R1; admin only)
 CREDENTIALS_ISSUE = "credentials:issue"  # mint PATs / agent keys / credentials
 EGRESS_CONFIGURE = "egress:configure"  # configure the outbound egress plane
 VAULTS_CREATE = "vaults:create"  # create a new vault within one's tenant (V6)
@@ -79,9 +80,10 @@ PERMISSION_CLASS: dict[str, str] = {
     GRAPH_MAINTAIN: MAINTAIN,
     AGENTS_RUN: MAINTAIN,
     USERS_MANAGE: ADMIN,
+    ROLES_ASSIGN: ADMIN,
     CREDENTIALS_ISSUE: ADMIN,
     EGRESS_CONFIGURE: ADMIN,
-    VAULTS_CREATE: WRITE,  # a member may create their own vaults (they become the owner)
+    VAULTS_CREATE: WRITE,  # a user may create their own vaults (they become the owner)
     TENANTS_MANAGE: ADMIN,
 }
 PERMISSIONS: frozenset[str] = frozenset(PERMISSION_CLASS)
@@ -92,8 +94,20 @@ SYSTEM_LEVEL_ACTIONS: frozenset[str] = frozenset({TENANTS_MANAGE})
 
 
 # --- The role → permission matrix (explicit) ---------------------------------
-# Roles: system_admin, admin (tenant-admin), member, readonly, agent. `agent` is a
-# non-human principal — read/write/maintain + run, never tenant/credential/user admin.
+# The **two canonical account roles (R1)** are `admin` and `user`:
+#   - `user`  — its OWN vaults/knowledge (pages read/write/delete, graph maintain,
+#     create its own vaults) + its own password. NO account management, NO wider
+#     data access.
+#   - `admin` — everything `user` may do IN ITS OWN TENANT/VAULTS **plus** account
+#     management: manage_users (`users:manage`: create/deactivate/reset), assign_roles
+#     (`roles:assign`), issue/revoke credentials (`credentials:issue`), configure egress.
+#     CRITICAL: `admin` is a USER-MANAGEMENT role, NOT a data-access grant — it holds
+#     no permission that widens access to another principal's tenant or vault; the PDP's
+#     tenant-match + vault-access + visibility steps gate DATA exactly as for a `user`.
+# `member` is a retained ALIAS of `user` (identical perms). `agent` (machine principals)
+# and `readonly` are retained specialised roles. `system_admin` is the separate SYSTEM
+# boundary (tenant lifecycle), never a tenant account role.
+_USER_PERMS = frozenset({PAGES_READ, PAGES_WRITE, PAGES_DELETE, GRAPH_MAINTAIN, VAULTS_CREATE})
 
 ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
     # System admin operates at the system level (tenant lifecycle). It holds every
@@ -101,11 +115,10 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
     # data, so "manage tenants" is what it can actually do (cross-tenant page access
     # is denied by construction).
     identity.SYSTEM_ROLE: frozenset(PERMISSIONS),
-    "admin": frozenset({
-        PAGES_READ, PAGES_WRITE, PAGES_DELETE, GRAPH_MAINTAIN, AGENTS_RUN,
-        USERS_MANAGE, CREDENTIALS_ISSUE, EGRESS_CONFIGURE, VAULTS_CREATE,
-    }),
-    "member": frozenset({PAGES_READ, PAGES_WRITE, PAGES_DELETE, GRAPH_MAINTAIN, VAULTS_CREATE}),
+    # admin = user's own-data perms + account management (never a data-access widen).
+    "admin": _USER_PERMS | frozenset({USERS_MANAGE, ROLES_ASSIGN, CREDENTIALS_ISSUE, EGRESS_CONFIGURE}),
+    "user": _USER_PERMS,
+    "member": _USER_PERMS,  # retained alias of `user`
     "agent": frozenset({PAGES_READ, PAGES_WRITE, PAGES_DELETE, GRAPH_MAINTAIN, AGENTS_RUN}),
     "readonly": frozenset({PAGES_READ}),
 }
