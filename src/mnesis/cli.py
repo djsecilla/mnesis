@@ -57,6 +57,10 @@ def _build_parser() -> argparse.ArgumentParser:
                          help="the password (else MNESIS_PASSWORD, else an interactive prompt)")
     sub.add_parser("logout", help="revoke the stored session and clear the local credential")
     sub.add_parser("whoami", help="show the currently-authenticated principal")
+    p_chpw = sub.add_parser("change-password",
+                            help="change your OWN password (required on first login; rotates your session)")
+    p_chpw.add_argument("--current", default=None, help="current password (else MNESIS_PASSWORD/prompt)")
+    p_chpw.add_argument("--new", default=None, help="new password (else MNESIS_NEW_PASSWORD/prompt)")
 
     # User lifecycle (IAM8) — tenant-admin scoped (within --tenant); PDP-enforced.
     p_user = sub.add_parser("user", help="manage users in --tenant (tenant-admin only)")
@@ -364,6 +368,55 @@ def _cmd_login(args: argparse.Namespace) -> int:
     print(f"logged in as {principal.principal_id} (tenant {principal.tenant_id}, "
           f"roles {', '.join(sorted(principal.roles))})")
     print(f"  session stored at {store.path} (mode 0600); re-run `mnesis login` when it expires")
+    return 0
+
+
+def _cmd_change_password(args: argparse.Namespace) -> int:
+    """Change your OWN password (R3) — the one action a restricted (must-change-password)
+    session may perform. Verifies the current password, sets a new one (policy + no-reuse),
+    clears the restriction, and ROTATES the stored login session. Never prints a secret."""
+    import getpass
+    from . import account
+
+    store = cli_auth.CliCredentialStore()
+    raw = store.token()
+    if not raw:
+        print("error: not logged in — run `mnesis login` first")
+        return 2
+    try:
+        _ctx, principal = cli_auth.resolve_token(raw)
+    except auth.AuthError:
+        print("error: your CLI session is invalid — run `mnesis login`")
+        return 2
+
+    current = args.current or os.environ.get("MNESIS_PASSWORD")
+    if not current and sys.stdin.isatty():
+        current = getpass.getpass("current password: ")
+    new = args.new or os.environ.get("MNESIS_NEW_PASSWORD")
+    if not new and sys.stdin.isatty():
+        new = getpass.getpass("new password: ")
+    if not current or not new:
+        print("error: both the current and new passwords are required (flags, env, or a prompt)")
+        return 2
+
+    try:
+        result = account.change_own_password(
+            principal.tenant_id, principal.principal_id, current, new, session_token=raw,
+        )
+    except providers.AccountLocked as exc:
+        print(f"error: too many attempts; try again in ~{int(exc.retry_after)}s")
+        return 2
+    except providers.PasswordPolicyError as exc:
+        print(f"error: {exc}")
+        return 2
+    except auth.AuthError:
+        print("error: current password is incorrect")
+        return 2
+
+    if result["new_session"]:  # persist the rotated (full) session
+        store.save(result["new_session"], tenant_id=principal.tenant_id,
+                   principal_id=principal.principal_id, roles=result["principal"].roles)
+    print("password changed; your session was rotated and normal access is restored")
     return 0
 
 
@@ -761,6 +814,8 @@ def _run(args: argparse.Namespace) -> int:
         return _cmd_login(args)
     if args.command == "logout":
         return _cmd_logout(args)
+    if args.command == "change-password":
+        return _cmd_change_password(args)
     if args.command == "whoami":
         return _cmd_whoami(args)
     if args.command == "pat":

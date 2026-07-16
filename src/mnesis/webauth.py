@@ -38,7 +38,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from . import auth, authz, config, identity, providers, tenancy, tokens
+from . import account, auth, authz, config, identity, providers, tenancy, tokens
 
 log = logging.getLogger(__name__)
 
@@ -171,18 +171,60 @@ async def _session(request: Request) -> JSONResponse:
     if p is None:  # pragma: no cover — middleware guarantees a principal here
         return JSONResponse({"error": "unauthenticated"}, status_code=401)
     active = tenancy.current_or_none()
+    restricted = getattr(p, "must_change_password", False)
     return JSONResponse({
         "principal_id": p.principal_id,
         "tenant_id": p.tenant_id,
         "roles": sorted(p.roles),
         "scopes": sorted(p.scopes),
         "kind": p.kind,
-        "permissions": sorted(authz.effective_permissions(p)),
+        # R3: the SPA must force a password change before anything else when this is set.
+        "must_change_password": restricted,
+        "permissions": [] if restricted else sorted(authz.effective_permissions(p)),
         # The active vault (re-authorized by the middleware for this request) + the vaults
         # the principal may select (V5). The SPA's vault picker reads these.
         "active_vault": getattr(active, "vault_id", config.DEFAULT_VAULT_ID),
         "vaults": sorted(authz.accessible_vaults(p)),
     })
+
+
+async def _change_password(request: Request) -> JSONResponse:
+    """R3 — the ONE action a restricted (must_change_password) session may perform. Verify
+    the current password, set a new one (policy + no-reuse), clear the restriction, and
+    **rotate the session** (a fresh full session cookie; the old one is revoked). CSRF is
+    enforced by the middleware (state-changing POST); the PDP permits ``password:change``
+    even when restricted."""
+    p = auth.current_principal_or_none()
+    if p is None:  # pragma: no cover — middleware guarantees a principal
+        return JSONResponse({"error": "unauthenticated"}, status_code=401)
+    authz.require_permission(authz.PASSWORD_CHANGE)  # allowed even when restricted
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid_json"}, status_code=400)
+    current = body.get("current_password") or body.get("current") or ""
+    new = body.get("new_password") or body.get("new") or ""
+    if not current or not new:
+        return JSONResponse({"error": "current_password and new_password are required"}, status_code=400)
+
+    old_session = _cookies_from_scope(request.scope).get(SESSION_COOKIE)
+    client_ip = request.client.host if request.client else None
+    try:
+        result = account.change_own_password(
+            p.tenant_id, p.principal_id, current, new,
+            session_token=old_session, client_ip=client_ip,
+        )
+    except providers.AccountLocked as exc:
+        return JSONResponse({"error": "account_locked", "retry_after": int(exc.retry_after)}, status_code=429)
+    except providers.PasswordPolicyError as exc:
+        return JSONResponse({"error": "weak_or_reused_password", "message": str(exc)}, status_code=400)
+    except identity.AuthError:
+        return JSONResponse({"error": "invalid_current_password"}, status_code=401)
+
+    resp = JSONResponse({"status": "password_changed", "must_change_password": False})
+    if result["new_session"]:
+        _issue_cookies(resp, result["new_session"])  # rotate the session cookie (full session)
+    return resp
 
 
 async def _vaults(request: Request) -> JSONResponse:
@@ -244,6 +286,7 @@ AUTH_ROUTES = [
     Route("/api/auth/login", _login, methods=["POST"]),
     Route("/api/auth/logout", _logout, methods=["POST"]),
     Route("/api/auth/session", _session, methods=["GET"]),
+    Route("/api/auth/change-password", _change_password, methods=["POST"]),
     Route("/api/vaults", _vaults, methods=["GET"]),
     Route("/api/auth/reset/request", _reset_request, methods=["POST"]),
     Route("/api/auth/reset/confirm", _reset_confirm, methods=["POST"]),

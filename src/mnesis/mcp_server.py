@@ -69,6 +69,8 @@ _TOOL_SCOPES: dict[str, str] = {
     # maintenance
     "mnesis_rebuild": authz.MAINTAIN, "mnesis_decay": authz.MAINTAIN,
     "mnesis_graph_lint": authz.MAINTAIN, "mnesis_resolve": authz.MAINTAIN,
+    # self-service (R3): the ONE action a restricted (must_change_password) session may do
+    "mnesis_change_password": authz.PASSWORD_CHANGE,
 }
 
 
@@ -299,6 +301,23 @@ def mnesis_list() -> str:
     if not pages:
         return "(no pages)"
     return "\n".join(f"{p.id} [{p.kind}/{p.status}] — {p.title}" for p in pages)
+
+
+@mcp.tool()
+def mnesis_change_password(current_password: str, new_password: str) -> str:
+    """Change your OWN password (R3) — the one action a restricted (must_change_password)
+    principal may perform; every other tool is denied until it is done. Verifies the
+    current password, sets a new one (policy + no-reuse), and clears the restriction."""
+    from . import account
+
+    _authorize("mnesis_change_password")  # PDP: password:change (allowed even when restricted)
+    principal = auth.current_principal_or_none()
+    if principal is None:
+        return "not authenticated"
+    account.change_own_password(
+        principal.tenant_id, principal.principal_id, current_password, new_password
+    )
+    return "password changed; the must-change-password restriction is cleared"
 
 
 @mcp.tool()

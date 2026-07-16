@@ -479,14 +479,60 @@ class LocalPasswordProvider(IdentityProvider):
         return updated
 
     def change_password(
-        self, tenant_id: str, principal_id: str, old_password: str, new_password: str
+        self,
+        tenant_id: str,
+        principal_id: str,
+        old_password: str,
+        new_password: str,
+        *,
+        client_ip: str | None = None,
+        now: float | None = None,
     ) -> identity.CredentialRecord:
-        """Change a password given the current one (no reset token needed)."""
-        check_password_policy(new_password)
+        """Change a password given the current one (no reset token needed). Verifies the
+        current password (argon2id), enforces the password **policy**, **forbids reuse**
+        of the same password, and — R3 — **clears ``must_change_password``**. Attempts are
+        **rate-limited** (per-account + per-IP, same throttle as login) and **audited**
+        (never a secret). Returns the updated record."""
+        acct = ThrottleStore.account_key(tenant_id, principal_id)
+        keys = [acct] + ([ThrottleStore.ip_key(client_ip)] if client_ip else [])
+
+        # Refuse up-front if throttled (repeated wrong-current-password attempts lock out).
+        locked = self.throttle.check(keys, now=now)
+        if locked.locked:
+            self.audit.record(
+                "password_change_locked", tenant_id=tenant_id, principal_id=principal_id,
+                client_ip=client_ip, provider=self.name, reason="throttled",
+            )
+            raise AccountLocked("too many attempts; try again later", retry_after=locked.retry_after)
+
+        # Verify the current password. A wrong one is a throttled failure (like a login).
         rec = self.store.verify_login(tenant_id, principal_id, old_password)
         if rec is None:
+            for key in keys:
+                self.throttle.record_failure(key, now=now)
+            self.audit.record(
+                "password_change_failed", tenant_id=tenant_id, principal_id=principal_id,
+                client_ip=client_ip, provider=self.name, reason="bad_current_password",
+            )
             raise AuthenticationFailed("current password is incorrect")
-        return self.store.set_password(rec.id, new_password)
+
+        check_password_policy(new_password)  # a weak new password is refused (not a guess)
+        if new_password == old_password:      # forbid reuse of the same password
+            self.audit.record(
+                "password_change_failed", tenant_id=tenant_id, principal_id=principal_id,
+                client_ip=client_ip, provider=self.name, reason="reuse",
+            )
+            raise PasswordPolicyError("the new password must differ from the current one")
+
+        updated = self.store.set_password(rec.id, new_password)
+        updated = self.store.set_must_change_password(updated.id, False)  # R3: lift the restriction
+        for key in keys:
+            self.throttle.clear(key)
+        self.audit.record(
+            "password_changed", tenant_id=tenant_id, principal_id=principal_id,
+            client_ip=client_ip, provider=self.name,
+        )
+        return updated
 
 
 class OIDCProvider(IdentityProvider):

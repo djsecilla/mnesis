@@ -280,6 +280,9 @@ class Principal:
     status: str = ACTIVE
     roles: frozenset[str] = field(default_factory=frozenset)
     scopes: frozenset[str] = field(default_factory=frozenset)
+    #: R3: when True the bound session is RESTRICTED — the PDP permits nothing but a
+    #: change-own-password (+ logout) until the principal rotates its password.
+    must_change_password: bool = False
 
     def __post_init__(self) -> None:
         # A principal always carries at least its scalar role in the role set.
@@ -320,6 +323,8 @@ class AuthenticatedPrincipal:
     roles: frozenset[str]
     scopes: frozenset[str] = field(default_factory=frozenset)
     kind: str = HUMAN
+    #: R3: a restricted (must-change-password) session — see :class:`Principal`.
+    must_change_password: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "roles", frozenset(self.roles))
@@ -351,6 +356,7 @@ class AuthenticatedPrincipal:
             kind=self.kind,
             roles=self.roles,
             scopes=self.scopes,
+            must_change_password=self.must_change_password,
         )
 
     def to_dict(self) -> dict:
@@ -360,6 +366,7 @@ class AuthenticatedPrincipal:
             "roles": sorted(self.roles),
             "scopes": sorted(self.scopes),
             "kind": self.kind,
+            "must_change_password": self.must_change_password,
         }
 
 
@@ -422,6 +429,7 @@ class CredentialRecord:
             kind=self.kind,
             roles=frozenset(self.roles),
             scopes=frozenset(self.scopes),
+            must_change_password=self.must_change_password,
         )
 
     def authenticated(self) -> AuthenticatedPrincipal:
@@ -431,6 +439,7 @@ class CredentialRecord:
             roles=frozenset(self.roles),
             scopes=frozenset(self.scopes),
             kind=self.kind,
+            must_change_password=self.must_change_password,
         )
 
     def public_dict(self) -> dict:

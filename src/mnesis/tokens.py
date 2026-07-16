@@ -116,6 +116,10 @@ class TokenRecord:
     revoked_at: str | None = None
     rotated_from: str | None = None  # the token this one replaced (refresh/rotate)
     rotated_to: str | None = None  # the token that replaced this one
+    #: R3: a RESTRICTED session (the principal must change its password first). The PDP
+    #: permits nothing but a change-own-password until this is cleared by rotating to a
+    #: fresh full session on a successful change.
+    must_change_password: bool = False
 
     # -- validity ------------------------------------------------------------
     def is_expired(self, now: float | None = None) -> bool:
@@ -134,6 +138,7 @@ class TokenRecord:
             roles=frozenset(self.roles),
             scopes=frozenset(self.scopes),
             kind=self.kind,
+            must_change_password=self.must_change_password,
         )
 
     def public_dict(self) -> dict:
@@ -169,6 +174,7 @@ class TokenRecord:
             revoked_at=d.get("revoked_at"),
             rotated_from=d.get("rotated_from"),
             rotated_to=d.get("rotated_to"),
+            must_change_password=bool(d.get("must_change_password", False)),
         )
 
 
@@ -270,6 +276,7 @@ class TokenService:
         absolute_expires_at: float | None,
         idle_timeout: int | None,
         rotated_from: str | None = None,
+        must_change_password: bool = False,
         now: float | None = None,
     ) -> tuple[str, TokenRecord]:
         now = now if now is not None else _now()
@@ -289,6 +296,7 @@ class TokenService:
             idle_timeout=idle_timeout,
             last_used_at=now,
             rotated_from=rotated_from,
+            must_change_password=must_change_password,
         )
         self._put(rec)
         return raw, rec
@@ -311,6 +319,8 @@ class TokenService:
         # A session represents the full logged-in user: it inherits the principal's own
         # scopes (empty = unrestricted within its roles), never a broadened set.
         sess_scopes = tuple(scopes) if scopes is not None else tuple(sorted(principal.scopes))
+        # R3: a principal that must change its password gets a RESTRICTED session (the PDP
+        # then permits nothing but a change-own-password until it rotates).
         return self._issue(
             SESSION,
             tenant_id=principal.tenant_id,
@@ -321,6 +331,7 @@ class TokenService:
             name=None,
             absolute_expires_at=(now + absolute) if absolute else None,
             idle_timeout=idle or None,
+            must_change_password=bool(getattr(principal, "must_change_password", False)),
             now=now,
         )
 
@@ -454,6 +465,9 @@ class TokenService:
             absolute_expires_at=old.absolute_expires_at,  # hard cap preserved
             idle_timeout=old.idle_timeout,
             rotated_from=old.id,
+            # R3: a plain refresh preserves the restriction — it can NEVER clear it (only a
+            # successful change-own-password mints a fresh FULL session).
+            must_change_password=old.must_change_password,
             now=now,
         )
         self._invalidate(old.id, rotated_to=new_rec.id)

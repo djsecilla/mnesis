@@ -55,6 +55,13 @@ ADMIN = "admin"  # tenant + credential administration
 ACTIONS = frozenset({READ, WRITE, MAINTAIN, ADMIN})
 _CLASSES = ACTIONS
 
+#: R3: the **one self-service action** every authenticated principal may always perform —
+#: change its OWN password. It is NOT a role permission (any authenticated principal has
+#: it, regardless of role/scope), and it is the **only** action a RESTRICTED
+#: (must-change-password) session is permitted. Logout is not a PDP action (it just
+#: revokes the session), so it works under restriction too.
+PASSWORD_CHANGE = "password:change"
+
 
 # --- Fine-grained permissions (IAM4): resource:action over the domain ---------
 
@@ -259,6 +266,16 @@ def decide(principal: "auth.Principal | None", action: str, resource=None, conte
     fail-closed decision — the lenient legacy path lives in :func:`authorize`/:func:`require`)."""
     if principal is None:
         return _deny("no_principal", action, principal)
+
+    # R3 — the restricted-session gate (central; every surface reaches it via the PDP):
+    #   * change-own-password is a self-service action ALWAYS permitted to an authenticated
+    #     principal (no role/scope/tenant/vault checks — you are changing your OWN secret);
+    #   * a principal in the must_change_password state gets a RESTRICTED session — every
+    #     other action is denied until it rotates its password.
+    if action == PASSWORD_CHANGE:
+        return Decision(True, "ok", action, principal.principal_id, principal.tenant_id)
+    if getattr(principal, "must_change_password", False):
+        return _deny("must_change_password", action, principal)
 
     fine = action if action in PERMISSIONS else None
     if fine is None and action not in _CLASSES:
