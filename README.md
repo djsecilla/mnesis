@@ -266,13 +266,13 @@ The wiki lives under `./wiki` by default (override with `MNESIS_ROOT`).
 ### 3.3 Run it as a stack (web UI + MCP for agents)
 
 ```bash
-cp .env.example .env          # set MNESIS_WEB_ADMIN_PASSWORD (first web login) + MNESIS_AUTH_PEPPER
+cp .env.example .env          # set MNESIS_ADMIN_PASSWORD (first web login) + MNESIS_AUTH_PEPPER
 make docker-up                # mnesis + the web UI at http://localhost:3000
 make docker-seed              # ingest the bundled sample sources (offline)
 ```
 
 The web UI has a **real login** — sign in as the admin you set with
-`MNESIS_WEB_ADMIN_PASSWORD` (bootstrapped on first run). Point an MCP client (e.g. Claude
+`MNESIS_ADMIN_PASSWORD` (bootstrapped on first run). Point an MCP client (e.g. Claude
 Code) at it — this repo ships [`.mcp.json`](.mcp.json)
 for the local stdio server, or connect over HTTP (see [the MCP surface](#52-mcp-server-for-agents)).
 This runs as the single `default` tenant; to serve multiple isolated tenants, see
@@ -382,14 +382,25 @@ mnesis --token "$PAT" query "redis"         # a read-scoped PAT can query but no
 mnesis pat list                            # your tokens (no secrets); `pat revoke <id>` revokes
 ```
 
-**User lifecycle (tenant-admin, within your tenant):**
+**Users & roles (admin only — the same service the Web UI calls; see [§7.10](#710-roles--user-management)).**
+Every principal is an **`admin`** or a **`user`**, and each user gets its **own tenant +
+default vault**, so managing an *account* grants no access to its *data*. One-time
+credentials are **shown once**; a created/reset user must change the password on first login.
 
 ```bash
-mnesis user provision bob --role member    # create a user + password (prompts); admin-only
-mnesis user set-role bob admin             # reassign a role
-mnesis user list                           # the tenant's users (no secrets)
-mnesis user deactivate bob                 # FORCE-REVOKE all of bob's credentials + tokens (immediate)
+mnesis users create --username bob --role user  # create a user (its own tenant + vault); prints a ONE-TIME credential
+mnesis users list                               # users in your scope (no secrets)
+mnesis users set-role bob admin                 # change a role (admin|user)
+mnesis users deactivate bob                     # force-revoke ALL bob's credentials + tokens (data retained)
+mnesis users reactivate bob                     # restore login with a new one-time credential
+mnesis users reset-password bob                 # new one-time credential + forced first-login change
+mnesis passwd                                   # change your OWN password (also clears a forced-change flag)
 ```
+
+Vault self-service for your *own* vaults (`mnesis vaults create|list|rename|delete|config`)
+is covered under [Vaults](#79-vaults--a-per-user-in-tenant-isolation-unit). The legacy,
+tenant-scoped `mnesis user …` commands (manage users *within* `--tenant`, the older
+IAM8 within-tenant model) remain for backward compatibility.
 
 **System-admin — tenant lifecycle + system-admins** (needs `MNESIS_ADMIN_CREDENTIAL`):
 
@@ -450,7 +461,7 @@ For humans, scripts, and maintenance — the full command set above.
 
 ### 5.2 MCP server (for agents)
 
-mnesis exposes **20 tools** over MCP:
+mnesis exposes **21 tools** over MCP:
 
 - **knowledge** — `mnesis_ingest`, `mnesis_query`, `mnesis_get`,
   `mnesis_file_back`, `mnesis_list`, `mnesis_rebuild`;
@@ -462,7 +473,9 @@ mnesis exposes **20 tools** over MCP:
   heuristic near-duplicate finder that proposes nothing);
 - **OKF interop** — `mnesis_okf_concept` (a concept as an OKF document),
   `mnesis_okf_export` (a conformant [OKF](#29-okf-conformance) bundle), and
-  `mnesis_okf_import` (an external bundle **through the governed ingest path**).
+  `mnesis_okf_import` (an external bundle **through the governed ingest path**);
+- **account** — `mnesis_change_password` (self-service; the one action a
+  forced-first-login/restricted session may take — see [Roles](#710-roles--user-management)).
 
 Every tool is scope-checked against the calling agent key's least-privilege scopes
 (read/write/maintain), and each `mnesis_*` result is an OKF-shaped concept.
@@ -934,7 +947,7 @@ Inside a tenant, pages carry an owner + a visibility (`shared` = everyone in the
 tenant; `private` = owner-only, plus admins). Filtering is applied in the
 data/query layer (search, graph, get, ingest), so a private page never leaks through
 *any* surface — not the page reader, search, graph, chat, or sources. Writes respect
-role: `admin`/`member`/`agent` may write, `readonly` may not.
+role: an `admin` or `user` (and the machine `agent` role) may write; `readonly` may not.
 
 ### 7.4 The admin boundary
 
@@ -984,7 +997,7 @@ automatically on first use (or `mnesis migrate-tenants`; a pre-vault per-tenant 
 converges on its `default` vault via `mnesis migrate-vaults`) — non-destructive,
 idempotent, and lossless, preserving prior single-tenant/single-vault behaviour.
 `docker compose up` runs **single-tenant** (the `default` tenant) with
-a **real web login** — set `MNESIS_WEB_ADMIN_PASSWORD` (+ `MNESIS_AUTH_PEPPER`) so the
+a **real web login** — set `MNESIS_ADMIN_PASSWORD` (+ `MNESIS_AUTH_PEPPER`) so the
 first admin is bootstrapped on first run (see [Authentication &
 authorization](#78-authentication--authorization)); set `MNESIS_AUTH_ENABLED=1` (+
 per-tenant credentials) for **multi-tenant**. Credentials are stored hashed; for
@@ -1034,17 +1047,21 @@ immediate):
 agents a `read` key (sending/egress is separately controlled), maintenance agents a
 `read`+`maintain` key — so a compromised agent can do only its job, in only its tenant.
 
-**Admin boundaries.** A **tenant-admin** provisions/deactivates users and assigns roles
-**within their own tenant** (`mnesis user provision|deactivate|set-role|list`) — never
-another tenant (the PDP denies it). Deactivating a user **force-revokes all their
-credentials + tokens** at once. Only a **system-admin** manages tenants and other
-system-admins. Every login, token issue/rotate/revoke, user-lifecycle op, and PDP
-denial is written to an **auth audit log** (`auth_audit.jsonl`) with the principal,
-tenant, credential id, action, and result — **never a secret**.
+**Admin boundaries.** An **`admin`** manages *accounts* — create users, assign roles,
+deactivate/reactivate, reset passwords, revoke credentials (`mnesis users …`, or the Web
+admin screen) — but gains **no access to another principal's data**: each user owns its
+**own tenant + default vault**, so account management and data access are separate
+(cross-tenant is structurally impossible). Deactivating a user **force-revokes all their
+credentials + tokens** at once, and the safety rules (no self-role-change, no last-admin
+lockout) live in one service ([§7.10](#710-roles--user-management)). Only a
+**system-admin** manages tenants and other system-admins. Every login, token
+issue/rotate/revoke, user-lifecycle op, and PDP denial is written to an **auth audit
+log** (`auth_audit.jsonl`) with the principal, tenant, credential id, action, and
+result — **never a secret**.
 
 **Bootstrap & secrets.** The first admin is created from an **operator-supplied
 password with no default** (`mnesis admin bootstrap` for the system-admin; `mnesis
-init-admin` / `MNESIS_WEB_ADMIN_PASSWORD` for the first web admin), guarded so it can
+init-admin` / `MNESIS_ADMIN_PASSWORD` for the first web admin), guarded so it can
 never silently reset an existing admin. Secrets (the hashing pepper, bootstrap
 passwords, SMTP) come from `.env` / a secret store and are **never baked into the image
 or logged**. `docker compose up` brings up a working stack with a **real login**. The
@@ -1092,7 +1109,7 @@ its vault over MCP (re-authorized) and keeps **all** its governance state (sched
 queues, egress config, audit) per-vault.
 
 **Lifecycle & the management boundary.** Creating a vault needs the `vaults:create`
-permission (admin + member — the creator becomes the owner) and respects the tenant's
+permission (admin + user — the creator becomes the owner) and respects the tenant's
 vault quota; managing an existing vault (rename / delete / set-quota / grant / revoke) is
 limited to the **vault owner or a tenant-admin**. Deletion removes **all** of a vault's
 data (store, caches, state, config, git) behind a guarded confirm, and every lifecycle op
@@ -1119,6 +1136,11 @@ per-surface checks in `tests/test_vault_surfaces.py`).
 |---|---|
 | **`user`** | its **own** vaults/knowledge (read/write, create/configure/delete its vaults) and its **own** password. Nothing else. |
 | **`admin`** | everything a `user` may do **in its own tenant/vaults**, **plus** account management — create users, assign roles, deactivate/reactivate, reset passwords, revoke credentials. |
+
+`member` is a retained **alias of `user`** (identical permissions), and the specialised
+`agent` (machine principals) and `readonly` roles remain — so pre-existing principals keep
+working. **`system_admin`** is a *separate* boundary, not a tenant role: it manages tenant
+**lifecycle** (provision/suspend/delete) and never a tenant's data (see [§7.4](#74-the-admin-boundary)).
 
 **Admin is a user-management role, NOT a data-access grant.** An admin manages *accounts*
 (metadata); it gains **no** access to another principal's tenant or vault *data*. Each
@@ -1212,7 +1234,7 @@ their `.env` lines together.
 | Mode | What you get | Switch (in `.env`) | Bring up |
 |---|---|---|---|
 | **Default** (§8.2) | core + Web UI, single `default` tenant, offline stub | *(none)* | `make docker-up` |
-| **Real login** (§8.3) | a real first-run web/admin login | `MNESIS_WEB_ADMIN_PASSWORD`, `MNESIS_AUTH_PEPPER` | `make docker-up` |
+| **Real login** (§8.3) | a real first-run web/admin login | `MNESIS_ADMIN_PASSWORD`, `MNESIS_AUTH_PEPPER` | `make docker-up` |
 | **Multi-tenant** (§8.4) | credential-scoped tenants + vaults | `MNESIS_AUTH_ENABLED=1` (+ provision) | `make docker-up` |
 | **Agents** (§8.5) | dream cycle + notes inbox + action agent | *(profile)* | `docker compose --profile agents up -d` |
 | **Local-first** (§8.6) | on-prem inference, nothing leaves the box | `MNESIS_LLM_PROVIDER=local` | `make docker-up` |
@@ -1300,8 +1322,8 @@ docker compose exec -e MNESIS_TOKEN=<acme-admin-token> \
 A single stack thus serves many isolated tenants, each with its own
 [vaults](#79-vaults--a-per-user-in-tenant-isolation-unit); the web/MCP surfaces
 pick the active vault with the `X-Mnesis-Vault` header (re-authorized per request).
-For **web** logins in a tenant, also set `MNESIS_WEB_ADMIN_PASSWORD` (§8.3) or
-provision users with `mnesis user provision`.
+For **web** logins in a tenant, also set `MNESIS_ADMIN_PASSWORD` (§8.3) or
+create users with `mnesis users create` ([§7.10](#710-roles--user-management)).
 
 ### 8.5 The agent runtime (`--profile agents`)
 
@@ -1573,7 +1595,7 @@ credential. See [Authentication & authorization](#78-authentication--authorizati
 | `MNESIS_AUTH_ENABLED` | unset | `1` requires per-tenant credentials at every boundary (tenant from the credential only; unresolved → denied, no default fallback). Off = single-tenant `default`. |
 | `MNESIS_AUTH_PEPPER` | unset | **Secret** — server-side pepper mixed into credential hashes at rest (from a secret store; never logged). |
 | `MNESIS_BOOTSTRAP_PASSWORD` | unset | **Secret** — first-run system-admin password (guarded/idempotent bootstrap; no default). |
-| `MNESIS_WEB_ADMIN_USER` / `…_PASSWORD` | `admin` / unset | **Secret** — first-run tenant-admin **web login** so `docker compose up` has a real login (guarded; no default). |
+| `MNESIS_ADMIN_USERNAME` / `…_PASSWORD` / `…_TENANT` | `admin` / unset / `default` | The **initial admin** (role=admin) bootstrapped on first run — its username, password (**Secret**, no default), and tenant, so `docker compose up` has a real web login (guarded, idempotent, no-clobber). Legacy `MNESIS_WEB_ADMIN_USER`/`…_PASSWORD`/`…_TENANT` are accepted as fallbacks. |
 | `MNESIS_IDENTITY_PROVIDER` | `local` | Login backend: `local` (argon2id username/password) today; `oidc` is a documented seam stub. |
 | `MNESIS_SESSION_IDLE_SECONDS` / `…_ABSOLUTE_SECONDS` | `1800` / `28800` | Web session idle (sliding) and absolute (hard-cap) expiry. |
 | `MNESIS_PAT_DEFAULT_TTL` / `MNESIS_AGENT_KEY_DEFAULT_TTL` | `7776000` / `2592000` | Default lifetimes (s) for CLI PATs (90d) and MCP agent keys (30d). |
