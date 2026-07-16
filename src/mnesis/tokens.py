@@ -27,7 +27,6 @@ the credential store) and are gitignored — server-side state, not derivable fr
 from __future__ import annotations
 
 import hmac
-import json
 import secrets
 import time
 from dataclasses import asdict, dataclass, replace
@@ -190,19 +189,10 @@ class RevocationStore:
         self.path = Path(path) if path is not None else config.revocations_path()
 
     def _load(self) -> set[str]:
-        if not self.path.is_file():
-            return set()
-        try:
-            data = json.loads(self.path.read_text(encoding="utf-8") or "{}")
-        except (ValueError, OSError):
-            return set()
-        return set(data.get("revoked") or [])
+        return set(config.load_json_object(self.path).get("revoked") or [])
 
     def _save(self, revoked: set[str]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_name(self.path.name + ".tmp")
-        tmp.write_text(json.dumps({"revoked": sorted(revoked)}, indent=2), encoding="utf-8")
-        tmp.replace(self.path)
+        config.atomic_write_json(self.path, {"revoked": sorted(revoked)})
 
     def add(self, token_id: str) -> None:
         revoked = self._load()
@@ -233,13 +223,7 @@ class TokenService:
 
     # -- persistence ---------------------------------------------------------
     def _load(self) -> dict[str, TokenRecord]:
-        if not self.path.is_file():
-            return {}
-        try:
-            data = json.loads(self.path.read_text(encoding="utf-8") or "{}")
-        except (ValueError, OSError):
-            return {}
-        raw = data.get("tokens")
+        raw = config.load_json_object(self.path).get("tokens")
         if not isinstance(raw, dict):
             return {}
         out: dict[str, TokenRecord] = {}
@@ -251,11 +235,8 @@ class TokenService:
         return out
 
     def _save(self, records: dict[str, TokenRecord]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {"tokens": {tid: r.to_dict() for tid, r in records.items()}}
-        tmp = self.path.with_name(self.path.name + ".tmp")
-        tmp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-        tmp.replace(self.path)
+        config.atomic_write_json(self.path, payload)
 
     def _put(self, rec: TokenRecord) -> None:
         records = self._load()

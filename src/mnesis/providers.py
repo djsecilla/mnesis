@@ -178,19 +178,10 @@ class ThrottleStore:
         self.path = Path(path) if path is not None else config.throttle_path()
 
     def _load(self) -> dict[str, dict]:
-        if not self.path.is_file():
-            return {}
-        try:
-            data = json.loads(self.path.read_text(encoding="utf-8") or "{}")
-        except (ValueError, OSError):
-            return {}
-        return data if isinstance(data, dict) else {}
+        return config.load_json_object(self.path)
 
     def _save(self, data: dict[str, dict]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_name(self.path.name + ".tmp")
-        tmp.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
-        tmp.replace(self.path)
+        config.atomic_write_json(self.path, data)
 
     @staticmethod
     def account_key(tenant_id: str, principal_id: str) -> str:
@@ -269,19 +260,10 @@ class ResetTokenStore:
         self.path = Path(path) if path is not None else config.reset_tokens_path()
 
     def _load(self) -> dict[str, dict]:
-        if not self.path.is_file():
-            return {}
-        try:
-            data = json.loads(self.path.read_text(encoding="utf-8") or "{}")
-        except (ValueError, OSError):
-            return {}
-        return data if isinstance(data, dict) else {}
+        return config.load_json_object(self.path)
 
     def _save(self, data: dict[str, dict]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_name(self.path.name + ".tmp")
-        tmp.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
-        tmp.replace(self.path)
+        config.atomic_write_json(self.path, data)
 
     @staticmethod
     def _key(tenant_id: str, principal_id: str) -> str:

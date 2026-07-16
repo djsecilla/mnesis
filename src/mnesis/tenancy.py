@@ -30,7 +30,6 @@ A single-tenant deployment runs transparently as the one ``default`` tenant; the
 
 from __future__ import annotations
 
-import json
 import re
 import shutil
 import subprocess
@@ -142,12 +141,7 @@ class TenantRegistry:
         self.path = Path(path) if path is not None else config.registry_path()
 
     def _load(self) -> dict[str, Tenant]:
-        if not self.path.is_file():
-            return {}
-        try:
-            data = json.loads(self.path.read_text(encoding="utf-8") or "{}")
-        except (ValueError, OSError):
-            return {}
+        data = config.load_json_object(self.path)
         out: dict[str, Tenant] = {}
         for tid, d in (data.get("tenants") or {}).items():
             try:
@@ -157,7 +151,6 @@ class TenantRegistry:
         return out
 
     def _save(self, tenants: dict[str, Tenant]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "tenants": {
                 t.tenant_id: {
@@ -171,9 +164,7 @@ class TenantRegistry:
                 for t in tenants.values()
             }
         }
-        tmp = self.path.with_name(self.path.name + ".tmp")
-        tmp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-        tmp.replace(self.path)
+        config.atomic_write_json(self.path, payload)
 
     def exists(self, tenant_id: str) -> bool:
         return validate_tenant_id(tenant_id) in self._load()
@@ -306,23 +297,13 @@ class VaultRegistry:
 
     # -- unified doc read/write (preserves both `vaults` and `grants`) ---------
     def _read(self) -> dict:
-        if not self.path.is_file():
-            return {"vaults": {}, "grants": {}}
-        try:
-            data = json.loads(self.path.read_text(encoding="utf-8") or "{}")
-        except (ValueError, OSError):
-            return {"vaults": {}, "grants": {}}
-        if not isinstance(data, dict):
-            return {"vaults": {}, "grants": {}}
+        data = config.load_json_object(self.path)
         data.setdefault("vaults", {})
         data.setdefault("grants", {})
         return data
 
     def _write(self, doc: dict) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_name(self.path.name + ".tmp")
-        tmp.write_text(json.dumps(doc, indent=2, sort_keys=True), encoding="utf-8")
-        tmp.replace(self.path)
+        config.atomic_write_json(self.path, doc)
 
     def _load(self) -> dict[str, Vault]:
         out: dict[str, Vault] = {}

@@ -23,8 +23,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from . import tenancy
-from .store import now_iso
+from . import confidence, tenancy
+from .store import Page, now_iso
 from .tenancy import VaultContext
 
 
@@ -171,3 +171,25 @@ def list_open_reviews() -> list[dict]:
 
 def resolve_review(review_id: int) -> None:
     active_state().resolve_review(review_id)
+
+
+# --- Derived helpers (combine the review/access state; used by every surface) --
+
+
+def open_contradiction_ids() -> set[str]:
+    """The page ids that appear in an open contradiction review (either side)."""
+    ids: set[str] = set()
+    for r in list_open_reviews():
+        ids.add(r["page_a"])
+        ids.add(r["page_b"])
+    return ids
+
+
+def page_confidence(page: Page) -> float:
+    """A page's confidence enriched with its live access boost from this store.
+
+    The one place the surfaces (MCP, web) fold the durable access record into the
+    otherwise-pure confidence computation, so the "confidence + access" pairing
+    lives here rather than being re-derived per surface.
+    """
+    return confidence.compute_confidence(page, access=get_access(page.id))[0]

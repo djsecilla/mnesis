@@ -522,13 +522,7 @@ class IdentityStore:
 
     # -- persistence ----------------------------------------------------------
     def _load(self) -> dict[str, CredentialRecord]:
-        if not self.path.is_file():
-            return {}
-        try:
-            data = json.loads(self.path.read_text(encoding="utf-8") or "{}")
-        except (ValueError, OSError):
-            return {}
-        raw = data.get("credentials")
+        raw = config.load_json_object(self.path).get("credentials")
         if not isinstance(raw, dict):
             return {}
         out: dict[str, CredentialRecord] = {}
@@ -540,11 +534,8 @@ class IdentityStore:
         return out
 
     def _save(self, records: dict[str, CredentialRecord]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {"credentials": {cid: r.to_dict() for cid, r in records.items()}}
-        tmp = self.path.with_name(self.path.name + ".tmp")
-        tmp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-        tmp.replace(self.path)
+        config.atomic_write_json(self.path, payload)
 
     def _validate_principal_id(self, principal_id: str) -> None:
         if not principal_id or "/" in principal_id or "\\" in principal_id:

@@ -29,7 +29,6 @@ from . import (
     auth,
     authz,
     config,
-    confidence,
     graph,
     graph_lint,
     ingest,
@@ -112,19 +111,6 @@ _ts = _transport_security()
 mcp = FastMCP("mnesis", transport_security=_ts) if _ts else FastMCP("mnesis")
 
 
-def _open_contradiction_ids() -> set[str]:
-    """Page ids that appear in an open contradiction review."""
-    ids: set[str] = set()
-    for r in state.list_open_reviews():
-        ids.add(r["page_a"])
-        ids.add(r["page_b"])
-    return ids
-
-
-def _page_confidence(page: Page) -> float:
-    return confidence.compute_confidence(page, access=state.get_access(page.id))[0]
-
-
 def _related_entities(page_id: str, page: Page | None = None) -> list[str]:
     """Graph entity refs a page declares (best-effort; never raises on a query)."""
     try:
@@ -200,7 +186,7 @@ def mnesis_query(query: str, limit: int = 10, include_stale: bool = False) -> st
     hits = graph.graph_query(query, limit, include_stale=include_stale)
     if not hits:
         return f'no results for "{query}"'
-    contradicted = _open_contradiction_ids()
+    contradicted = state.open_contradiction_ids()
     lines = []
     for i, h in enumerate(hits, 1):
         mark = "" if h.status == "active" else f" [{h.status}]"
@@ -243,8 +229,8 @@ def mnesis_get(page_id: str) -> str:
     # absent (don't leak its existence) rather than 403.
     if not authz.page_visible_to_active(page):
         return f"no such page: {page_id}"
-    header = f"[{page_id}] status: {page.status} | confidence: {_page_confidence(page):.2f}"
-    if page_id in _open_contradiction_ids():
+    header = f"[{page_id}] status: {page.status} | confidence: {state.page_confidence(page):.2f}"
+    if page_id in state.open_contradiction_ids():
         header += " | ⚠ contradiction under review (see `mnesis_review`)"
     related = _related_entities(page_id, page)
     if related:
@@ -535,7 +521,7 @@ def mnesis_review() -> str:
         for pid in (r["page_a"], r["page_b"]):
             try:
                 page = store.read_page(pid)
-                parts.append(f"{pid} (conf {_page_confidence(page):.2f}) \"{page.title}\"")
+                parts.append(f"{pid} (conf {state.page_confidence(page):.2f}) \"{page.title}\"")
             except FileNotFoundError:
                 parts.append(f"{pid} (missing)")
         lines.append(f"#{r['id']}: {parts[0]}  <->  {parts[1]}")

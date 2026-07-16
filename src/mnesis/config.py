@@ -20,6 +20,7 @@ Conventions (see CLAUDE.md §3):
 
 from __future__ import annotations
 
+import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -34,6 +35,39 @@ def now_iso() -> str:
     from ``store``.
     """
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+def load_json_object(path: Path) -> dict:
+    """Read a JSON object from *path*; return ``{}`` on missing, empty, or corrupt.
+
+    The shared read half of the small JSON metadata stores (credentials, tokens,
+    the revocation ledger, the tenant/vault registries, the auth throttle/reset
+    ledgers). Each caller extracts its own top-level key from the returned dict
+    and deserializes its records — a missing file therefore reads as "no records"
+    rather than raising. Defined here (the import-graph leaf) so every store shares
+    one fail-soft reader.
+    """
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8") or "{}")
+    except (ValueError, OSError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def atomic_write_json(path: Path, payload: object) -> None:
+    """Atomically write *payload* as pretty JSON to *path* (POSIX rename is atomic).
+
+    The shared write half of the small JSON metadata stores. Creates the parent
+    directory, writes to a sibling ``.tmp`` file, then ``replace()``s it into place
+    so a reader never observes a half-written file. Keys are sorted for stable,
+    diff-friendly output.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    tmp.replace(path)
 
 
 # Repository root: this file is src/mnesis/config.py, so the root is three

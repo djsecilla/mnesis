@@ -86,13 +86,6 @@ Be concise and grounded."""
 _CITE_RE = re.compile(r"\[\[([^\]]+)\]\]")
 
 
-# --- shaping helpers (pure) -------------------------------------------------
-
-
-def _conf(page: store.Page) -> float:
-    return confidence.compute_confidence(page, access=state.get_access(page.id))[0]
-
-
 # --- visibility (T4/T5): every gateway read is scoped to the bound principal ---
 # When no principal is bound (legacy single-tenant) nothing is narrowed.
 
@@ -103,21 +96,13 @@ def _visible_pages(status: str | None = None, kind: str | None = None) -> list[s
     return pages if principal is None else [p for p in pages if authz.can_see(principal, p)]
 
 
-def _open_contradiction_ids() -> set[str]:
-    ids: set[str] = set()
-    for r in state.list_open_reviews():
-        ids.add(r["page_a"])
-        ids.add(r["page_b"])
-    return ids
-
-
 def _page_summary(page: store.Page) -> dict:
     return {
         "id": page.id,
         "title": page.title,
         "kind": page.kind,
         "status": page.status,
-        "confidence": round(_conf(page), 4),
+        "confidence": round(state.page_confidence(page), 4),
         "updated": page.updated,
         "tags": page.tags,
     }
@@ -206,7 +191,7 @@ async def _get_page(request: Request) -> JSONResponse:
         "supersedes": page.supersedes,
         "superseded_by": page.superseded_by,
         "contradicts": page.contradicts,
-        "open_contradiction": pid in _open_contradiction_ids(),
+        "open_contradiction": pid in state.open_contradiction_ids(),
     })
 
 
@@ -358,14 +343,14 @@ async def _entity(request: Request) -> JSONResponse:
     # Declaring/mentioning pages: any page tagging this entity (a superset of the
     # edge source-pages, since ingest tags every edge endpoint). Ranked by confidence.
     declaring = [p for p in _visible_pages() if ref in p.tags]
-    declaring.sort(key=_conf, reverse=True)
+    declaring.sort(key=state.page_confidence, reverse=True)
 
     active = [p for p in declaring if p.status == "active"]
     summary = _first_paragraph(active[0].body, 280) if active else ""
 
     sources = [
         {"id": p.id, "title": p.title, "kind": p.kind,
-         "confidence": round(_conf(p), 4), "snippet": _first_paragraph(p.body, 140)}
+         "confidence": round(state.page_confidence(p), 4), "snippet": _first_paragraph(p.body, 140)}
         for p in declaring[:8]
     ]
 
@@ -396,7 +381,7 @@ async def _entity(request: Request) -> JSONResponse:
     return JSONResponse({
         "ref": ref,
         "type": ent["type"],
-        "confidence": round(_conf(declaring[0]), 4) if declaring else None,
+        "confidence": round(state.page_confidence(declaring[0]), 4) if declaring else None,
         "summary": summary,
         "sources": sources,
         "tags": tags,
@@ -761,7 +746,7 @@ async def _get_source(request: Request) -> JSONResponse:
 def _review_page(pid: str) -> dict:
     try:
         page = store.read_page(pid)
-        return {"id": pid, "title": page.title, "confidence": round(_conf(page), 4)}
+        return {"id": pid, "title": page.title, "confidence": round(state.page_confidence(page), 4)}
     except (FileNotFoundError, ValueError):
         return {"id": pid, "title": None, "confidence": None}
 
