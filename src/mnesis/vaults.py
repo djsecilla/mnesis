@@ -250,6 +250,50 @@ def revoke_access(
     return removed
 
 
+# --- per-vault schema config (V3 self-service) -----------------------------
+
+
+def get_config(principal: Principal, vault_id: str, *, data_root=None):
+    """The vault's :class:`~mnesis.vocab.VaultConfig` — read access is **re-authorized**
+    (`authz.resolve_vault`: the principal must own/be-granted the vault; the ``default``
+    vault is tenant-shared). Raises :class:`~mnesis.identity.Deny` when not authorized."""
+    from . import vocab
+
+    ctx = authz.resolve_vault(principal, vault_id, data_root=data_root)  # access re-auth
+    return vocab.load_config(ctx)
+
+
+def set_config(
+    principal: Principal, vault_id: str, *,
+    entity_types=None, predicates=None, symmetric_predicates=None, default_visibility=None,
+    data_root=None, audit: VaultAuditLog | None = None,
+):
+    """Edit a vault's schema (entity types / predicates / …). **Owner or tenant-admin only**
+    (the vault-management boundary). Only the passed fields change; the rest are preserved.
+    Audited. Returns the saved :class:`~mnesis.vocab.VaultConfig`."""
+    from . import vocab
+
+    reg = _registry(principal.tenant_id, data_root)
+    vault = _get_or_deny(reg, vault_id)
+    _require_manager(principal, principal.tenant_id, vault)
+    ctx = tenancy.context_for(principal.tenant_id, vault_id, data_root=data_root)
+    cur = vocab.load_config(ctx)
+    new = vocab.VaultConfig(
+        version=cur.version,
+        entity_types=tuple(entity_types) if entity_types is not None else cur.entity_types,
+        predicates=tuple(predicates) if predicates is not None else cur.predicates,
+        symmetric_predicates=(tuple(symmetric_predicates)
+                              if symmetric_predicates is not None else cur.symmetric_predicates),
+        default_visibility=default_visibility or cur.default_visibility,
+        settings=cur.settings,
+    )
+    vocab.save_config(ctx, new)
+    (audit or VaultAuditLog()).record(
+        "set_config", tenant_id=principal.tenant_id, vault_id=vault_id, actor=principal.principal_id,
+    )
+    return new
+
+
 # --- helpers ---------------------------------------------------------------
 
 

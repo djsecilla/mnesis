@@ -29,7 +29,25 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 from sse_starlette.sse import EventSourceResponse
 
-from . import auth, authz, config, confidence, graph, ingest, llm, okf, okf_bundle, search, state, store, tenancy, vocab
+from . import (
+    auth,
+    authz,
+    config,
+    confidence,
+    graph,
+    identity,
+    ingest,
+    llm,
+    okf,
+    okf_bundle,
+    search,
+    state,
+    store,
+    tenancy,
+    usermgmt,
+    vaults,
+    vocab,
+)
 
 log = logging.getLogger(__name__)
 
@@ -891,8 +909,131 @@ async def _config(_request: Request) -> JSONResponse:
 
 # --- Mounting ---------------------------------------------------------------
 
+# --- Admin user management (R5) — the admin screen's backend -----------------
+# Every handler delegates to the R4 service (usermgmt), which is the ONE place the
+# admin-role check + the safety rules (last-admin, self-role-change) live — surfaced
+# here, never reimplemented. A non-admin (or a restricted session) is denied by the
+# service at the PDP, so these routes are never reachable by a non-admin even if crafted.
+
+
+async def _um_body(request: Request) -> dict:
+    try:
+        return await request.json()
+    except Exception:
+        return {}
+
+
+async def _admin_users(request: Request) -> JSONResponse:
+    """GET: list users (admin-only). POST: create a user — returns the one-time initial
+    credential ONCE (username + role admin|user + generated/entered password)."""
+    actor = auth.current_principal_or_none()
+    if request.method == "GET":
+        return JSONResponse({"users": await run_in_threadpool(usermgmt.list_users, actor)})
+    body = await _um_body(request)
+    username = (body.get("username") or "").strip()
+    role = (body.get("role") or "user").strip()
+    password = body.get("password") or None
+    res = await run_in_threadpool(
+        lambda: usermgmt.create_user(actor, username, role, password=password)
+    )
+    # The one-time initial credential is shown ONCE (the UI must display + discard it).
+    return JSONResponse(res, status_code=201)
+
+
+async def _admin_user_role(request: Request) -> JSONResponse:
+    actor = auth.current_principal_or_none()
+    username = request.path_params["username"]
+    role = ((await _um_body(request)).get("role") or "").strip()
+    n = await run_in_threadpool(lambda: usermgmt.change_role(actor, username, role))
+    return JSONResponse({"username": username, "role": role, "updated": n})
+
+
+async def _admin_user_deactivate(request: Request) -> JSONResponse:
+    actor = auth.current_principal_or_none()
+    username = request.path_params["username"]
+    return JSONResponse(await run_in_threadpool(lambda: usermgmt.deactivate_user(actor, username)))
+
+
+async def _admin_user_reactivate(request: Request) -> JSONResponse:
+    actor = auth.current_principal_or_none()
+    username = request.path_params["username"]
+    return JSONResponse(await run_in_threadpool(lambda: usermgmt.reactivate_user(actor, username)))
+
+
+async def _admin_user_reset(request: Request) -> JSONResponse:
+    actor = auth.current_principal_or_none()
+    username = request.path_params["username"]
+    return JSONResponse(await run_in_threadpool(lambda: usermgmt.reset_password(actor, username)))
+
+
+async def _admin_user_revoke(request: Request) -> JSONResponse:
+    actor = auth.current_principal_or_none()
+    username = request.path_params["username"]
+    return JSONResponse(await run_in_threadpool(lambda: usermgmt.revoke_credentials(actor, username)))
+
+
+# --- Vault self-service (R5) — any authenticated user, their OWN vaults -------
+# Access is selectable-but-re-authorized server-side (authz.resolve_vault /
+# vaults.py owner-or-admin boundary); a user can only touch vaults it owns/is granted.
+
+
+async def _vault_create(request: Request) -> JSONResponse:
+    actor = auth.current_principal_or_none()
+    body = await _um_body(request)
+    vault_id = (body.get("vault_id") or body.get("id") or "").strip()
+    name = body.get("name") or None
+    ctx = await run_in_threadpool(lambda: vaults.create_vault(actor, vault_id, name=name))
+    return JSONResponse({"vault_id": ctx.vault_id, "tenant_id": ctx.tenant_id}, status_code=201)
+
+
+async def _vault_rename(request: Request) -> JSONResponse:
+    actor = auth.current_principal_or_none()
+    vault_id = request.path_params["vault_id"]
+    name = ((await _um_body(request)).get("name") or "").strip()
+    v = await run_in_threadpool(lambda: vaults.rename_vault(actor, vault_id, name))
+    return JSONResponse({"vault_id": v.vault_id, "name": v.name})
+
+
+async def _vault_delete(request: Request) -> JSONResponse:
+    actor = auth.current_principal_or_none()
+    vault_id = request.path_params["vault_id"]
+    confirm = (await _um_body(request)).get("confirm")
+    return JSONResponse(await run_in_threadpool(lambda: vaults.delete_vault(actor, vault_id, confirm=confirm)))
+
+
+async def _vault_config(request: Request) -> JSONResponse:
+    """GET: the vault's schema (re-authorized read). PUT: edit entity types / predicates
+    (owner-or-admin only). Both scope to the addressed vault, re-authorized server-side."""
+    actor = auth.current_principal_or_none()
+    vault_id = request.path_params["vault_id"]
+    if request.method == "GET":
+        cfg = await run_in_threadpool(lambda: vaults.get_config(actor, vault_id))
+        return JSONResponse(cfg.to_dict())
+    body = await _um_body(request)
+    cfg = await run_in_threadpool(lambda: vaults.set_config(
+        actor, vault_id,
+        entity_types=body.get("entity_types"),
+        predicates=body.get("predicates"),
+        symmetric_predicates=body.get("symmetric_predicates"),
+        default_visibility=body.get("default_visibility"),
+    ))
+    return JSONResponse(cfg.to_dict())
+
+
 API_ROUTES = [
     Route("/api/config", _config, methods=["GET"]),
+    # Admin user management (R5)
+    Route("/api/admin/users", _admin_users, methods=["GET", "POST"]),
+    Route("/api/admin/users/{username}/role", _admin_user_role, methods=["POST"]),
+    Route("/api/admin/users/{username}/deactivate", _admin_user_deactivate, methods=["POST"]),
+    Route("/api/admin/users/{username}/reactivate", _admin_user_reactivate, methods=["POST"]),
+    Route("/api/admin/users/{username}/reset-password", _admin_user_reset, methods=["POST"]),
+    Route("/api/admin/users/{username}/revoke", _admin_user_revoke, methods=["POST"]),
+    # Vault self-service (R5)
+    Route("/api/vaults", _vault_create, methods=["POST"]),
+    Route("/api/vaults/{vault_id}/rename", _vault_rename, methods=["POST"]),
+    Route("/api/vaults/{vault_id}/delete", _vault_delete, methods=["POST"]),
+    Route("/api/vaults/{vault_id}/config", _vault_config, methods=["GET", "PUT"]),
     Route("/api/pages", _list_pages, methods=["GET"]),
     Route("/api/pages/{page_id}", _get_page, methods=["GET"]),
     Route("/api/search", _search, methods=["GET"]),

@@ -147,6 +147,9 @@ async def _login(request: Request) -> JSONResponse:
         "tenant_id": principal.tenant_id,
         "roles": sorted(principal.roles),
         "kind": principal.kind,
+        # R3/R5: the SPA routes a first-login (must_change_password) principal straight to
+        # the mandatory change-password screen — the server denies everything else anyway.
+        "must_change_password": bool(getattr(principal, "must_change_password", False)),
     })
     _issue_cookies(resp, raw_session)
     return resp
@@ -359,12 +362,42 @@ class WebSessionMiddleware:
                 auth.unbind_principal(ptok)
 
 
-# --- exception handler: PDP denial -> 403 ----------------------------------
+# --- exception handlers: service errors -> the right HTTP status -------------
+# The R4/R5 services (usermgmt, vaults) and the resolver (identity.Deny) carry a machine
+# ``reason``; the surface maps it to a status and surfaces it verbatim (never reimplements
+# the rule). Auth reasons → 403, validation → 400, missing → 404, conflict → 409.
+
+_REASON_STATUS: dict[str, int] = {
+    # authorization (403)
+    "no_principal": 403, "insufficient_role": 403, "out_of_scope": 403, "cross_tenant": 403,
+    "self_role_change": 403, "last_admin": 403, "not_vault_manager": 403, "vault_forbidden": 403,
+    "must_change_password": 403, "not_admin": 403, "vault_inactive": 403, "invalid": 403,
+    # not found (404)
+    "unknown_user": 404, "unknown_vault": 404,
+    # conflict (409)
+    "exists": 409,
+    # bad request (400)
+    "invalid_role": 400, "invalid_username": 400, "invalid_vault": 400,
+    "confirm_mismatch": 400, "protected": 400,
+}
 
 
 async def authz_error_handler(request: Request, exc: Exception) -> JSONResponse:
     reason = getattr(exc, "reason", "forbidden")
     return JSONResponse({"error": "forbidden", "reason": reason}, status_code=403)
+
+
+async def service_error_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Map a service error (usermgmt/vaults ``reason``, ``identity.Deny``) to a status +
+    a structured body the UI renders directly — the rule stays in the service."""
+    reason = getattr(exc, "reason", "denied")
+    status = _REASON_STATUS.get(reason, 400)
+    return JSONResponse({"error": reason, "reason": reason, "message": str(exc)}, status_code=status)
+
+
+async def policy_error_handler(request: Request, exc: Exception) -> JSONResponse:
+    """A weak/reused password (`providers.PasswordPolicyError`) → 400 with the message."""
+    return JSONResponse({"error": "weak_password", "message": str(exc)}, status_code=400)
 
 
 # --- wiring ----------------------------------------------------------------
@@ -379,6 +412,13 @@ def install(app) -> None:
     """Wire the full web-auth surface onto ``app``: the auth routes, the PDP-denial
     exception handler, and the ``/api`` session/CSRF choke point. Call **after**
     ``webapi.mount_api`` and before serving (used by ``build_http_app`` and tests)."""
+    from . import providers as _providers, usermgmt as _usermgmt, vaults as _vaults
+
     mount_auth(app)
     app.add_exception_handler(authz.AuthorizationError, authz_error_handler)
+    # R4/R5 service errors → the right HTTP status, reason surfaced verbatim.
+    app.add_exception_handler(_usermgmt.UserManagementError, service_error_handler)
+    app.add_exception_handler(_vaults.VaultManagementError, service_error_handler)
+    app.add_exception_handler(identity.Deny, service_error_handler)
+    app.add_exception_handler(_providers.PasswordPolicyError, policy_error_handler)
     app.add_middleware(WebSessionMiddleware)
