@@ -833,16 +833,32 @@ class IdentityStore:
                 return rec
         return None
 
-    def set_password(self, credential_id: str, new_password: str) -> CredentialRecord:
+    def set_password(
+        self,
+        credential_id: str,
+        new_password: str,
+        *,
+        must_change_password: bool | None = None,
+        clear_revocation: bool = False,
+    ) -> CredentialRecord:
         """Replace a password credential's secret (argon2id), in place. Used by the
-        reset / change-password flows. The old hash is overwritten, never logged."""
+        reset / change-password / reactivate flows. The old hash is overwritten, never
+        logged. ``must_change_password`` optionally sets the R3 flag (a reset forces a
+        change on next login); ``clear_revocation`` un-revokes the credential (reactivate,
+        mirroring tenant resume) — the runtime tokens revoked at deactivation stay dead."""
         from dataclasses import replace
 
         records = self._load()
         rec = records.get(credential_id)
         if rec is None or rec.secret_type != SECRET_PASSWORD:
             raise AuthError(f"no password credential {credential_id!r} to update")
-        updated = replace(rec, secret_hash=hash_password(new_password), hash_algo=ALGO_ARGON2ID)
+        updated = replace(
+            rec,
+            secret_hash=hash_password(new_password),
+            hash_algo=ALGO_ARGON2ID,
+            must_change_password=(rec.must_change_password if must_change_password is None else must_change_password),
+            revoked_at=(None if clear_revocation else rec.revoked_at),
+        )
         records[credential_id] = updated
         self._save(records)
         return updated
