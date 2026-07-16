@@ -102,8 +102,13 @@ def _must_change(store: CredentialStore, username: str) -> bool:
 
 
 def _one_time_password() -> str:
-    """A strong, single-use initial credential (well above the policy minimum)."""
-    return secrets.token_urlsafe(18)
+    """A strong, single-use initial credential (well above the policy minimum). Kept
+    CLI-safe: it always starts with an alphanumeric so it can't be mistaken for a flag
+    when pasted into ``mnesis login --password …``."""
+    pw = secrets.token_urlsafe(18)
+    if pw[0] in "-_":  # base64url can lead with -/_; avoid an argparse-hostile prefix
+        pw = secrets.choice("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") + pw[1:]
+    return pw
 
 
 def _norm_role(role: str) -> str:

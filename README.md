@@ -44,7 +44,7 @@ is the intended design.
 4. [Using the CLI](#4-using-the-cli)
 5. [The three surfaces](#5-the-three-surfaces) — CLI · MCP · Web UI
 6. [The agent layer](#6-the-langgraph-agent-foundation) — multi-LLM agents: the maintenance **dream cycle**, the notes-inbox **writing agent**, and the approval-gated **action agent**
-7. [Multitenancy](#7-multitenancy) — isolation by construction, the admin boundary, quotas, [authentication & authorization](#78-authentication--authorization), [vaults](#79-vaults--a-per-user-in-tenant-isolation-unit)
+7. [Multitenancy](#7-multitenancy) — isolation by construction, the admin boundary, quotas, [authentication & authorization](#78-authentication--authorization), [vaults](#79-vaults--a-per-user-in-tenant-isolation-unit), [roles & user management](#710-roles--user-management)
 8. [Running with Docker](#8-running-with-docker) — [startup modes at a glance](#81-startup-modes-at-a-glance): [default](#82-default--core--web-ui-offline-single-tenant) · [real login](#83-with-a-real-web-login-bootstrap-the-first-admin) · [multi-tenant](#84-multi-tenant-credential-scoped-tenants--vaults) · [agents](#85-the-agent-runtime---profile-agents) · [local-first](#86-local-first-inference-nothing-leaves-the-box) · [Anthropic](#87-real-anthropic-inference) · [email](#88-external-send-email--opt-in-staged-egress-gated) · [managing](#89-managing-the-stack)
 9. [Making the most of mnesis](#9-making-the-most-of-mnesis) — best practices
 10. [Configuration reference](#10-configuration-reference)
@@ -1109,6 +1109,76 @@ mnesis migrate-vaults                               # move a pre-vault tenant st
 
 The end-to-end isolation **drills** live in `tests/test_vault_drills.py` (and the
 per-surface checks in `tests/test_vault_surfaces.py`).
+
+### 7.10 Roles & user management
+
+**Two roles, on principals.** Every principal is either an **`admin`** or a **`user`**
+(roles attach to *principals*, never to tenants):
+
+| Role | May do |
+|---|---|
+| **`user`** | its **own** vaults/knowledge (read/write, create/configure/delete its vaults) and its **own** password. Nothing else. |
+| **`admin`** | everything a `user` may do **in its own tenant/vaults**, **plus** account management — create users, assign roles, deactivate/reactivate, reset passwords, revoke credentials. |
+
+**Admin is a user-management role, NOT a data-access grant.** An admin manages *accounts*
+(metadata); it gains **no** access to another principal's tenant or vault *data*. Each
+managed user gets its **own tenant + default vault** (per-user tenancy), so a created
+user's knowledge is isolated from the admin by construction (cross-tenant is structurally
+impossible). Effective access stays `role ∩ scope ∩ tenant ∩ vault ∩ visibility`.
+
+**The initial admin is bootstrapped from configuration — no default password.** On first
+run the system provisions **exactly one** admin (its tenant + a default vault) from
+`MNESIS_ADMIN_USERNAME` / `MNESIS_ADMIN_PASSWORD` (see §8.3). There is **no default
+password anywhere** — omit it and the bootstrap fails clearly. It is **idempotent and
+no-clobber**: re-running never resets or overwrites an existing admin.
+
+**Forced first-login password change.** The bootstrapped admin (and every user an admin
+creates, and every password reset) starts in the **must-change-password** state. Such a
+principal authenticates but gets a **restricted session** that the PDP permits to do
+**exactly one thing — change its own password** (enforced centrally, so it holds on Web,
+CLI, and MCP alike). Changing it clears the flag and rotates the session.
+
+**Creating & managing users — one service, two surfaces.** The rules live in one service
+(`usermgmt`), so the Web UI and CLI behave identically; safety rules (no self-role-change,
+no last-admin lockout, deactivation force-revokes immediately) are enforced there and
+merely *surfaced* by the surfaces. One-time initial credentials are **shown once** and
+stored hashed (never logged).
+
+```bash
+# CLI (admin only; the same service the Web UI calls):
+mnesis users create --username carol --role user   # prints a ONE-TIME credential once
+mnesis users list
+mnesis users set-role carol admin
+mnesis users deactivate carol        # revokes access immediately; data retained
+mnesis users reactivate carol        # new one-time credential
+mnesis users reset-password carol    # new one-time credential + forced change
+mnesis users revoke-credentials carol
+```
+The **Web UI** offers the same as an admin-only screen (`/api/admin/users…`), server-authorized
+on every request — a non-admin cannot see it *and* is denied server-side if it crafts the request.
+
+**Vault self-service (any user, their OWN vaults).** From the CLI or the Web UI a user
+creates, lists, renames, deletes, and **configures** its own vaults (entity types /
+predicates), and switches the active vault (always re-authorized server-side):
+
+```bash
+mnesis vaults create research --name "Research"
+mnesis vaults list
+mnesis vaults config research --set-entity-types person,org --set-predicates employs,uses
+mnesis vaults config research                    # show the schema
+mnesis --vault research query "redis"            # a selection, re-authorized
+mnesis passwd                                    # change your own password any time
+```
+
+**First bring-up runbook.** ① Configure the admin credential (`MNESIS_ADMIN_PASSWORD` in
+`.env` / your secret store — no default). ② Start the stack (`make docker-up`). ③ Log in
+as the admin (Web `http://localhost:3000`, or `mnesis login`). ④ You are **forced to
+change the password** before anything else works. ⑤ Create users (`mnesis users create …`
+or the admin screen) — each gets its own tenant + default vault and its own forced
+first-login change. Every management action is audited (actor · target · action · result,
+**never a credential**).
+
+The end-to-end **security drills** live in `tests/test_role_drills.py`.
 
 ---
 

@@ -61,6 +61,54 @@ def _build_parser() -> argparse.ArgumentParser:
                             help="change your OWN password (required on first login; rotates your session)")
     p_chpw.add_argument("--current", default=None, help="current password (else MNESIS_PASSWORD/prompt)")
     p_chpw.add_argument("--new", default=None, help="new password (else MNESIS_NEW_PASSWORD/prompt)")
+    # `passwd` is an alias of `change-password` (also the way a first-login principal
+    # clears the must_change_password flag from the CLI).
+    p_passwd = sub.add_parser("passwd", help="change your OWN password (alias of change-password)")
+    p_passwd.add_argument("--current", default=None, help="current password (else MNESIS_PASSWORD/prompt)")
+    p_passwd.add_argument("--new", default=None, help="new password (else MNESIS_NEW_PASSWORD/prompt)")
+
+    # R6 — admin-only user management via the R4 service (usermgmt); per-user tenancy.
+    # The same service + PDP the Web UI uses — no duplicated rules. One-time credentials
+    # are GENERATED and printed ONCE (never taken on the command line, so never in history).
+    p_users = sub.add_parser("users", help="manage user accounts (admin only; via the R4 service)")
+    ussub = p_users.add_subparsers(dest="users_cmd", required=True)
+    us_create = ussub.add_parser("create", help="create a user (its own tenant + default vault; one-time credential)")
+    us_create.add_argument("--username", required=True, help="the new user's username (= its tenant id)")
+    us_create.add_argument("--role", default="user", help="admin|user")
+    us_create.add_argument("--password", default=None,
+                           help="OPTIONAL explicit initial password (else a strong one is generated + shown once)")
+    ussub.add_parser("list", help="list users in the admin's scope (no secrets)")
+    us_role = ussub.add_parser("set-role", help="change a user's role (admin|user)")
+    us_role.add_argument("username")
+    us_role.add_argument("role", help="admin|user")
+    us_deact = ussub.add_parser("deactivate", help="force-revoke a user's credentials + tokens (retains data)")
+    us_deact.add_argument("username")
+    us_react = ussub.add_parser("reactivate", help="restore a user's login with a new one-time credential")
+    us_react.add_argument("username")
+    us_reset = ussub.add_parser("reset-password", help="reset a user's password (new one-time credential + forced change)")
+    us_reset.add_argument("username")
+    us_revoke = ussub.add_parser("revoke-credentials", help="force-revoke ALL of a user's credentials + tokens")
+    us_revoke.add_argument("username")
+
+    # R6 — vault self-service parity (own vaults), incl. schema config (entity types/predicates).
+    p_vaults = sub.add_parser("vaults", help="self-service for your OWN vaults (create/list/rename/delete/config)")
+    vssub = p_vaults.add_subparsers(dest="vaults_cmd", required=True)
+    vs_create = vssub.add_parser("create", help="create a vault you own")
+    vs_create.add_argument("vault_id")
+    vs_create.add_argument("--name", default=None)
+    vssub.add_parser("list", help="list the vaults you may access")
+    vs_rename = vssub.add_parser("rename", help="rename a vault you own")
+    vs_rename.add_argument("vault_id")
+    vs_rename.add_argument("name")
+    vs_delete = vssub.add_parser("delete", help="delete a vault you own and ALL its data (guarded)")
+    vs_delete.add_argument("vault_id")
+    vs_delete.add_argument("--confirm", required=True, help="must equal the vault id")
+    vs_config = vssub.add_parser("config", help="show or edit a vault's schema (entity types / predicates)")
+    vs_config.add_argument("vault_id")
+    vs_config.add_argument("--set-entity-types", default=None, dest="set_entity_types",
+                           help="comma-separated entity types to set (owner/admin)")
+    vs_config.add_argument("--set-predicates", default=None, dest="set_predicates",
+                           help="comma-separated predicates to set (owner/admin)")
 
     # User lifecycle (IAM8) — tenant-admin scoped (within --tenant); PDP-enforced.
     p_user = sub.add_parser("user", help="manage users in --tenant (tenant-admin only)")
@@ -417,6 +465,114 @@ def _cmd_change_password(args: argparse.Namespace) -> int:
         store.save(result["new_session"], tenant_id=principal.tenant_id,
                    principal_id=principal.principal_id, roles=result["principal"].roles)
     print("password changed; your session was rotated and normal access is restored")
+    return 0
+
+
+def _cmd_users(args: argparse.Namespace) -> int:
+    """R6 — admin-only user management via the R4 service (`usermgmt`). The SAME service +
+    PDP the Web UI calls (no duplicated rules). One-time credentials are generated and
+    printed ONCE — never logged/audited/taken on the command line."""
+    from . import usermgmt
+
+    try:
+        _ctx, actor = _resolve_optional(args)
+    except _CliDenied as exc:
+        print(f"error: {exc}")
+        return 2
+    if actor is None:
+        print("error: not authenticated — run `mnesis login` as an admin")
+        return 2
+
+    cmd = args.users_cmd
+    try:
+        if cmd == "create":
+            res = usermgmt.create_user(actor, args.username, args.role, password=args.password)
+            print(f"created user '{res['username']}' (role {res['role']}) — its own tenant + default vault")
+            print("  ONE-TIME initial credential (shown ONCE; must be changed on first login):")
+            print(f"    {res['initial_password']}")
+        elif cmd == "list":
+            for u in usermgmt.list_users(actor):
+                flag = "  must-change-pw" if u["must_change_password"] else ""
+                print(f"{u['username']}\t{u['role']}\t{'active' if u['active'] else 'inactive'}{flag}")
+        elif cmd == "set-role":
+            usermgmt.change_role(actor, args.username, args.role)
+            print(f"set role of '{args.username}' to {args.role}")
+        elif cmd == "deactivate":
+            r = usermgmt.deactivate_user(actor, args.username)
+            print(f"deactivated '{args.username}' (revoked {r['credentials_revoked']} credential(s) + "
+                  f"{r['tokens_revoked']} token(s); data retained)")
+        elif cmd == "reactivate":
+            r = usermgmt.reactivate_user(actor, args.username)
+            print(f"reactivated '{args.username}' — ONE-TIME credential (shown ONCE):")
+            print(f"    {r['initial_password']}")
+        elif cmd == "reset-password":
+            r = usermgmt.reset_password(actor, args.username)
+            print(f"reset password for '{args.username}' — ONE-TIME credential (shown ONCE):")
+            print(f"    {r['initial_password']}")
+        elif cmd == "revoke-credentials":
+            r = usermgmt.revoke_credentials(actor, args.username)
+            print(f"revoked all credentials for '{args.username}' "
+                  f"({r['credentials_revoked']} credential(s) + {r['tokens_revoked']} token(s))")
+        else:
+            return 2
+    except (usermgmt.UserManagementError, providers.PasswordPolicyError, identity.AuthError) as exc:
+        reason = getattr(exc, "reason", None)
+        print(f"error: {exc}" + (f" ({reason})" if reason and reason not in str(exc) else ""))
+        return 3
+    return 0
+
+
+def _cmd_vaults(args: argparse.Namespace) -> int:
+    """R6 — vault self-service for the principal's OWN vaults (create/list/rename/delete/
+    config), via `vaults.py` + `vocab` (the same owner/admin boundary + re-authorization)."""
+    from . import vaults
+
+    try:
+        _ctx, actor = _resolve_optional(args)
+    except _CliDenied as exc:
+        print(f"error: {exc}")
+        return 2
+    if actor is None:
+        if config.MNESIS_AUTH_ENABLED:
+            print("error: not authenticated — run `mnesis login`")
+            return 2
+        actor = identity.Principal(principal_id="cli", tenant_id=args.tenant, role="admin")
+
+    cmd = args.vaults_cmd
+    try:
+        if cmd == "create":
+            v = vaults.create_vault(actor, args.vault_id, name=args.name)
+            print(f"created vault '{v.vault_id}' (owner {actor.principal_id})")
+        elif cmd == "list":
+            for v in vaults.list_vaults(actor):
+                print(f"{v.vault_id}\t{v.name}\towner={v.owner_principal or '-'}")
+        elif cmd == "rename":
+            vaults.rename_vault(actor, args.vault_id, args.name)
+            print(f"renamed vault '{args.vault_id}' -> {args.name}")
+        elif cmd == "delete":
+            res = vaults.delete_vault(actor, args.vault_id, confirm=args.confirm)
+            print(f"deleted vault '{args.vault_id}' (removed_root={res['removed_root']})")
+        elif cmd == "config":
+            if args.set_entity_types is None and args.set_predicates is None:
+                cfg = vaults.get_config(actor, args.vault_id)
+                print(f"vault '{args.vault_id}' schema:")
+                print(f"  entity_types: {', '.join(cfg.entity_types)}")
+                print(f"  predicates:   {', '.join(cfg.predicates)}")
+            else:
+                et = [s.strip() for s in args.set_entity_types.split(",") if s.strip()] \
+                    if args.set_entity_types is not None else None
+                pr = [s.strip() for s in args.set_predicates.split(",") if s.strip()] \
+                    if args.set_predicates is not None else None
+                cfg = vaults.set_config(actor, args.vault_id, entity_types=et, predicates=pr)
+                print(f"updated vault '{args.vault_id}' schema:")
+                print(f"  entity_types: {', '.join(cfg.entity_types)}")
+                print(f"  predicates:   {', '.join(cfg.predicates)}")
+        else:
+            return 2
+    except (vaults.VaultManagementError, identity.AuthError, authz.AuthorizationError) as exc:
+        reason = getattr(exc, "reason", None)
+        print(f"error: {exc}" + (f" ({reason})" if reason and reason not in str(exc) else ""))
+        return 3
     return 0
 
 
@@ -814,10 +970,14 @@ def _run(args: argparse.Namespace) -> int:
         return _cmd_login(args)
     if args.command == "logout":
         return _cmd_logout(args)
-    if args.command == "change-password":
+    if args.command in ("change-password", "passwd"):
         return _cmd_change_password(args)
     if args.command == "whoami":
         return _cmd_whoami(args)
+    if args.command == "users":
+        return _cmd_users(args)
+    if args.command == "vaults":
+        return _cmd_vaults(args)
     if args.command == "pat":
         return _cmd_pat(args)
     if args.command == "user":
