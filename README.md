@@ -272,13 +272,59 @@ make docker-seed              # ingest the bundled sample sources (offline)
 ```
 
 The web UI has a **real login** — sign in as the admin you set with
-`MNESIS_ADMIN_PASSWORD` (bootstrapped on first run). Point an MCP client (e.g. Claude
+`MNESIS_ADMIN_PASSWORD` (bootstrapped on first run; see [§3.4](#34-create-the-first-admin-web-login)).
+Point an MCP client (e.g. Claude
 Code) at it — this repo ships [`.mcp.json`](.mcp.json)
 for the local stdio server, or connect over HTTP (see [the MCP surface](#52-mcp-server-for-agents)).
 This runs as the single `default` tenant; to serve multiple isolated tenants, see
 [Multitenancy](#7-multitenancy).
 
-### 3.4 Add the agents (optional)
+### 3.4 Create the first admin (web login)
+
+The Web UI (and every authenticated surface) needs a real admin account. The **initial
+admin** — one `admin` principal plus its own tenant and a default vault — is
+**bootstrapped from configuration**, so no password is ever hard-coded or defaulted. It
+starts in the **must-change-password** state: that first login can do nothing but set a
+new password.
+
+**With Docker (bootstrapped automatically on first run).** Put the credentials in `.env`;
+the container entrypoint runs the guarded bootstrap the first time `mnesis` serves:
+
+```bash
+# .env
+MNESIS_AUTH_PEPPER=<a long random string>     # mixed into credential hashes at rest
+MNESIS_ADMIN_USERNAME=admin                   # optional (defaults to "admin")
+MNESIS_ADMIN_PASSWORD=<a strong password>     # REQUIRED — there is NO default
+```
+```bash
+make docker-up                                # → bootstraps the admin on first start
+# open http://localhost:3000 and log in as `admin`; you'll be required to set a new password.
+```
+
+**Without Docker (local CLI).** Run the same bootstrap by hand, then log in:
+
+```bash
+mnesis init-admin --principal admin --password '<a strong password>'   # or set MNESIS_ADMIN_PASSWORD
+mnesis login      --principal admin --password '<that password>'       # stores a local 0600 session
+mnesis passwd                                                          # set a new password (clears the flag)
+```
+
+The bootstrap is **idempotent and no-clobber** — re-running never resets or overwrites an
+existing admin, so it is safe to leave in your `.env`. From then on the admin creates
+everyone else (each user gets its own tenant + default vault and its own forced
+first-login change):
+
+```bash
+mnesis users create --username alice --role user   # prints a ONE-TIME credential once
+```
+
+> **Multi-tenant only:** provisioning/suspending/deleting whole *tenants* needs a separate
+> **system-admin** (`mnesis admin bootstrap`) — a different boundary from this web login
+> (see [Roles & user management](#710-roles--user-management) and
+> [Multi-tenant](#84-multi-tenant-credential-scoped-tenants--vaults)). A single-tenant
+> deployment doesn't need it.
+
+### 3.5 Add the agents (optional)
 
 The [LangGraph agent layer](#6-the-langgraph-agent-foundation) installs alongside the
 core and reaches Mnesis **only over MCP**. It needs no keys for the offline stub:
