@@ -228,9 +228,35 @@ def delete_tenant(
         raise AdminAccessError(
             f"delete refused: confirm must equal the tenant id {tenant_id!r} (guard against accidental loss)"
         )
+    purge = purge_tenant_data(
+        tenant_id, cred_store=cred_store, registry=registry,
+        data_root=data_root, agent_state_base=agent_state_base,
+    )
+    (audit or SystemAuditLog()).record(
+        "delete", tenant_id=tenant_id, actor=admin.principal_id,
+        removed_root=purge["removed_root"], credentials_removed=purge["credentials_removed"],
+        agent_state_removed=purge["agent_state_removed"],
+    )
+    return {"tenant_id": tenant_id, **purge}
+
+
+def purge_tenant_data(
+    tenant_id: str,
+    *,
+    cred_store: CredentialStore | None = None,
+    registry: tenancy.TenantRegistry | None = None,
+    data_root: Path | str | None = None,
+    agent_state_base: Path | str | None = None,
+) -> dict:
+    """The **mechanics** of removing a tenant's data — used by both system-admin tenant
+    deletion (:func:`delete_tenant`) and per-user account deletion (`usermgmt.delete_user`).
+    Removes the whole TENANT root (all its vaults + caches + git + vault registry), the
+    tenant's credentials, and its registry record; best-effort removes agent state.
+
+    This is **mechanics only** — no authorization and no audit; the caller owns the gate
+    (system-admin, or the R4 admin PDP) and records the audit. Returns
+    ``{removed_root, credentials_removed, agent_state_removed}``."""
     reg = registry or _registry(data_root)
-    # Remove the whole TENANT root (all its vaults + caches + git + vault registry),
-    # not just one vault.
     tenant_root = tenancy.tenant_context_for(tenant_id, data_root=data_root).root_path
     removed_root = False
     if tenant_root.exists():
@@ -242,8 +268,6 @@ def delete_tenant(
     creds_removed = store.remove_tenant(tenant_id)
     reg.remove(tenant_id)
 
-    # Best-effort: the agent layer's per-tenant governance state (separate package /
-    # deploy). Resolve its base from the arg or the env it publishes; never imported.
     agent_removed = False
     base = agent_state_base or os.environ.get("MNESIS_AGENTS_STATE_BASE")
     if base:
@@ -252,13 +276,10 @@ def delete_tenant(
             shutil.rmtree(agent_root, ignore_errors=True)
             agent_removed = True
 
-    (audit or SystemAuditLog()).record(
-        "delete", tenant_id=tenant_id, actor=admin.principal_id,
-        removed_root=removed_root, credentials_removed=creds_removed, agent_state_removed=agent_removed,
-    )
     return {
-        "tenant_id": tenant_id, "removed_root": removed_root,
-        "credentials_removed": creds_removed, "agent_state_removed": agent_removed,
+        "removed_root": removed_root,
+        "credentials_removed": creds_removed,
+        "agent_state_removed": agent_removed,
     }
 
 

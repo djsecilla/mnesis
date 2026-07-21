@@ -957,6 +957,55 @@ async def _admin_user_revoke(request: Request) -> JSONResponse:
     return JSONResponse(await run_in_threadpool(lambda: usermgmt.revoke_credentials(actor, username)))
 
 
+# Inactive-status synonyms → deactivate; active-status synonyms → reactivate (R7 PATCH).
+_INACTIVE_STATUS = {"inactive", "deactivated", "suspended", "disabled"}
+_ACTIVE_STATUS = {"active", "reactivated", "enabled"}
+
+
+async def _admin_user_manage(request: Request) -> JSONResponse:
+    """PATCH: update a user's ``role`` and/or ``status`` (active|inactive). DELETE: remove
+    the user entirely (its tenant + vaults + credentials, guarded by ``confirm`` = username).
+    Both delegate to the R4 service, which owns the admin gate + safety rules; a non-admin
+    is denied there (403). Reactivation returns the new one-time credential (shown once)."""
+    actor = auth.current_principal_or_none()
+    username = request.path_params["username"]
+
+    if request.method == "DELETE":
+        confirm = request.query_params.get("confirm")
+        if confirm is None:
+            confirm = (await _um_body(request)).get("confirm")
+        return JSONResponse(
+            await run_in_threadpool(lambda: usermgmt.delete_user(actor, username, confirm=confirm))
+        )
+
+    # PATCH — role and/or status, applied via the service (order: role, then status).
+    body = await _um_body(request)
+    result: dict = {"username": username}
+    if body.get("role") is not None:
+        role = str(body["role"]).strip()
+        result["role"] = role
+        result["updated"] = await run_in_threadpool(lambda: usermgmt.change_role(actor, username, role))
+    if body.get("status") is not None:
+        s = str(body["status"]).strip().lower()
+        if s in _INACTIVE_STATUS:
+            result["status"] = "inactive"
+            result["deactivate"] = await run_in_threadpool(lambda: usermgmt.deactivate_user(actor, username))
+        elif s in _ACTIVE_STATUS:
+            result["status"] = "active"
+            result["reactivate"] = await run_in_threadpool(lambda: usermgmt.reactivate_user(actor, username))
+        else:
+            return JSONResponse(
+                {"error": "invalid_status", "reason": "invalid", "message": f"unknown status {body['status']!r}"},
+                status_code=400,
+            )
+    if "role" not in result and "status" not in result:
+        return JSONResponse(
+            {"error": "no_op", "reason": "invalid", "message": "provide role and/or status"},
+            status_code=400,
+        )
+    return JSONResponse(result)
+
+
 # --- Vault self-service (R5) — any authenticated user, their OWN vaults -------
 # Access is selectable-but-re-authorized server-side (authz.resolve_vault /
 # vaults.py owner-or-admin boundary); a user can only touch vaults it owns/is granted.
@@ -1009,11 +1058,13 @@ API_ROUTES = [
     Route("/api/config", _config, methods=["GET"]),
     # Admin user management (R5)
     Route("/api/admin/users", _admin_users, methods=["GET", "POST"]),
+    Route("/api/admin/users/{username}", _admin_user_manage, methods=["PATCH", "DELETE"]),
     Route("/api/admin/users/{username}/role", _admin_user_role, methods=["POST"]),
     Route("/api/admin/users/{username}/deactivate", _admin_user_deactivate, methods=["POST"]),
     Route("/api/admin/users/{username}/reactivate", _admin_user_reactivate, methods=["POST"]),
     Route("/api/admin/users/{username}/reset-password", _admin_user_reset, methods=["POST"]),
     Route("/api/admin/users/{username}/revoke", _admin_user_revoke, methods=["POST"]),
+    Route("/api/admin/users/{username}/revoke-credentials", _admin_user_revoke, methods=["POST"]),
     # Vault self-service (R5)
     Route("/api/vaults", _vault_create, methods=["POST"]),
     Route("/api/vaults/{vault_id}/rename", _vault_rename, methods=["POST"]),

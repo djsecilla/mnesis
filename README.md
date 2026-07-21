@@ -1222,8 +1222,14 @@ mnesis users reactivate carol        # new one-time credential
 mnesis users reset-password carol    # new one-time credential + forced change
 mnesis users revoke-credentials carol
 ```
-The **Web UI** offers the same as an admin-only screen (`/api/admin/users…`), server-authorized
-on every request — a non-admin cannot see it *and* is denied server-side if it crafts the request.
+The **Web UI** offers the same as an admin-only screen backed by the `/api/admin/users…`
+endpoints (R7): `GET`/`POST /api/admin/users`, `PATCH /api/admin/users/{u}` (role and/or
+status), `DELETE /api/admin/users/{u}` (removes the user's tenant + vaults + data, guarded by
+`?confirm=<username>`), and `…/reset-password` · `…/revoke-credentials`. Every endpoint is
+server-authorized on every request via the PDP — a non-admin cannot see the screen *and* is
+denied server-side on every verb if it crafts the request; one-time credentials are returned
+once and mutations are audited without secrets. (Full account **deletion** is API-only; the CLI
+`mnesis users` verbs deactivate but do not delete.)
 
 **Vault self-service (any user, their OWN vaults).** From the CLI or the Web UI a user
 creates, lists, renames, deletes, and **configures** its own vaults (entity types /

@@ -27,6 +27,7 @@ from __future__ import annotations
 import secrets
 from pathlib import Path
 
+from . import admin as _admin
 from . import audit as _authaudit
 from . import authz, config, identity, providers, tenancy, tokens
 from .auth import CredentialStore, Principal
@@ -228,9 +229,12 @@ def deactivate_user(
     Audited. Removing the data is a separate lifecycle op (delete the tenant/vaults)."""
     _require_admin(actor, "deactivate users", authz.USERS_MANAGE)
     store = _store(cred_store, data_root)
+    # The no-lockout guard runs BEFORE the existence check: the sole admin is refused with
+    # ``last_admin`` (the initial admin lives in its own tenant, so a username-keyed
+    # existence check would otherwise mask it as ``unknown_user``).
+    _refuse_last_admin(store, data_root, username, "deactivate")
     if not store.principals_for_tenant(username):
         raise UserManagementError(f"unknown user {username!r}", reason="unknown_user")
-    _refuse_last_admin(store, data_root, username, "deactivate")
     n_creds = store.revoke_for_principal(username, username)
     n_tokens = (token_service or tokens.TokenService()).revoke_all_for_principal(username, username)
     _authaudit.record(
@@ -299,9 +303,9 @@ def revoke_credentials(
     Audited. Data is retained (unlike a lifecycle delete)."""
     _require_admin(actor, "revoke credentials", authz.CREDENTIALS_ISSUE)
     store = _store(cred_store, data_root)
+    _refuse_last_admin(store, data_root, username, "revoke the credentials of")
     if not store.principals_for_tenant(username):
         raise UserManagementError(f"unknown user {username!r}", reason="unknown_user")
-    _refuse_last_admin(store, data_root, username, "revoke the credentials of")
     n_creds = store.revoke_for_principal(username, username)
     n_tokens = (token_service or tokens.TokenService()).revoke_all_for_principal(username, username)
     _authaudit.record(
@@ -309,3 +313,41 @@ def revoke_credentials(
         result="ok", actor=actor.principal_id, credentials_revoked=n_creds, tokens_revoked=n_tokens,
     )
     return {"username": username, "credentials_revoked": n_creds, "tokens_revoked": n_tokens}
+
+
+def delete_user(
+    actor: Principal, username: str, *, confirm: str | bool = False,
+    cred_store: CredentialStore | None = None,
+    token_service: "tokens.TokenService | None" = None,
+    registry: "tenancy.TenantRegistry | None" = None,
+    data_root=None, agent_state_base=None,
+) -> dict:
+    """Delete a user **entirely** (per-user tenancy): force-revoke its runtime tokens, then
+    remove its **tenant + vaults + credentials** via the existing lifecycle
+    (:func:`admin.purge_tenant_data`). Admin-only (`users:manage`); refuses the **last active
+    admin** (no-lockout). **Guarded**: ``confirm`` must equal the username (guard against
+    accidental loss). Audited. Unlike :func:`deactivate_user`, this **removes the data** —
+    the user's knowledge lives in its own tenant, so deleting the account deletes the tenant."""
+    _require_admin(actor, "delete users", authz.USERS_MANAGE)
+    store = _store(cred_store, data_root)
+    # No-lockout first (see deactivate_user), then existence, then the confirm guard.
+    _refuse_last_admin(store, data_root, username, "delete")
+    if not store.principals_for_tenant(username):
+        raise UserManagementError(f"unknown user {username!r}", reason="unknown_user")
+    if confirm is not True and confirm != username:
+        raise UserManagementError(
+            f"delete refused: confirm must equal the username {username!r} (guard against accidental loss)",
+            reason="confirm_mismatch",
+        )
+    # Revoke first so access is denied at once even if the data removal is interrupted.
+    n_tokens = (token_service or tokens.TokenService()).revoke_all_for_principal(username, username)
+    purge = _admin.purge_tenant_data(
+        username, cred_store=store, registry=registry,
+        data_root=data_root, agent_state_base=agent_state_base,
+    )
+    _authaudit.record(
+        "user_deleted", tenant_id=username, principal_id=username, action="users:manage",
+        result="ok", actor=actor.principal_id, tokens_revoked=n_tokens,
+        removed_root=purge["removed_root"], credentials_removed=purge["credentials_removed"],
+    )
+    return {"username": username, "deleted": True, "tokens_revoked": n_tokens, **purge}
