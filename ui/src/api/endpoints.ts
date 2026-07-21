@@ -195,3 +195,19 @@ export const revokeAdminUserCredentials = (username: string) =>
 
 export const deleteAdminUser = (username: string, confirm: string) =>
   adminSend<Record<string, unknown>>("DELETE", `${userPath(username)}?confirm=${encodeURIComponent(confirm)}`);
+
+/** A read-only user-management audit record (ids/actions/results only — never a secret). */
+export interface AuditEvent {
+  ts: string;
+  event: string;
+  actor?: string;
+  principal_id?: string;
+  tenant_id?: string;
+  action?: string;
+  result?: string;
+  role?: string;
+}
+
+/** Recent user-management activity BY the requesting admin (server-scoped + admin-gated). */
+export const listAdminAudit = (limit = 20) =>
+  apiGet<{ events: AuditEvent[] }>(`/admin/audit${qs({ limit })}`);

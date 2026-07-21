@@ -575,6 +575,7 @@ reverse-proxies the REST + SSE gateway (`/api`) to the core. After
 | `/sources` | what you fed in, and the page(s) it became |
 | `/review` | resolve queued contradictions |
 | `/admin/users` | **admin only** — user management: list · create (one-time credential shown once) · change role/status · reset password · revoke · delete (typed confirm) |
+| `/account` | your profile + self-service password change (click your name in the header) |
 
 The UI is a full **read + write** surface, but every write routes through the
 same previewed, human-confirmed, git-committed ingestion path as everywhere else.
@@ -1227,14 +1228,26 @@ mnesis users reactivate carol        # new one-time credential
 mnesis users reset-password carol    # new one-time credential + forced change
 mnesis users revoke-credentials carol
 ```
-The **Web UI** offers the same as an admin-only screen backed by the `/api/admin/users…`
-endpoints (R7): `GET`/`POST /api/admin/users`, `PATCH /api/admin/users/{u}` (role and/or
-status), `DELETE /api/admin/users/{u}` (removes the user's tenant + vaults + data, guarded by
-`?confirm=<username>`), and `…/reset-password` · `…/revoke-credentials`. Every endpoint is
-server-authorized on every request via the PDP — a non-admin cannot see the screen *and* is
-denied server-side on every verb if it crafts the request; one-time credentials are returned
-once and mutations are audited without secrets. (Full account **deletion** is API-only; the CLI
-`mnesis users` verbs deactivate but do not delete.)
+**In the Web UI (admin only).** An admin sees a **Users** (Administration) entry in the left
+nav — rendered **only** for an admin session (the role comes from the server), so a non-admin
+never sees it *and* cannot reach `/admin/users` (the client guard is UX; the R7 API 403s on
+every verb regardless). The screen:
+
+- **lists** users (username · role · status · created · must-change-password);
+- **Create user** — pick a role (`admin`\|`user`); the **one-time initial password is shown
+  exactly once** with a copy button and a "you won't see this again" notice (never re-listed);
+- **Manage** a user — change role, activate/deactivate, **reset password** (shows the new
+  one-time password once), revoke credentials, and **delete** behind a **typed-username
+  confirmation**. Delete **removes the user's whole tenant + vaults + credentials** (the user's
+  data lives in its own tenant); deactivate only denies access and retains data;
+- a read-only **Recent activity** feed (from the audit log, the admin's own actions, no secrets).
+
+Service safety errors (last-admin protection, self-role-change refusal) are shown **verbatim**
+from the server — the client reimplements no rules. Each admin manages its **own** password in
+the separate **Account** area (click your name in the header); the client never offers to change
+your own role, and the server refuses it anyway. The Web UI and the CLI call the **same** R4
+service, so the rules are identical on both surfaces (full **deletion** is available on both the
+Web UI and via the API; the CLI `mnesis users` verbs deactivate rather than delete).
 
 **Vault self-service (any user, their OWN vaults).** From the CLI or the Web UI a user
 creates, lists, renames, deletes, and **configures** its own vaults (entity types /
@@ -1249,15 +1262,18 @@ mnesis --vault research query "redis"            # a selection, re-authorized
 mnesis passwd                                    # change your own password any time
 ```
 
-**First bring-up runbook.** ① Configure the admin credential (`MNESIS_ADMIN_PASSWORD` in
-`.env` / your secret store — no default). ② Start the stack (`make docker-up`). ③ Log in
-as the admin (Web `http://localhost:3000`, or `mnesis login`). ④ You are **forced to
-change the password** before anything else works. ⑤ Create users (`mnesis users create …`
-or the admin screen) — each gets its own tenant + default vault and its own forced
-first-login change. Every management action is audited (actor · target · action · result,
-**never a credential**).
+**First bring-up runbook (operator).** ① Configure the admin credential
+(`MNESIS_ADMIN_PASSWORD` in `.env` / your secret store — **no default**, ≥ 12 chars). ② Start
+the stack (`make docker-up`). ③ Open `http://localhost:3000` and **log in as the admin**. ④
+You are **forced to change the password** before anything else works (the admin area stays
+locked until you do). ⑤ Once in, open **Users** (the admin-only nav entry) and **Create**
+accounts — each gets its own tenant + default vault and its own forced first-login change; hand
+each user its one-time password (shown once). Every management action is audited (actor ·
+target · action · result, **never a credential**). *(CLI equivalent: `mnesis login` → `mnesis
+passwd` → `mnesis users create …`.)*
 
-The end-to-end **security drills** live in `tests/test_role_drills.py`.
+The end-to-end **security drills** live in `tests/test_role_drills.py` (CLI) and
+`tests/test_admin_user_drills.py` (Web).
 
 ---
 

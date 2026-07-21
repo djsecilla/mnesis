@@ -30,6 +30,7 @@ from starlette.routing import Route
 from sse_starlette.sse import EventSourceResponse
 
 from . import (
+    audit,
     auth,
     authz,
     config,
@@ -1006,6 +1007,19 @@ async def _admin_user_manage(request: Request) -> JSONResponse:
     return JSONResponse(result)
 
 
+async def _admin_audit(request: Request) -> JSONResponse:
+    """Read-only recent user-management activity for the admin screen (R9). Admin-gated at
+    the PDP; scoped to the requesting admin's OWN actions; ids/actions/results only — never
+    a secret (the audit holds none). A non-admin is denied server-side (403)."""
+    actor = auth.current_principal_or_none()
+    authz.require_permission(authz.USERS_MANAGE)  # admin-only, same PDP as the mutations
+    limit = min(int(request.query_params.get("limit", "20") or 20), 200)
+    events = await run_in_threadpool(
+        lambda: audit.recent_user_events(getattr(actor, "principal_id", ""), limit=limit)
+    )
+    return JSONResponse({"events": events})
+
+
 # --- Vault self-service (R5) — any authenticated user, their OWN vaults -------
 # Access is selectable-but-re-authorized server-side (authz.resolve_vault /
 # vaults.py owner-or-admin boundary); a user can only touch vaults it owns/is granted.
@@ -1065,6 +1079,7 @@ API_ROUTES = [
     Route("/api/admin/users/{username}/reset-password", _admin_user_reset, methods=["POST"]),
     Route("/api/admin/users/{username}/revoke", _admin_user_revoke, methods=["POST"]),
     Route("/api/admin/users/{username}/revoke-credentials", _admin_user_revoke, methods=["POST"]),
+    Route("/api/admin/audit", _admin_audit, methods=["GET"]),
     # Vault self-service (R5)
     Route("/api/vaults", _vault_create, methods=["POST"]),
     Route("/api/vaults/{vault_id}/rename", _vault_rename, methods=["POST"]),

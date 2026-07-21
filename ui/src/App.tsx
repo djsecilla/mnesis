@@ -13,6 +13,7 @@ const BatchPage = lazy(() => import("./routes/BatchPage"));
 const SourcesPage = lazy(() => import("./routes/SourcesPage"));
 const ReviewPage = lazy(() => import("./routes/ReviewPage"));
 const AdminUsersPage = lazy(() => import("./routes/AdminUsersPage"));
+const AccountPage = lazy(() => import("./routes/AccountPage"));
 
 /** Client route guard for the admin area — UX only (redirect a non-admin who navigates
  * directly). The real control is the server: the R7 /api/admin/* endpoints 403 a non-admin
@@ -35,6 +36,7 @@ export default function App() {
         <Route path="/add/batch" element={<BatchPage />} />
         <Route path="/sources" element={<SourcesPage />} />
         <Route path="/review" element={<ReviewPage />} />
+        <Route path="/account" element={<AccountPage />} />
         <Route path="/admin/users" element={<AdminRoute><AdminUsersPage /></AdminRoute>} />
         <Route path="*" element={<Navigate to="/pages" replace />} />
       </Route>

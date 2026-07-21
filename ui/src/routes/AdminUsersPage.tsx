@@ -3,11 +3,13 @@ import { useState } from "react";
 import {
   createAdminUser,
   deleteAdminUser,
+  listAdminAudit,
   listAdminUsers,
   patchAdminUser,
   resetAdminUserPassword,
   revokeAdminUserCredentials,
   type AdminUser,
+  type AuditEvent,
   type OneTimeCredential,
   type UserRole,
 } from "../api/endpoints";
@@ -93,10 +95,57 @@ export default function AdminUsersPage() {
         </div>
       )}
 
+      <RecentActivity />
+
       {creating && <CreateUserModal onClose={() => setCreating(false)} />}
       {editing && <UserDetailModal user={editing} onClose={() => setEditing(null)} />}
     </div>
   );
+}
+
+// --- read-only recent activity (audit) --------------------------------------
+
+function RecentActivity() {
+  const { data } = useQuery({ queryKey: ["admin-audit"], queryFn: () => listAdminAudit(20) });
+  const events = data?.events ?? [];
+  if (events.length === 0) return null;
+  return (
+    <section className="mt-8">
+      <h2 className="mb-2 text-sm font-medium text-muted">Recent activity</h2>
+      <ul className="divide-y divide-border overflow-hidden rounded-lg border border-border text-sm">
+        {events.map((e, i) => (
+          <li key={i} className="flex items-center justify-between gap-3 px-3 py-2">
+            <span>
+              <span className="font-medium">{auditLabel(e)}</span>
+              {e.principal_id && <span className="text-muted"> — {e.principal_id}</span>}
+              {e.role && <span className="text-muted"> ({e.role})</span>}
+            </span>
+            <span className="shrink-0 text-xs text-muted">{formatDateTime(e.ts)}</span>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+const AUDIT_LABELS: Record<string, string> = {
+  user_created: "Created user",
+  user_role_assigned: "Changed role",
+  user_deactivated: "Deactivated",
+  user_reactivated: "Reactivated",
+  user_password_reset: "Reset password",
+  user_credentials_revoked: "Revoked credentials",
+  user_deleted: "Deleted user",
+};
+
+function auditLabel(e: AuditEvent): string {
+  return AUDIT_LABELS[e.event] ?? e.event;
+}
+
+function formatDateTime(iso: string): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return isNaN(d.getTime()) ? "" : d.toLocaleString();
 }
 
 // --- shared UI bits ---------------------------------------------------------
@@ -184,7 +233,10 @@ function CreateUserModal({ onClose }: { onClose: () => void }) {
 
   const create = useMutation({
     mutationFn: () => createAdminUser({ username: username.trim(), role, password: password.trim() || undefined }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["admin-users"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["admin-users"] });
+      qc.invalidateQueries({ queryKey: ["admin-audit"] });
+    },
   });
 
   if (create.data) {
@@ -268,7 +320,10 @@ function UserDetailModal({ user, onClose }: { user: AdminUser; onClose: () => vo
   const [confirmName, setConfirmName] = useState("");
   const [cred, setCred] = useState<OneTimeCredential | null>(null);
 
-  const invalidate = () => qc.invalidateQueries({ queryKey: ["admin-users"] });
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: ["admin-users"] });
+    qc.invalidateQueries({ queryKey: ["admin-audit"] });
+  };
   const done = () => {
     invalidate();
     onClose();
@@ -310,20 +365,26 @@ function UserDetailModal({ user, onClose }: { user: AdminUser; onClose: () => vo
             <select
               value={role}
               onChange={(e) => setRole(e.target.value as UserRole)}
-              className="flex-1 rounded-md border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-accent"
+              disabled={isSelf}
+              className="flex-1 rounded-md border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-accent disabled:opacity-50"
             >
               <option value="user">user</option>
               <option value="admin">admin</option>
             </select>
             <button
               onClick={() => saveRole.mutate()}
-              disabled={role === user.role || saveRole.isPending}
+              disabled={isSelf || role === user.role || saveRole.isPending}
               className="rounded-md bg-accent px-3 py-2 text-sm font-medium text-accent-fg disabled:opacity-50"
             >
               Save
             </button>
           </div>
-          {isSelf && <p className="text-xs text-muted">You cannot change your own role.</p>}
+          {isSelf && (
+            <p className="text-xs text-muted">
+              You cannot change your own role — manage your own password in{" "}
+              <span className="font-medium">Account</span>.
+            </p>
+          )}
         </section>
 
         {/* Status + credentials */}

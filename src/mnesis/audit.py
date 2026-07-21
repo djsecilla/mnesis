@@ -17,6 +17,39 @@ from __future__ import annotations
 
 from . import authz, providers
 
+#: The user-lifecycle events the admin "recent activity" view surfaces (R9).
+USER_LIFECYCLE_EVENTS: frozenset[str] = frozenset({
+    "user_created", "user_role_assigned", "user_deactivated", "user_reactivated",
+    "user_password_reset", "user_credentials_revoked", "user_deleted",
+})
+
+#: The only fields exposed to that view — ids/actions/results/timestamps, **never** a secret
+#: (the audit holds none anyway). Anything else in a record is dropped.
+_SAFE_AUDIT_FIELDS: tuple[str, ...] = (
+    "ts", "event", "actor", "principal_id", "tenant_id", "action", "result", "role",
+)
+
+
+def recent_user_events(
+    actor_principal_id: str, *, limit: int = 20, log: providers.AuthAuditLog | None = None
+) -> list[dict]:
+    """Recent **user-management** audit events performed BY ``actor_principal_id`` — the
+    read-only feed for the admin Users screen (R9). Scoped to the actor's own actions
+    (so it never leaks another admin's/tenant's activity), newest first, and reduced to
+    the non-secret :data:`_SAFE_AUDIT_FIELDS`. Best-effort: a missing/unreadable log yields
+    an empty list (surfacing activity must never break the screen)."""
+    try:
+        rows = (log or providers.AuthAuditLog()).all()
+    except Exception:  # noqa: BLE001 — a read-only convenience view never raises
+        return []
+    events = [
+        {k: r[k] for k in _SAFE_AUDIT_FIELDS if k in r}
+        for r in rows
+        if r.get("event") in USER_LIFECYCLE_EVENTS and r.get("actor") == actor_principal_id
+    ]
+    events.reverse()  # newest first
+    return events[: max(0, int(limit))]
+
 
 def record(
     event: str,

@@ -63,9 +63,13 @@ function UserMenu() {
   const { session, logout } = useAuth();
   return (
     <div className="flex items-center gap-2 text-xs text-muted">
-      <span title={`${session.principal_id} · ${session.roles.join(", ")} · ${session.tenant_id}`}>
+      <NavLink
+        to="/account"
+        title={`Account — ${session.principal_id} · ${session.roles.join(", ")} · ${session.tenant_id}`}
+        className={({ isActive }) => `rounded-md px-1 hover:text-fg ${isActive ? "text-fg" : ""}`}
+      >
         {session.principal_id}
-      </span>
+      </NavLink>
       <button
         onClick={() => void logout()}
         className="rounded-md border border-border px-2 py-1 text-xs text-muted transition hover:border-accent hover:text-fg"
