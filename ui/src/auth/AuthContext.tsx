@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useState } from "rea
 import { getSession, logout as apiLogout, setUnauthorizedHandler, type SessionInfo } from "../api/client";
 import { BrandSplash } from "../components/Logo";
 import Login from "../routes/Login";
+import ChangePassword from "../routes/ChangePassword";
 
 interface AuthState {
   session: SessionInfo;
@@ -40,6 +41,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   if (loading) return <BrandSplash animate tagline="Loading…" />;
   if (!session) return <Login onSuccess={refresh} />;
+  // R3: a first-login / reset principal is restricted to changing its own password. The
+  // server denies every other call, so gate the whole app until the change succeeds.
+  if (session.must_change_password)
+    return <ChangePassword principalId={session.principal_id} onDone={refresh} onLogout={logout} />;
 
   const can = (permission: string) => session.permissions.includes(permission);
   return <AuthContext.Provider value={{ session, logout, can }}>{children}</AuthContext.Provider>;

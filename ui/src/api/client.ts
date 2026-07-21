@@ -63,6 +63,9 @@ export interface SessionInfo {
   scopes: string[];
   kind: string;
   permissions: string[];
+  // R3: when true the principal must change its password before anything else works
+  // (the server restricts the session to exactly the change-password action).
+  must_change_password: boolean;
 }
 
 /** The current session, or `null` when unauthenticated (does NOT trigger the
@@ -94,6 +97,32 @@ export async function login(username: string, password: string, tenantId?: strin
   }
   // The session/CSRF cookies are set by the server; read the current principal.
   return (await getSession()) as SessionInfo;
+}
+
+/** R3 — change the current principal's own password. This is the ONE action a restricted
+ * (must_change_password) session may perform; on success the server rotates the session
+ * cookie to a full session and clears the restriction. Surfaces the server's policy
+ * message (too-short / reused) so the user can correct it. */
+export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/auth/change-password`, {
+    method: "POST",
+    credentials: "include",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+  });
+  if (!res.ok) {
+    let msg = `change failed (${res.status})`;
+    try {
+      const body = await res.json();
+      if (body?.error === "weak_or_reused_password") msg = body.message || "Password does not meet the policy.";
+      else if (body?.error === "invalid_current_password") msg = "Current password is incorrect.";
+      else if (body?.error === "account_locked") msg = "Too many attempts — try again later.";
+    } catch {
+      /* keep default */
+    }
+    throw new Error(msg);
+  }
+  // The rotated session/CSRF cookies are set by the server; the caller re-checks the session.
 }
 
 export async function logout(): Promise<void> {
