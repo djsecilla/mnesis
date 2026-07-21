@@ -751,12 +751,15 @@ class IdentityStore:
             u = by_principal.setdefault(
                 rec.principal_id,
                 {"principal_id": rec.principal_id, "roles": set(), "kind": rec.kind,
-                 "active": False, "credentials": 0},
+                 "active": False, "credentials": 0, "created": ""},
             )
             u["roles"].update(rec.roles)
             u["credentials"] += 1
             if rec.is_active():
                 u["active"] = True
+            # Account "created" = the earliest credential's timestamp.
+            if rec.created and (not u["created"] or rec.created < u["created"]):
+                u["created"] = rec.created
         out = []
         for u in sorted(by_principal.values(), key=lambda x: x["principal_id"]):
             u["roles"] = sorted(u["roles"])

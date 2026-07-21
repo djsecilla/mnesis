@@ -140,3 +140,58 @@ export const listReviews = () => apiGet<ReviewsResponse>(`/reviews`);
 
 export const resolveReview = (id: number, keepPageId: string) =>
   apiPost<ResolveResponse>(`/reviews/${id}/resolve`, { keep_page_id: keepPageId });
+
+// --- Admin: user management (R7 endpoints) ---------------------------------
+// Every call is a thin wrapper over an /api/admin/users endpoint; the admin gate,
+// safety rules (last-admin, self-role-change), and audit live on the SERVER. Errors
+// are surfaced verbatim (the service `message`) via `unwrap` — never reimplemented here.
+
+export type UserRole = "admin" | "user";
+
+export interface AdminUser {
+  username: string;
+  role: string;
+  active: boolean;
+  created: string;
+  must_change_password: boolean;
+}
+
+/** A one-time initial/reset credential — shown ONCE and never persisted client-side. */
+export interface OneTimeCredential {
+  username: string;
+  role?: string;
+  credential_id?: string;
+  initial_password: string;
+  must_change_password: boolean;
+}
+
+async function adminSend<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const hasBody = body !== undefined;
+  return unwrap<T>(
+    await fetch(`${API_BASE}${path}`, {
+      method,
+      credentials: "include",
+      headers: authHeaders(hasBody ? { "Content-Type": "application/json" } : {}),
+      body: hasBody ? JSON.stringify(body) : undefined,
+    }),
+  );
+}
+
+const userPath = (username: string) => `/admin/users/${encodeURIComponent(username)}`;
+
+export const listAdminUsers = () => apiGet<{ users: AdminUser[] }>(`/admin/users`);
+
+export const createAdminUser = (input: { username: string; role: UserRole; password?: string }) =>
+  adminSend<OneTimeCredential>("POST", `/admin/users`, input);
+
+export const patchAdminUser = (username: string, patch: { role?: UserRole; status?: "active" | "inactive" }) =>
+  adminSend<Record<string, unknown>>("PATCH", userPath(username), patch);
+
+export const resetAdminUserPassword = (username: string) =>
+  adminSend<OneTimeCredential>("POST", `${userPath(username)}/reset-password`, {});
+
+export const revokeAdminUserCredentials = (username: string) =>
+  adminSend<Record<string, unknown>>("POST", `${userPath(username)}/revoke-credentials`, {});
+
+export const deleteAdminUser = (username: string, confirm: string) =>
+  adminSend<Record<string, unknown>>("DELETE", `${userPath(username)}?confirm=${encodeURIComponent(confirm)}`);

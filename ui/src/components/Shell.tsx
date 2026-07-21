@@ -5,7 +5,7 @@ import { listReviews } from "../api/endpoints";
 import { useAuth } from "../auth/AuthContext";
 import { activeBatchCount, useBatchItems } from "../batch/store";
 import CommandPalette from "./CommandPalette";
-import { ChatIcon, GraphIcon, PagesIcon, PlusIcon, ReviewIcon, SearchIcon, SourcesIcon } from "./Icon";
+import { ChatIcon, GraphIcon, PagesIcon, PlusIcon, ReviewIcon, SearchIcon, SourcesIcon, UsersIcon } from "./Icon";
 import { Spinner } from "./IngestReview";
 import Logo, { BrandSplash } from "./Logo";
 import ThemeToggle from "./ThemeToggle";
@@ -77,6 +77,26 @@ function UserMenu() {
   );
 }
 
+/** The Administration → Users entry. Rendered ONLY for an admin session (role from the
+ * server); a non-admin never sees it, and the route + the R7 API deny it anyway. */
+function AdminRailLink() {
+  const { isAdmin } = useAuth();
+  if (!isAdmin) return null;
+  return (
+    <>
+      <div className="my-2 h-px w-6 bg-border" />
+      <NavLink
+        to="/admin/users"
+        title="Users (Administration)"
+        aria-label="Users"
+        className={({ isActive }) => `rail-btn ${isActive ? "rail-active" : ""}`}
+      >
+        <UsersIcon />
+      </NavLink>
+    </>
+  );
+}
+
 export default function Shell() {
   const [paletteOpen, setPaletteOpen] = useState(false);
 
@@ -142,6 +162,7 @@ export default function Shell() {
             </NavLink>
           ))}
           <ReviewRailLink />
+          <AdminRailLink />
         </nav>
 
         <main className="flex-1 overflow-auto">

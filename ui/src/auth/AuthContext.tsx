@@ -8,6 +8,9 @@ interface AuthState {
   session: SessionInfo;
   logout: () => Promise<void>;
   can: (permission: string) => boolean;
+  /** Server-resolved admin role (from the session, never a client guess) — gates the
+   * admin nav entry + routes for UX; the server (R7) is the real control. */
+  isAdmin: boolean;
 }
 
 const AuthContext = createContext<AuthState | null>(null);
@@ -47,7 +50,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return <ChangePassword principalId={session.principal_id} onDone={refresh} onLogout={logout} />;
 
   const can = (permission: string) => session.permissions.includes(permission);
-  return <AuthContext.Provider value={{ session, logout, can }}>{children}</AuthContext.Provider>;
+  const isAdmin = session.roles.includes("admin");
+  return <AuthContext.Provider value={{ session, logout, can, isAdmin }}>{children}</AuthContext.Provider>;
 }
 
 export function useAuth(): AuthState {

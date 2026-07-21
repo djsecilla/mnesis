@@ -181,6 +181,7 @@ def list_users(
                 "username": u["principal_id"],
                 "role": canonical_role(u["roles"][0]) if u["roles"] else USER_ROLE,
                 "active": u["active"],
+                "created": u.get("created", ""),
                 "must_change_password": _must_change(store, u["principal_id"]),
             })
     return sorted(out, key=lambda x: x["username"])

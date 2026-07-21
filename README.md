@@ -574,6 +574,7 @@ reverse-proxies the REST + SSE gateway (`/api`) to the core. After
 | `/add` · `/add/batch` | **Add to Mnesis** — paste/upload, preview, curate, commit (single or batch) |
 | `/sources` | what you fed in, and the page(s) it became |
 | `/review` | resolve queued contradictions |
+| `/admin/users` | **admin only** — user management: list · create (one-time credential shown once) · change role/status · reset password · revoke · delete (typed confirm) |
 
 The UI is a full **read + write** surface, but every write routes through the
 same previewed, human-confirmed, git-committed ingestion path as everywhere else.
@@ -584,7 +585,11 @@ secure/httpOnly/SameSite session cookie with CSRF on writes, resolved server-sid
 PDP-checked on every request (the old server-injected bearer token is retired). A **vault
 picker** selects the active vault (from those you may access, `GET /api/vaults`); the SPA
 sends it as the `X-Mnesis-Vault` header and it is re-authorized on every request, so every
-screen — graph, reader, chat, add, sources, review — scopes cleanly to that vault.
+screen — graph, reader, chat, add, sources, review — scopes cleanly to that vault. An
+**admin-only "Users" nav entry** (Administration) appears solely for an admin session (the
+role comes from the server) and opens the user-management screens; a non-admin never sees it
+*and* the route + the R7 API deny it if forced (the client guard is UX; the server is the
+control).
 
 ---
 
