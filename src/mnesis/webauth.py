@@ -116,18 +116,24 @@ def _header_from_scope(scope, name: bytes) -> str:
 async def _login(request: Request) -> JSONResponse:
     """Authenticate username/password (local provider) → issue a web session cookie.
 
-    The tenant is taken from the login body (default the deployment's default tenant);
-    identity is proven server-side and the raw session is delivered **only** as an
-    httpOnly cookie (never in the response body)."""
+    The tenant is taken from the login body when given; otherwise it is resolved from the
+    username server-side (per-user tenancy: tenant == username; the bootstrapped admin lives
+    in the default tenant). Identity is proven server-side and the raw session is delivered
+    **only** as an httpOnly cookie (never in the response body)."""
     try:
         body = await request.json()
     except Exception:
         return JSONResponse({"error": "invalid_json"}, status_code=400)
-    tenant_id = (body.get("tenant_id") or config.DEFAULT_TENANT_ID).strip()
     username = (body.get("username") or body.get("principal_id") or "").strip()
     password = body.get("password") or ""
     if not username or not password:
         return JSONResponse({"error": "username and password are required"}, status_code=400)
+    # No tenant on the login form: resolve it from the username (per-user tenancy). An
+    # explicit tenant_id (multi-workspace clients) still wins.
+    explicit_tenant = (body.get("tenant_id") or "").strip()
+    tenant_id = explicit_tenant or identity.IdentityStore().tenant_for_login(
+        username, default=config.DEFAULT_TENANT_ID
+    )
 
     client_ip = request.client.host if request.client else None
     provider = providers.LocalPasswordProvider()

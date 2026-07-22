@@ -827,6 +827,26 @@ class IdentityStore:
                 return rec
         return None
 
+    def tenant_for_login(self, principal_id: str, *, default: str) -> str:
+        """Resolve which tenant to authenticate ``principal_id`` against when a login form
+        carries no explicit tenant. Under **per-user tenancy** the tenant *is* the username
+        (``tenant == principal == username``); the bootstrapped admin is the exception (it
+        lives in the deployment ``default`` tenant). So: prefer a password credential whose
+        tenant equals the principal (the per-user convention), else any tenant holding a
+        password credential for that principal, else ``default`` (so an unknown user still
+        fails with the same generic error — no enumeration). Purely server-side: it only
+        chooses which stored credential to verify; the password must still match."""
+        matches = [
+            r for r in self._load().values()
+            if r.secret_type == SECRET_PASSWORD and r.principal_id == principal_id
+        ]
+        if not matches:
+            return default
+        for r in matches:
+            if r.tenant_id == principal_id:  # per-user tenancy (username == tenant)
+                return r.tenant_id
+        return matches[0].tenant_id
+
     def set_password(
         self,
         credential_id: str,

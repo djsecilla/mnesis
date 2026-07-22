@@ -188,6 +188,23 @@ def test_drill_audit_feed_scoped_and_secret_free(app):
     assert not any(k in e for e in feed for k in ("initial_password", "secret_hash", "password"))
 
 
+# ── DRILL 7b: a created user logs in via the Web with NO tenant (per-user tenancy) ──
+
+
+def test_drill_created_user_logs_in_without_tenant(app):
+    ac, csrf = _ready_admin(app)
+    created = ac.post("/api/admin/users", json={"username": "ivan", "role": "user"}, headers=csrf).json()
+    one_time = created["initial_password"]
+
+    # The Web login form sends username + password only (no tenant). Under per-user tenancy
+    # the server must resolve ivan's tenant ("ivan") from the username, not default to "default".
+    uc = TestClient(app)
+    r = uc.post("/api/auth/login", json={"username": "ivan", "password": one_time})
+    assert r.status_code == 200, r.text
+    assert r.json()["must_change_password"] is True     # forced first-login change
+    assert "admin" not in r.json()["roles"]
+
+
 # ── DRILL 8: managing accounts is NOT data access — isolation unchanged ─────
 
 
