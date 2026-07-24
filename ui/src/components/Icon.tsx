@@ -76,6 +76,16 @@ export function ReviewIcon(p: SVGProps<SVGSVGElement>) {
   );
 }
 
+export function VaultIcon(p: SVGProps<SVGSVGElement>) {
+  return (
+    <svg {...base} {...p}>
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <circle cx="12" cy="12" r="3.2" />
+      <path d="M12 8.8v-1M12 16.2v-1M15.2 12h1M7.8 12h-1" />
+    </svg>
+  );
+}
+
 export function UsersIcon(p: SVGProps<SVGSVGElement>) {
   return (
     <svg {...base} {...p}>

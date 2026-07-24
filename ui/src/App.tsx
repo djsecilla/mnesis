@@ -14,6 +14,7 @@ const SourcesPage = lazy(() => import("./routes/SourcesPage"));
 const ReviewPage = lazy(() => import("./routes/ReviewPage"));
 const AdminUsersPage = lazy(() => import("./routes/AdminUsersPage"));
 const AccountPage = lazy(() => import("./routes/AccountPage"));
+const VaultsPage = lazy(() => import("./routes/VaultsPage"));
 
 /** Client route guard for the admin area — UX only (redirect a non-admin who navigates
  * directly). The real control is the server: the R7 /api/admin/* endpoints 403 a non-admin
@@ -37,6 +38,7 @@ export default function App() {
         <Route path="/sources" element={<SourcesPage />} />
         <Route path="/review" element={<ReviewPage />} />
         <Route path="/account" element={<AccountPage />} />
+        <Route path="/vaults" element={<VaultsPage />} />
         <Route path="/admin/users" element={<AdminRoute><AdminUsersPage /></AdminRoute>} />
         <Route path="*" element={<Navigate to="/pages" replace />} />
       </Route>

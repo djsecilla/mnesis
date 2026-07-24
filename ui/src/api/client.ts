@@ -10,9 +10,24 @@ function csrfToken(): string {
   return m ? decodeURIComponent(m[1]) : "";
 }
 
-/** Headers for a state-changing request: the CSRF token plus any extras. */
+// V8: the active vault is a client SELECTION carried on every request as the
+// `X-Mnesis-Vault` header (re-authorized server-side per request, V5). The VaultProvider
+// owns it; storing it here lets the module-level fetch helpers attach it without
+// prop-drilling. `null` → no header → the transparent `default` vault.
+let activeVault: string | null = null;
+export function setActiveVault(id: string | null): void {
+  activeVault = id || null;
+}
+export function getActiveVault(): string | null {
+  return activeVault;
+}
+function vaultHeader(): Record<string, string> {
+  return activeVault ? { "X-Mnesis-Vault": activeVault } : {};
+}
+
+/** Headers for a state-changing request: the CSRF token + the active-vault selection. */
 export function authHeaders(extra?: Record<string, string>): Record<string, string> {
-  return { ...extra, "X-CSRF-Token": csrfToken() };
+  return { ...extra, ...vaultHeader(), "X-CSRF-Token": csrfToken() };
 }
 
 // A 401 anywhere means the session is gone/expired — the app shows the login
@@ -40,7 +55,7 @@ async function handle<T>(res: Response): Promise<T> {
 }
 
 export async function apiGet<T>(path: string): Promise<T> {
-  return handle<T>(await fetch(`${API_BASE}${path}`, { credentials: "include" }));
+  return handle<T>(await fetch(`${API_BASE}${path}`, { credentials: "include", headers: vaultHeader() }));
 }
 
 export async function apiPost<T>(path: string, body: unknown): Promise<T> {

@@ -5,10 +5,12 @@ import { listReviews } from "../api/endpoints";
 import { useAuth } from "../auth/AuthContext";
 import { activeBatchCount, useBatchItems } from "../batch/store";
 import CommandPalette from "./CommandPalette";
-import { ChatIcon, GraphIcon, PagesIcon, PlusIcon, ReviewIcon, SearchIcon, SourcesIcon, UsersIcon } from "./Icon";
+import { useVault } from "../vault/VaultContext";
+import { ChatIcon, GraphIcon, PagesIcon, PlusIcon, ReviewIcon, SearchIcon, SourcesIcon, UsersIcon, VaultIcon } from "./Icon";
 import { Spinner } from "./IngestReview";
 import Logo, { BrandSplash } from "./Logo";
 import ThemeToggle from "./ThemeToggle";
+import VaultSwitcher from "./VaultSwitcher";
 
 const rail = [
   { to: "/graph", label: "Graph", Icon: GraphIcon },
@@ -103,6 +105,7 @@ function AdminRailLink() {
 
 export default function Shell() {
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const { active: activeVault } = useVault();
 
   // Global Cmd/Ctrl-K opens the command palette.
   useEffect(() => {
@@ -130,6 +133,7 @@ export default function Shell() {
         </NavLink>
         <div className="flex items-center gap-3">
           <BatchIndicator />
+          <VaultSwitcher />
           <ThemeToggle />
           <UserMenu />
         </div>
@@ -166,10 +170,20 @@ export default function Shell() {
             </NavLink>
           ))}
           <ReviewRailLink />
+          <NavLink
+            to="/vaults"
+            title="Vaults"
+            aria-label="Vaults"
+            className={({ isActive }) => `rail-btn ${isActive ? "rail-active" : ""}`}
+          >
+            <VaultIcon />
+          </NavLink>
           <AdminRailLink />
         </nav>
 
-        <main className="flex-1 overflow-auto">
+        {/* Keyed by the active vault: switching vaults fully remounts the routed content,
+            so no component-local state (chat, reader, search) survives across vaults. */}
+        <main key={activeVault} className="flex-1 overflow-auto">
           <Suspense fallback={<BrandSplash animate tagline="Loading…" />}>
             <Outlet />
           </Suspense>

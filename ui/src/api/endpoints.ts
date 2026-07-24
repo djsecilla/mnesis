@@ -211,3 +211,37 @@ export interface AuditEvent {
 /** Recent user-management activity BY the requesting admin (server-scoped + admin-gated). */
 export const listAdminAudit = (limit = 20) =>
   apiGet<{ events: AuditEvent[] }>(`/admin/audit${qs({ limit })}`);
+
+// --- Vaults (V7 endpoints) — self-service for the principal's OWN vaults ----
+// Every call re-authorizes the vault server-side (authz.resolve_vault / the vaults.py
+// owner boundary); the client never decides access. NOT admin-gated — available to all.
+
+export interface Vault {
+  vault_id: string;
+  name: string;
+  created: string;
+  is_active: boolean;
+  page_count: number;
+}
+
+/** The principal's OWN vaults (∪ default) + the currently-active vault id. */
+export const listVaults = () => apiGet<{ active_vault: string; vaults: Vault[] }>(`/vaults`);
+
+export const createVault = (name: string) => adminSend<Vault>("POST", `/vaults`, { name });
+
+export const renameVault = (vaultId: string, name: string) =>
+  adminSend<{ vault_id: string; name: string }>("PATCH", `/vaults/${encodeURIComponent(vaultId)}`, { name });
+
+export const deleteVault = (vaultId: string, confirm: string) =>
+  adminSend<Record<string, unknown>>(
+    "DELETE",
+    `/vaults/${encodeURIComponent(vaultId)}?confirm=${encodeURIComponent(confirm)}`,
+  );
+
+/** Re-authorize + set the active vault; returns the new active vault id. */
+export const activateVault = (vaultId: string) =>
+  adminSend<{ active_vault: string; vault_id: string }>(
+    "POST",
+    `/vaults/${encodeURIComponent(vaultId)}/activate`,
+    {},
+  );

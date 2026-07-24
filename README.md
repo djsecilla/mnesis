@@ -576,6 +576,7 @@ reverse-proxies the REST + SSE gateway (`/api`) to the core. After
 | `/review` | resolve queued contradictions |
 | `/admin/users` | **admin only** — user management: list · create (one-time credential shown once) · change role/status · reset password · revoke · delete (typed confirm) |
 | `/account` | your profile + self-service password change (click your name in the header) |
+| `/vaults` | manage your own vaults — create · rename · delete (typed confirm) · switch; reachable from the header **vault switcher** too |
 
 The UI is a full **read + write** surface, but every write routes through the
 same previewed, human-confirmed, git-committed ingestion path as everywhere else.
@@ -583,10 +584,13 @@ Canonical page **editing is intentionally not offered** on any surface — knowl
 changes only by ingesting sources and resolving contradictions, so the audit trail
 stays a coherent record of *why* each change happened. Access is a **real login** — a
 secure/httpOnly/SameSite session cookie with CSRF on writes, resolved server-side and
-PDP-checked on every request (the old server-injected bearer token is retired). A **vault
-picker** selects the active vault (from those you may access, `GET /api/vaults`); the SPA
-sends it as the `X-Mnesis-Vault` header and it is re-authorized on every request, so every
-screen — graph, reader, chat, add, sources, review — scopes cleanly to that vault. An
+PDP-checked on every request (the old server-injected bearer token is retired). A persistent
+**vault switcher** in the header always shows the **active vault** and lists your vaults (with
+a *Manage vaults* link to `/vaults`); the SPA sends the selection as the `X-Mnesis-Vault`
+header, re-authorized on every request, so every screen — graph, reader, chat, add, sources,
+review — scopes cleanly to that vault. **Switching fully resets vault-scoped state** (it
+re-authorizes, clears every cache, and remounts the screens) so no data from the previous
+vault lingers; a no-longer-accessible vault falls back to `default`. An
 **admin-only "Users" nav entry** (Administration) appears solely for an admin session (the
 role comes from the server) and opens the user-management screens; a non-admin never sees it
 *and* the route + the R7 API deny it if forced (the client guard is UX; the server is the
