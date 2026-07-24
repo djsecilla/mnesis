@@ -1262,6 +1262,14 @@ mnesis --vault research query "redis"            # a selection, re-authorized
 mnesis passwd                                    # change your own password any time
 ```
 
+The same operations are available over the Web API (V7): `GET /api/vaults` (your own vaults
++ the active one), `POST /api/vaults` (create by name), `PATCH /api/vaults/{v}` (rename —
+**display name only**, never the id or path), `DELETE /api/vaults/{v}` (guarded by
+`?confirm=<id>`; refuses your last remaining vault), and `POST /api/vaults/{v}/activate`
+(switch, re-authorized). **Every** endpoint re-authorizes the vault against your grants
+before opening any store, in your own tenant — another principal's or tenant's vault is
+denied without leaking that it exists, and an admin gets **no** extra vault visibility.
+
 **First bring-up runbook (operator).** ① Configure the admin credential
 (`MNESIS_ADMIN_PASSWORD` in `.env` / your secret store — **no default**, ≥ 12 chars). ② Start
 the stack (`make docker-up`). ③ Open `http://localhost:3000` and **log in as the admin**. ④

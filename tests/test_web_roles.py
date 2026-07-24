@@ -161,7 +161,7 @@ def test_user_manages_own_vaults_and_edits_config(app):
 
     # It appears in the user's own vault list (owned ∪ granted ∪ default).
     vaults_list = ec.get("/api/vaults").json()["vaults"]
-    assert {"default", "research"} <= set(vaults_list)
+    assert {"default", "research"} <= {v["vault_id"] for v in vaults_list}
 
     # Switch the active vault via the X-Mnesis-Vault header (re-authorized per request).
     hdr = {"X-Mnesis-Vault": "research"}
@@ -202,4 +202,4 @@ def test_user_cannot_reach_another_users_vaults(app):
     assert gc.get("/api/vaults/frank-priv/config", headers=ghdr).status_code in (403, 404)
     assert gc.get("/api/pages", headers=ghdr).status_code == 403  # ungranted vault → denied
     # gina's own vault listing never contains frank's vault.
-    assert "frank-priv" not in gc.get("/api/vaults").json()["vaults"]
+    assert "frank-priv" not in {v["vault_id"] for v in gc.get("/api/vaults").json()["vaults"]}

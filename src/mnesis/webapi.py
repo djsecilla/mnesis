@@ -1025,13 +1025,141 @@ async def _admin_audit(request: Request) -> JSONResponse:
 # vaults.py owner-or-admin boundary); a user can only touch vaults it owns/is granted.
 
 
+_VAULT_NAME_MAX = 120
+
+
+def _slug_vault_id(name: str) -> str:
+    """Derive a safe vault id from a display name (lowercase, hyphenated, leading
+    alphanumeric). Empty when nothing usable remains; `tenancy.validate_vault_id`
+    (in the service) is the authority on validity."""
+    s = re.sub(r"[^a-z0-9]+", "-", (name or "").lower()).strip("-")
+    return re.sub(r"^[^a-z0-9]+", "", s)
+
+
+def _vault_page_count(tenant_id: str, vault_id: str) -> int:
+    """Best-effort page count for a vault (a cheap filesystem count of its `pages/`,
+    excluding the reserved index.md/log.md). Never raises — an unreadable vault reads as 0."""
+    try:
+        pd = tenancy.context_for(tenant_id, vault_id).pages_dir
+        if not pd.exists():
+            return 0
+        return sum(1 for p in pd.glob("*.md") if p.stem not in ("index", "log"))
+    except Exception:  # noqa: BLE001 — an optional count never breaks the listing
+        return 0
+
+
+def _vault_dict(v: "tenancy.Vault", active_id: str, tenant_id: str) -> dict:
+    return {
+        "vault_id": v.vault_id,
+        "name": v.name,
+        "created": getattr(v, "created", ""),
+        "is_active": v.vault_id == active_id,
+        "page_count": _vault_page_count(tenant_id, v.vault_id),
+    }
+
+
+async def _vault_list(request: Request) -> JSONResponse:
+    """List ONLY the vaults the principal owns/is granted (∪ the transparent default) —
+    scoped by `vaults.list_vaults` (grants), never a global view. An admin has no special
+    visibility here; it sees strictly its own vaults."""
+    authz.require_permission(authz.READ)  # a restricted (must_change) session is denied
+    actor = auth.current_principal_or_none()
+    active_id = getattr(tenancy.current_or_none(), "vault_id", config.DEFAULT_VAULT_ID)
+
+    def build() -> list[dict]:
+        return [_vault_dict(v, active_id, actor.tenant_id) for v in vaults.list_vaults(actor)]
+
+    return JSONResponse({"active_vault": active_id, "vaults": await run_in_threadpool(build)})
+
+
 async def _vault_create(request: Request) -> JSONResponse:
+    """Create a vault the principal owns, within ITS tenant (permission- + quota-gated by
+    the V6 service). Accepts a display `name` (the id is slugified from it) or an explicit
+    `vault_id`. Provisions store + git + caches + the default config (V3)."""
     actor = auth.current_principal_or_none()
     body = await _um_body(request)
-    vault_id = (body.get("vault_id") or body.get("id") or "").strip()
-    name = body.get("name") or None
-    ctx = await run_in_threadpool(lambda: vaults.create_vault(actor, vault_id, name=name))
-    return JSONResponse({"vault_id": ctx.vault_id, "tenant_id": ctx.tenant_id}, status_code=201)
+    name = (body.get("name") or "").strip() or None
+    if name and len(name) > _VAULT_NAME_MAX:
+        return JSONResponse(
+            {"error": "invalid_name", "reason": "invalid", "message": f"name too long (max {_VAULT_NAME_MAX})"},
+            status_code=400,
+        )
+    vault_id = (body.get("vault_id") or body.get("id") or "").strip() or (_slug_vault_id(name) if name else "")
+    if not vault_id:
+        return JSONResponse(
+            {"error": "invalid_vault", "reason": "invalid_vault", "message": "a vault name is required"},
+            status_code=400,
+        )
+
+    def do_create() -> dict:
+        ctx = vaults.create_vault(actor, vault_id, name=name)
+        rec = tenancy.tenant_context_for(actor.tenant_id).vault_registry().get(ctx.vault_id)
+        return {
+            "vault_id": ctx.vault_id,
+            "tenant_id": ctx.tenant_id,
+            "name": rec.name if rec else (name or ctx.vault_id),
+            "created": getattr(rec, "created", "") if rec else "",
+            "is_active": False,
+            "page_count": 0,
+        }
+
+    return JSONResponse(await run_in_threadpool(do_create), status_code=201)
+
+
+async def _vault_manage(request: Request) -> JSONResponse:
+    """PATCH: rename a vault's DISPLAY NAME only (never the vault_id or on-disk path). DELETE:
+    remove the vault entirely (store/git/caches/state/config) via the V6 lifecycle, refusing
+    the principal's LAST remaining vault (no-lockout) and guarded by `?confirm=<vault_id>`.
+    Both re-authorize against the principal's grants (owner-or-admin) in the service, in ITS
+    tenant — another tenant's/principal's vault is denied without leaking existence."""
+    actor = auth.current_principal_or_none()
+    vault_id = request.path_params["vault_id"]
+
+    if request.method == "DELETE":
+        # No-lockout: refuse deleting the principal's only remaining vault (re-auth via grants,
+        # BEFORE any store is opened). The default vault is additionally protected by the service.
+        remaining = await run_in_threadpool(lambda: authz.accessible_vaults(actor) - {vault_id})
+        if not remaining:
+            return JSONResponse(
+                {"error": "last_vault", "reason": "last_vault",
+                 "message": "cannot delete your last remaining vault"},
+                status_code=409,
+            )
+        confirm = request.query_params.get("confirm")
+        if confirm is None:
+            confirm = (await _um_body(request)).get("confirm")
+        return JSONResponse(await run_in_threadpool(lambda: vaults.delete_vault(actor, vault_id, confirm=confirm)))
+
+    # PATCH — rename (display name only).
+    name = ((await _um_body(request)).get("name") or "").strip()
+    if not name or len(name) > _VAULT_NAME_MAX:
+        return JSONResponse(
+            {"error": "invalid_name", "reason": "invalid",
+             "message": f"a non-empty name is required (max {_VAULT_NAME_MAX})"},
+            status_code=400,
+        )
+    v = await run_in_threadpool(lambda: vaults.rename_vault(actor, vault_id, name))
+    return JSONResponse({"vault_id": v.vault_id, "name": v.name})
+
+
+async def _vault_activate(request: Request) -> JSONResponse:
+    """Set the active vault for the session: **re-authorize the grant** (`authz.resolve_vault`
+    — fail closed, no store opened first) and return the new active vault. The selection is
+    stateless (the client then carries it in the `X-Mnesis-Vault` header, re-authorized per
+    request, V5); this endpoint confirms authorization and audits the switch."""
+    authz.require_permission(authz.READ)  # a restricted session is denied
+    actor = auth.current_principal_or_none()
+    vault_id = request.path_params["vault_id"]
+
+    def activate() -> str:
+        ctx = authz.resolve_vault(actor, vault_id)  # re-authorization point (Deny → 403/404)
+        vaults.VaultAuditLog().record(
+            "activate", tenant_id=actor.tenant_id, vault_id=ctx.vault_id, actor=actor.principal_id
+        )
+        return ctx.vault_id
+
+    active = await run_in_threadpool(activate)
+    return JSONResponse({"active_vault": active, "vault_id": active})
 
 
 async def _vault_rename(request: Request) -> JSONResponse:
@@ -1080,8 +1208,12 @@ API_ROUTES = [
     Route("/api/admin/users/{username}/revoke", _admin_user_revoke, methods=["POST"]),
     Route("/api/admin/users/{username}/revoke-credentials", _admin_user_revoke, methods=["POST"]),
     Route("/api/admin/audit", _admin_audit, methods=["GET"]),
-    # Vault self-service (R5)
+    # Vault self-service / management (R5 / V7) — every endpoint re-authorizes the vault
+    # against the principal's grants (owner/granted) BEFORE opening any store; fail closed.
+    Route("/api/vaults", _vault_list, methods=["GET"]),
     Route("/api/vaults", _vault_create, methods=["POST"]),
+    Route("/api/vaults/{vault_id}", _vault_manage, methods=["PATCH", "DELETE"]),
+    Route("/api/vaults/{vault_id}/activate", _vault_activate, methods=["POST"]),
     Route("/api/vaults/{vault_id}/rename", _vault_rename, methods=["POST"]),
     Route("/api/vaults/{vault_id}/delete", _vault_delete, methods=["POST"]),
     Route("/api/vaults/{vault_id}/config", _vault_config, methods=["GET", "PUT"]),

@@ -236,19 +236,6 @@ async def _change_password(request: Request) -> JSONResponse:
     return resp
 
 
-async def _vaults(request: Request) -> JSONResponse:
-    """The vaults the bound principal may select (owned ∪ granted ∪ the transparent
-    ``default``), plus the currently-active vault. Backs the web vault picker (V5)."""
-    p = auth.current_principal_or_none()
-    if p is None:  # pragma: no cover — middleware guarantees a principal here
-        return JSONResponse({"error": "unauthenticated"}, status_code=401)
-    active = tenancy.current_or_none()
-    return JSONResponse({
-        "active_vault": getattr(active, "vault_id", config.DEFAULT_VAULT_ID),
-        "vaults": sorted(authz.accessible_vaults(p)),
-    })
-
-
 async def _reset_request(request: Request) -> JSONResponse:
     """Begin a password reset. Always returns ``202`` (never reveals whether the account
     exists); the single-use token is minted + audited server-side for out-of-band
@@ -296,7 +283,6 @@ AUTH_ROUTES = [
     Route("/api/auth/logout", _logout, methods=["POST"]),
     Route("/api/auth/session", _session, methods=["GET"]),
     Route("/api/auth/change-password", _change_password, methods=["POST"]),
-    Route("/api/vaults", _vaults, methods=["GET"]),
     Route("/api/auth/reset/request", _reset_request, methods=["POST"]),
     Route("/api/auth/reset/confirm", _reset_confirm, methods=["POST"]),
 ]

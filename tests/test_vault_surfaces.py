@@ -91,7 +91,7 @@ def test_web_lists_only_accessible_vaults(env):
     client = TestClient(application)
     _login(client)
     body = client.get("/api/vaults").json()
-    assert set(body["vaults"]) == {"default", "alpha", "beta"}  # gamma NOT listed
+    assert {v["vault_id"] for v in body["vaults"]} == {"default", "alpha", "beta"}  # gamma NOT listed
     assert body["active_vault"] == "default"
 
 
