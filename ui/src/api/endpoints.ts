@@ -245,3 +245,20 @@ export const activateVault = (vaultId: string) =>
     `/vaults/${encodeURIComponent(vaultId)}/activate`,
     {},
   );
+
+/** A vault's per-vault schema (V3) — governs ONLY that vault's typed graph. */
+export interface VaultConfig {
+  version: number;
+  entity_types: string[];
+  predicates: string[];
+  symmetric_predicates: string[];
+  default_visibility: string;
+  settings: Record<string, unknown>;
+}
+
+export const getVaultConfig = (vaultId: string) =>
+  apiGet<VaultConfig>(`/vaults/${encodeURIComponent(vaultId)}/config`);
+
+/** Edit a vault's entity types / predicates (owner only, server-enforced) — this vault only. */
+export const setVaultConfig = (vaultId: string, patch: { entity_types?: string[]; predicates?: string[] }) =>
+  adminSend<VaultConfig>("PUT", `/vaults/${encodeURIComponent(vaultId)}/config`, patch);

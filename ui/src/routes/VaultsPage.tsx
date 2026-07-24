@@ -1,6 +1,15 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { createVault, deleteVault, listVaults, renameVault, type Vault } from "../api/endpoints";
+import {
+  createVault,
+  deleteVault,
+  getVaultConfig,
+  listVaults,
+  renameVault,
+  setVaultConfig,
+  type Vault,
+  type VaultConfig,
+} from "../api/endpoints";
 import { Spinner } from "../components/IngestReview";
 import { useVault } from "../vault/VaultContext";
 
@@ -17,6 +26,7 @@ export default function VaultsPage() {
   const [creating, setCreating] = useState(false);
   const [renaming, setRenaming] = useState<Vault | null>(null);
   const [deleting, setDeleting] = useState<Vault | null>(null);
+  const [configuring, setConfiguring] = useState<Vault | null>(null);
 
   return (
     <div className="mx-auto max-w-3xl p-8">
@@ -76,6 +86,12 @@ export default function VaultsPage() {
                         </button>
                       )}
                       <button
+                        onClick={() => setConfiguring(v)}
+                        className="rounded-md border border-border px-2.5 py-1 text-xs hover:border-accent"
+                      >
+                        Configure
+                      </button>
+                      <button
                         onClick={() => setRenaming(v)}
                         className="rounded-md border border-border px-2.5 py-1 text-xs hover:border-accent"
                       >
@@ -94,6 +110,7 @@ export default function VaultsPage() {
       {creating && <CreateVaultModal onClose={() => setCreating(false)} />}
       {renaming && <RenameVaultModal vault={renaming} onClose={() => setRenaming(null)} />}
       {deleting && <DeleteVaultModal vault={deleting} onClose={() => setDeleting(null)} />}
+      {configuring && <ConfigVaultModal vault={configuring} onClose={() => setConfiguring(null)} />}
     </div>
   );
 }
@@ -258,6 +275,95 @@ function RenameVaultModal({ vault, onClose }: { vault: Vault; onClose: () => voi
         </div>
       </form>
     </Modal>
+  );
+}
+
+function csvToList(s: string): string[] {
+  return s.split(",").map((x) => x.trim()).filter(Boolean);
+}
+
+/** View/edit a vault's schema (entity types + predicates, V3) — scoped to THIS vault only.
+ * The default vault carries the tenant baseline schema and is shown read-only (the server
+ * refuses edits to it); a created vault is editable by its owner. */
+function ConfigVaultModal({ vault, onClose }: { vault: Vault; onClose: () => void }) {
+  const { data, isLoading, error } = useQuery({
+    queryKey: ["vault-config", vault.vault_id],
+    queryFn: () => getVaultConfig(vault.vault_id),
+  });
+  return (
+    <Modal title={`Configure ${vault.name}`} onClose={onClose}>
+      {isLoading && <p className="text-sm text-muted">Loading…</p>}
+      {error && <p className="text-sm text-red-400">{(error as Error).message}</p>}
+      {data && <ConfigForm vault={vault} config={data} onClose={onClose} />}
+    </Modal>
+  );
+}
+
+function ConfigForm({ vault, config, onClose }: { vault: Vault; config: VaultConfig; onClose: () => void }) {
+  const qc = useQueryClient();
+  const editable = vault.vault_id !== DEFAULT_VAULT;
+  const [entityTypes, setEntityTypes] = useState(config.entity_types.join(", "));
+  const [predicates, setPredicates] = useState(config.predicates.join(", "));
+  const save = useMutation({
+    mutationFn: () => setVaultConfig(vault.vault_id, { entity_types: csvToList(entityTypes), predicates: csvToList(predicates) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["vault-config", vault.vault_id] });
+      onClose();
+    },
+  });
+
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        save.mutate();
+      }}
+      className="space-y-3"
+    >
+      <p className="text-xs text-muted">
+        The typed-graph schema for <span className="font-medium">{vault.name}</span> — this affects{" "}
+        <span className="font-medium">only this vault</span>.
+        {!editable && " The default vault uses the tenant baseline schema; create a vault to customise."}
+      </p>
+      <div>
+        <label className="mb-1 block text-xs font-medium text-muted" htmlFor="cfg-entities">Entity types</label>
+        <textarea
+          id="cfg-entities"
+          value={entityTypes}
+          onChange={(e) => setEntityTypes(e.target.value)}
+          disabled={!editable}
+          rows={2}
+          className="w-full rounded-md border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-accent disabled:opacity-60"
+        />
+      </div>
+      <div>
+        <label className="mb-1 block text-xs font-medium text-muted" htmlFor="cfg-predicates">Predicates</label>
+        <textarea
+          id="cfg-predicates"
+          value={predicates}
+          onChange={(e) => setPredicates(e.target.value)}
+          disabled={!editable}
+          rows={2}
+          className="w-full rounded-md border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-accent disabled:opacity-60"
+        />
+      </div>
+      {save.isError && <p className="text-sm text-red-400">{(save.error as Error).message}</p>}
+      <div className="flex justify-end gap-2 pt-1">
+        <button type="button" onClick={onClose} className="rounded-md border border-border px-3 py-2 text-sm hover:border-accent">
+          Close
+        </button>
+        {editable && (
+          <button
+            type="submit"
+            disabled={save.isPending}
+            className="inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-sm font-medium text-accent-fg disabled:opacity-50"
+          >
+            {save.isPending && <Spinner />}
+            Save
+          </button>
+        )}
+      </div>
+    </form>
   );
 }
 

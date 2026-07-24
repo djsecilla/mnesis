@@ -1180,8 +1180,21 @@ mnesis vault delete research --confirm research     # removes ALL its data; audi
 mnesis migrate-vaults                               # move a pre-vault tenant store into its default vault
 ```
 
-The end-to-end isolation **drills** live in `tests/test_vault_drills.py` (and the
-per-surface checks in `tests/test_vault_surfaces.py`).
+**In the Web UI (every user, their own vaults).** A persistent **vault switcher** in the
+header always shows the active vault and lists your vaults; the **Vaults** screen (`/vaults`,
+also reachable from the switcher) lists, **creates** (offering to switch), **renames**
+(display-only — the id and data never move), **deletes** (behind a typed-name confirmation;
+the default and last vault are refused), and **configures** each vault's schema (entity
+types / predicates). **Vaults are completely isolated** — switching fully resets the app
+(re-authorize → clear every cache → remount), so graph, reader, search, chat, ingestion, and
+review all follow the active vault with **no cross-vault bleed**; **per-vault config governs
+only that vault**; and **delete is permanent**. Everything is scoped to *your own* vaults —
+an admin gets no extra visibility, and the active vault is re-authorized server-side on every
+request (the persisted selection is a hint, never a grant).
+
+The end-to-end isolation **drills** live in `tests/test_vault_drills.py` (service),
+`tests/test_vault_web_drills.py` (the web flow), and the per-surface checks in
+`tests/test_vault_surfaces.py`.
 
 ### 7.10 Roles & user management
 

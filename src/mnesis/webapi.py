@@ -1112,6 +1112,7 @@ async def _vault_manage(request: Request) -> JSONResponse:
     the principal's LAST remaining vault (no-lockout) and guarded by `?confirm=<vault_id>`.
     Both re-authorize against the principal's grants (owner-or-admin) in the service, in ITS
     tenant — another tenant's/principal's vault is denied without leaking existence."""
+    authz.require_permission(authz.READ)  # a restricted (must_change) session is denied first
     actor = auth.current_principal_or_none()
     vault_id = request.path_params["vault_id"]
 
@@ -1180,6 +1181,7 @@ async def _vault_delete(request: Request) -> JSONResponse:
 async def _vault_config(request: Request) -> JSONResponse:
     """GET: the vault's schema (re-authorized read). PUT: edit entity types / predicates
     (owner-or-admin only). Both scope to the addressed vault, re-authorized server-side."""
+    authz.require_permission(authz.READ)  # a restricted (must_change) session is denied first
     actor = auth.current_principal_or_none()
     vault_id = request.path_params["vault_id"]
     if request.method == "GET":
